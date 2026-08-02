@@ -1,0 +1,117 @@
+16: 10    상품 리스트에서 판매자명 + 상품명 매칭 클릭, 5초 대기
+22: 16    배송지 목록에서 수취인/전화번호 매칭 클릭, 5초 대기
+23: 17    스크롤 + 전액사용.png 이미지 인식 클릭, 3초 대기
+57: IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
+64: # ─── XPath 상수 ─────────────────────────────────────────────────────────────
+67: STORE_TAB_XPATH = (
+78: WELCOME_MODAL_XPATHS = [
+85: MY_SHOPPING_XPATH = '//android.view.View[@content-desc="마이쇼핑"]'
+88: SEARCH_BTN_IN_MY_XPATH = '//android.widget.Button[@text="검색"]'
+91: BUY_BTN_XPATH = '//android.widget.Button[@text="구매하기"]'
+94: CHANGE_BTN_XPATH = '//android.widget.Button[@text="변경"]'
+97: PAY_BTN_XPATH = '//android.widget.Button[contains(@text,"결제하기")]'
+100: DELIVERY_LIST_WEBVIEW_XPATHS = [
+203: if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
+205: ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=7, log_callback=self._log)
+216: if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
+217: ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
+230: for xpath in WELCOME_MODAL_XPATHS:
+232: if ah.element_exists(self.driver, xpath, timeout=2):
+233: self._log(f"📌 [{step_label}] 웰컴 모달/팝업 버튼 발견 → 클릭 시도: {xpath[:50]}")
+234: ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+241: for xpath in [HIDE_BTN_1DAY, HIDE_BTN_7DAY]:
+242: if ah.element_exists(self.driver, xpath, timeout=5):
+243: label = "하루" if "하루" in xpath else "7일"
+245: ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
+262: if ah.element_exists(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5):
+263: ah.wait_and_click(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5, log_callback=self._log)
+299: # 1순위: 이미지 매칭 (검색입력.png)
+301: self._log("🔍 [이미지 매칭] 검색입력.png 인식 시도")
+307: # 2순위: EditText XPath
+309: search_xpaths = [
+312: '//android.widget.EditText[@hint="상품, 브랜드, 쇼핑몰 검색"]',
+315: for xpath in search_xpaths:
+316: if ah.element_exists(self.driver, xpath, timeout=3):
+318: el = self.driver.find_element(By.XPATH, xpath)
+337: focused_xpath = '//android.widget.EditText[@focused="true"]'
+338: if ah.element_exists(self.driver, focused_xpath, timeout=3):
+339: el = self.driver.find_element(By.XPATH, focused_xpath)
+341: el = self.driver.find_element(By.XPATH, '//android.widget.EditText')
+365: # 1순위: 이미지 매칭
+401: # ─── 단계 10: 상품 매칭 클릭 ────────────────────────────────────────────
+405: [단계 10] 상품 리스트에서 판매자명 + 상품명 매칭 클릭
+406: - 판매자명 TextView/View + 상품명 View/TextView 조합 매칭
+407: - 특수문자 대응 및 부분 키워드 매칭 지원
+410: self._set_status(f"상품 선택: {product_name[:15]}")
+411: self._log(f"🔍 상품 매칭 시도: 판매자='{seller_name}', 상품='{product_name}'")
+413: # 상품명 키워드 정제 (2글자 이상의 의미있는 키워드 목록)
+422: # 방법 A: 화면의 모든 View, TextView 검색하여 판매자 + 상품명 둘 다 포함된 상품 카드 찾기
+424: By.XPATH,
+439: # 1. 판매자명 + 핵심 키워드가 모두 들어있는 상품 카드
+443: # 키워드 매칭 개수 카운트
+451: # 상품명 일부 매칭
+461: self._log(f"  📌 상품 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
+470: self._log(f"  ⚠ 상품 탐색 중 오류: {e}")
+477: self._log(f"  ❌ 상품 매칭 최종 실패: {seller_name} / {product_name}")
+499: self._log(f"  👉 상품 좌표 탭 클릭 시도: ({x}, {y})")
+541: if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=5):
+542: ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=5, log_callback=self._log)
+563: # XPath 폴백
+564: checkbox_xpaths = [
+568: for xpath in checkbox_xpaths:
+569: if ah.element_exists(self.driver, xpath, timeout=3):
+570: ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+571: self._log(f"  ✅ 체크박스 XPath 클릭: {xpath}")
+592: # XPath 폴백
+593: buy_now_xpaths = [
+598: for xpath in buy_now_xpaths:
+599: if ah.element_exists(self.driver, xpath, timeout=3):
+600: ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
+601: self._log(f"  ✅ 바로구매 XPath 클릭: {xpath}")
+613: if ah.element_exists(self.driver, CHANGE_BTN_XPATH, timeout=5):
+614: ah.wait_and_click(self.driver, CHANGE_BTN_XPATH, timeout=5, log_callback=self._log)
+636: list_xpaths = [
+642: for list_xpath in list_xpaths:
+644: all_views = self.driver.find_elements(By.XPATH, list_xpath)
+648: # 수취인명 매칭
+668: # XPath 직접 탐색
+669: direct_xpaths = [
+674: for xpath in direct_xpaths:
+676: els = self.driver.find_elements(By.XPATH, xpath)
+678: self._log(f"  🎯 수취인 직접 XPath 매칭: {xpath}")
+690: self._log(f"  ❌ 배송지 '{recipient_name}' 매칭 실패")
+693: # ─── 단계 17: 전액사용 클릭 ──────────────────────────────────────────────
+697: [단계 17] 전액사용.png 인식될 때까지 아래로 스크롤하며 대기 -> 인식 후 클릭 -> 3초 대기
+699: self._set_status("전액사용 탐색 중")
+700: self._log("🔍 [단계 17] 전액사용 버튼 탐색 시작 (인식될 때까지 스크롤)")
+704: # 1. 전액사용.png 이미지 매칭 (threshold=0.58)
+708: self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+710: self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
+714: # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
+715: full_use_xpaths = [
+716: '//android.widget.Button[@text="전액사용"]',
+717: '//android.widget.Button[contains(@text,"전액")]',
+718: '//android.view.View[@text="전액사용"]',
+719: '//android.view.View[contains(@text,"전액사용")]',
+720: '//*[@text="전액사용"]',
+721: '//*[contains(@text,"전액사용")]',
+722: '//*[contains(@text,"전액 사용")]',
+724: for xpath in full_use_xpaths:
+726: if ah.element_exists(self.driver, xpath, timeout=1):
+727: self._log(f"  🎯 전액사용 XPath 발견: {xpath} -> 클릭 시도")
+728: el = self.driver.find_element(By.XPATH, xpath)
+730: self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
+737: self._log(f"  ⬇ [단계 17] 전액사용 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+741: self._log("  ❌ 전액사용 버튼 탐색 실패 (최대 스크롤 초과)")
+751: if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
+752: ah.wait_and_click(self.driver, PAY_BTN_XPATH, timeout=5, log_callback=self._log)
+897: # [단계 10] 상품 매칭 클릭
+899: self._log("❌ 상품 매칭 실패")
+926: # [단계 17] 전액사용 클릭
+947: """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색"""
+954: self._log("  [이미지 매칭] cv2/numpy/PIL 라이브러리 미설치")
+966: self._log(f"  [이미지 매칭] 템플릿 없음: {template_path}")
+973: self._log(f"  [이미지 매칭] 템플릿 로드 실패: {template_path}")
+1005: self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy}), 점수: {best_score:.4f}")
+1008: self._log(f"  ❌ [이미지 매칭] 실패 (점수 {best_score:.4f} < {threshold})")
+1011: self._log(f"  [이미지 매칭] 오류: {e}")

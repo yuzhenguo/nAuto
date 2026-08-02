@@ -1,0 +1,54 @@
+1. D:\SOURCE\WOO\COUPANG\appium_auto (4)\appium_auto  소스참고해서 비슷한 구조로 
+
+    네이버앱의  네이버 스토어 주소록 자등 등록 프로그램 만듭니다 
+    appium으로 자동화 프로그램 만듭니다.
+   
+2.  로딩시 항상 최초 메인페이지에 들어가게 한다  7 초대기 
+3. 메인화면.xml 참고해서 //android.view.ViewGroup[@content-desc="네이버 플러스 스토어, 버튼,"]/android.view.ViewGroup[@resource-id="com.nhn.android.search:id/tabIconLayout"]/android.widget.ImageView[@resource-id="com.nhn.android.search:id/tabIcon"] 버튼 존재 하면 //android.view.ViewGroup[@content-desc="네이버 플러스 스토어, 버튼,"]/android.view.ViewGroup[@resource-id="com.nhn.android.search:id/tabIconLayout"]/android.widget.ImageView[@resource-id="com.nhn.android.search:id/tabIcon"] 클릭합니다 
+4. 스토어홈.xml 구조 5초 동안 //android.widget.Button[@text="하루 동안 보지 않기"] 버튼 존재하면 //android.widget.Button[@text="하루 동안 보지 않기"] 클릭합니다 2초 대기 또한번더 반복 체크 
+   
+5. //android.view.View[@content-desc="마이쇼핑"] 버튼 찾아서 존재하면 클릭 5초 대기
+6. 5초 동안 //android.widget.Button[@text="하루 동안 보지 않기"] 버튼 존재하면 //android.widget.Button[@text="하루 동안 보지 않기"] 클릭합니다 2초 대기 
+7. 마이쇼핑.xml 구조 참고해서 //android.view.View[@content-desc="설정"] 찾아서 클릭합니다 2초 대기 
+8. 설정화면.xml  구조 참고해서 //android.widget.Button[@text="배송지 관리"] 찾아서 클릭
+9. 배송지목록.xml 참고해서  주소록.xlsx 에서 2행부터 순처 적으로 읽어서 엑셀에서 해당행중 해당 device연관된 데이타 값행중 9열에 주소초기화 값 한번만 읽어서 Y 이면 위에 7-1부터 7-3까지 작업하고 다음행 작업 진행 
+      첫번쨰 매칭된 행으로만 판단해서  7-1부터 7-3까지 작업여부 판단(한번만 판단)
+   
+
+   루풀 돌려서 //android.webkit.WebView[@text="네이버+ 스토어"]/android.view.View/android.widget.ListView
+
+   9.1 하위 요스들중 //android.view.View[@text="기본배송지"]  포함안되있는 주소들 중 (//android.widget.Button[@text="삭제"]) 들을 클릭해서 삭제 클릭합니다 
+   9.2 삭제확인 팝업창 에서 //android.widget.Button[@resource-id="android:id/button1"] 버튼 누릅니다 3초대기
+   9.3 xlsx에서 해당 device 루풀돌려서 9.1, 9.2 반복 합니다 
+
+10. //android.widget.Button[@text="배송지 신규입력"] 클릭 3초 대기 
+11. 배송지입력.xml 구조 참고해서 
+
+12. 주소록.xlsx 파일의 읽어서  1열 값은  //android.widget.EditText[@resource-id="receiver_name"]  에입력 (수취인)
+13. 1초 대기후 //android.widget.Button[@text="주소검색"] 버튼 클릭 후 2초 대기 
+14. 주소검색.xml 구조 참고해서  주소록.xlsx 파일의 읽어서  2열 값은 //android.widget.EditText[@resource-id=""] 에 입력 하고 
+15. 1초 대기후 //android.widget.Button[@text="검색"] 버튼 클릭 후 2초 대기 
+
+16. //android.widget.ListView 하위 요소중 //android.widget.TextView[@text="18113"]  이런 요소들중 text값이 
+주소록.xlsx 3열  우편번호  랑 값이 같으면   해당 하위 요소중 선택 버튼 클릭 한다 (//android.widget.RadioButton[@resource-id="address_list0"] 참고)
+우편번호 공백일떄는 스크롤  첫번쨰 주소  즉시 클릭합니다 3초 휴식 한다 
+
+17. 위에 주소 클릭후 상세주소 입력 화면에서 상세주소 입력.xml 구조 참고해서 
+   포커스 있는창에 타이핑 방식으로 주소록.xlsx 5열 값을 입력 해줍니다  2초 대기후
+
+18. 화면에서 ocr방식이거나  선택완료 버튼 인식해서 클릭 하고 3초대기
+
+19. //android.webkit.WebView[@text="네이버+ 스토어"]/android.view.View/android.view.View[2]/android.view.View/android.view.View[2]/android.view.View[2]/android.widget.EditText[1] 에 전화번호 앞 3자리를 뺸 중간 4자리 넣고 
+
+20.  2초 대기 후 //android.webkit.WebView[@text="네이버+ 스토어"]/android.view.View/android.view.View[2]/android.view.View/android.view.View[2]/android.view.View[2]/android.widget.EditText[2] 에 마지막 4자리 넣습니다
+
+21. 2초 대기 후 //android.widget.Button[@text="등록"] 클릭 합니다 
+
+22. 클릭 다한후 엑셀에서 주소록.xlsx 6열 값을 읽은 해당행 Y로 수정 해줍니다  
+
+
+
+ 주소록.xlsx 6열 값이 공백인거만 작업합니다. 
+
+
+엑셀 데이타 loop로 돌려서 해당 device에 주소지등록 작업을 10번부터 22번작업을 반복 합니다 
