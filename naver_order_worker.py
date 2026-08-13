@@ -1292,6 +1292,8 @@ class NaverOrderWorker:
             if success:
                 self.order_manager.mark_success(row.row_index)
                 self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+                self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
+                time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
