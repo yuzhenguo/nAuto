@@ -28,6 +28,7 @@ naver_order_worker.py
 import os
 import sys
 import time
+import random
 import threading
 from typing import Callable, Optional
 
@@ -63,6 +64,11 @@ IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
 IMG_SELECT_BANK   = os.path.join(_IMG_DIR, "은행을.png")
 IMG_BANK_SELECT   = os.path.join(_IMG_DIR, "은행선택.png")
 IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
+IMG_HANA_BANK     = os.path.join(_IMG_DIR, "하나은행.png")
+IMG_NONGHYUP_BANK = os.path.join(_IMG_DIR, "농협.png")
+IMG_WOORI_BANK    = os.path.join(_IMG_DIR, "우리은행.png")
+IMG_KB_BANK       = os.path.join(_IMG_DIR, "국민은행.png")
+IMG_IBK_BANK      = os.path.join(_IMG_DIR, "기업은행.png")
 IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
@@ -1240,8 +1246,26 @@ class NaverOrderWorker:
             self._log("❌ 무통장입금 클릭 후 '은행을' / '은행선택' 존재하지 않음 -> 무통장 결제 중단 및 실패 처리")
             return False
 
-        if not self._click_image_with_scroll(IMG_SHINHAN_BANK, "신한은행"):
-            self._log("❌ '신한은행' 버튼 미발견 -> 무통장 결제 실패")
+        # 5개 은행 중 랜덤으로 1개 지정하여 선택 (하나은행, 농협, 우리은행, 국민은행, 기업은행)
+        random_bank_options = [
+            (IMG_HANA_BANK, "하나은행"),
+            (IMG_NONGHYUP_BANK, "농협"),
+            (IMG_WOORI_BANK, "우리은행"),
+            (IMG_KB_BANK, "국민은행"),
+            (IMG_IBK_BANK, "기업은행"),
+        ]
+        random.shuffle(random_bank_options)
+
+        bank_selected = False
+        for bank_img, bank_name in random_bank_options:
+            self._log(f"🎲 랜덤 은행 선택 시도: {bank_name}")
+            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=5):
+                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료")
+                bank_selected = True
+                break
+
+        if not bank_selected:
+            self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
             return False
         if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"):
             self._log("❌ '미신청' 버튼 미발견 -> 무통장 결제 실패")
