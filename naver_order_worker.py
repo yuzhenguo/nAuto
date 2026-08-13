@@ -335,57 +335,71 @@ class NaverOrderWorker:
                 self._log(f"  ✅ [단계 3.2] 계정 [{login_id}] 이미 '로그인 중' 상태임")
                 break
 
-        target_account_xpaths = [
-            f'//android.view.View[contains(@content-desc, "{login_id}")]',
-            f'//*[contains(@content-desc, "{login_id}")]',
-        ]
-        target_el = None
-        for xpath in target_account_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=4):
-                try:
-                    target_el = self.driver.find_element(By.XPATH, xpath)
-                    self._log(f"  📌 아이디선택 화면에서 '{login_id}' 발견 -> 클릭 시도")
-                    break
-                except Exception:
-                    continue
+        if not already_logged_in:
+            target_account_xpaths = [
+                f'//android.view.View[contains(@content-desc, "{login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                f'//*[contains(@content-desc, "{login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                f'//android.view.View[contains(@content-desc, "{login_id}")]',
+                f'//*[contains(@content-desc, "{login_id}")]',
+                f'//*[contains(@text, "{login_id}")]',
+            ]
+            target_el = None
+            for xpath in target_account_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    try:
+                        target_el = self.driver.find_element(By.XPATH, xpath)
+                        self._log(f"  📌 아이디선택 화면에서 '{login_id}' 발견 -> 강력 클릭 진행")
+                        break
+                    except Exception:
+                        continue
 
-        if not target_el:
-            self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
-            return False
+            if not target_el:
+                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
+                return False
 
-        # 아이디 2번 클릭 시도
-        click_success = False
-        for attempt in range(1, 3):
-            self._log(f"  👉 [단계 3.2] 로그인 아이디 [{login_id}] 클릭 시도 ({attempt}/2)")
-            if self._safe_click_element(target_el):
-                click_success = True
-            else:
+            # 아이디 강력 클릭 (UiAutomator click + ADB shell input tap + Appium tap)
+            import subprocess
+            for attempt in range(1, 3):
+                self._log(f"  👉 [단계 3.2] 로그인 아이디 [{login_id}] 클릭 시도 ({attempt}/2)")
+                
+                # 1. UiAutomator direct click
                 try:
                     target_el.click()
-                    click_success = True
                 except Exception as e:
-                    self._log(f"  ⚠ 클릭 예외 발생: {e}")
-            
-            time.sleep(1)
-            
-        if not click_success:
-            self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 클릭 실패")
-            return False
+                    self._log(f"  ⚠ direct click 예외: {e}")
 
-        time.sleep(4)
+                # 2. ADB input tap (우측 더보기 버튼 피해서 안전 영역 좌표 탭)
+                try:
+                    rect = target_el.rect
+                    tap_x = int(rect['x'] + min(200, rect['width'] * 0.4))
+                    tap_y = int(rect['y'] + rect['height'] // 2)
+                    self._log(f"  👉 ADB input tap 전송: ({tap_x}, {tap_y})")
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
+                        capture_output=True, timeout=5
+                    )
+                except Exception as e:
+                    self._log(f"  ⚠ ADB input tap 예외: {e}")
 
-        # 5. 클릭 후 로그인 중 상태 검증 (화면 전환 가능성 고려하여 실패해도 진행)
-        if not already_logged_in:
-            verified = False
-            for xpath in verify_xpaths:
-                if ah.element_exists(self.driver, xpath, timeout=3):
-                    verified = True
+                # 3. Appium tap
+                self._safe_click_element(target_el)
+
+                time.sleep(3)
+
+                # 클릭 성공 여부 확인 ('로그인 중' 상태 또는 화면 전환)
+                is_switched = False
+                for xpath in verify_xpaths:
+                    if ah.element_exists(self.driver, xpath, timeout=2):
+                        is_switched = True
+                        break
+
+                if is_switched:
+                    self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 완료 확인됨!")
                     break
-
-            if not verified:
-                self._log(f"  ⚠ [단계 3.2] 클릭 후 '{login_id}' '로그인 중' 미발견 (화면이 전환되었을 수 있음)")
-            else:
-                self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 성공 및 검증 완료")
+                else:
+                    self._log(f"  ⚠ [{login_id}] 전환 미확인 -> 재시도 여부 판단")
+                    if attempt < 2:
+                        time.sleep(1)
 
         # 6. 존재하면 //android.widget.ScrollView/android.view.View[1]/android.widget.Button 클릭 (2초 대기)
         back_btn_xpaths = [
