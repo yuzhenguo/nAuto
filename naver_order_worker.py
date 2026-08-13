@@ -1316,6 +1316,13 @@ class NaverOrderWorker:
             if success:
                 self.order_manager.mark_success(row.row_index)
                 self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+                
+                if row.payment_method == "무통장":
+                    try:
+                        self._capture_and_log_bank_transfer(row)
+                    except Exception as e:
+                        self._log(f"❌ 무통장 스크린샷/로그 처리 중 예외 발생: {e}")
+
                 self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
                 time.sleep(30)
             else:
@@ -1323,6 +1330,74 @@ class NaverOrderWorker:
                 self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
 
         self._log("📋 주문 루프 종료")
+
+    def _capture_and_log_bank_transfer(self, row: OrderRow):
+        """무통장 결제 완료 후 스크린샷 캡쳐 및 주문번호/계좌번호 로그 저장"""
+        self._log("📸 무통장입금 완료 화면 캡쳐 및 정보 추출 대기 중...")
+        
+        import re
+        order_num_xpath = '//android.widget.Button[contains(@text, "복사하기")]'
+        bank_xpath = '//android.widget.Button[contains(@text, "은행")]'
+        
+        loaded = False
+        for _ in range(10):
+            if ah.element_exists(self.driver, order_num_xpath, timeout=1) or ah.element_exists(self.driver, bank_xpath, timeout=1):
+                loaded = True
+                break
+            time.sleep(1)
+            
+        if not loaded:
+            self._log("⚠ 무통장 결제 완료 화면 요소 확인 지연. 스크린샷 캡쳐를 진행합니다.")
+            
+        time.sleep(2)
+        
+        save_dir = os.path.join(_IMG_DIR, "무통장")
+        os.makedirs(save_dir, exist_ok=True)
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_keyword = re.sub(r'[\\/*?:"<>|]', "", row.search_keyword)
+        screenshot_filename = f"무통장_{timestamp}_{safe_keyword}.png"
+        screenshot_path = os.path.join(save_dir, screenshot_filename)
+        
+        try:
+            screenshot_data = self._get_screenshot()
+            with open(screenshot_path, "wb") as f:
+                f.write(screenshot_data)
+            self._log(f"✅ 무통장 스크린샷 저장 완료: {screenshot_path}")
+        except Exception as e:
+            self._log(f"❌ 스크린샷 캡쳐 실패: {e}")
+            
+        order_number_text = "알수없음"
+        bank_info_text = "알수없음"
+        
+        try:
+            els = self.driver.find_elements(By.XPATH, order_num_xpath)
+            if els:
+                text = els[0].text or ""
+                order_number_text = text.replace("복사하기", "").strip()
+        except Exception as e:
+            self._log(f"⚠ 주문번호 추출 실패: {e}")
+            
+        try:
+            els = self.driver.find_elements(By.XPATH, bank_xpath)
+            for el in els:
+                text = el.text or ""
+                if any(char.isdigit() for char in text) and len(text) > 5:
+                    bank_info_text = text.strip()
+                    break
+        except Exception as e:
+            self._log(f"⚠ 계좌번호 추출 실패: {e}")
+            
+        log_filename = "무통장로그.txt"
+        log_path = os.path.join(save_dir, log_filename)
+        log_content = f"[{timestamp}] 키워드: {row.search_keyword} | 주문번호: {order_number_text} | 계좌정보: {bank_info_text}\n"
+        
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(log_content)
+            self._log(f"✅ 무통장 정보 로그 기록 완료 (주문번호: {order_number_text}, 계좌정보: {bank_info_text})")
+        except Exception as e:
+            self._log(f"❌ 무통장 로그 기록 실패: {e}")
 
     def _process_order_with_timeout(self, row: OrderRow) -> bool:
         """주문 1건 처리 (타임아웃 적용)"""
