@@ -56,6 +56,17 @@ IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
 
+# 추가된 결제방식 이미지
+IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
+IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
+IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
+IMG_SELECT_BANK   = os.path.join(_IMG_DIR, "은행을.png")
+IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
+IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
+IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
+IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
+IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
+
 # 비밀번호 숫자 이미지 (단계 19): p0.png ~ p9.png
 IMG_NUMS = {
     str(d): os.path.join(_NUM_DIR, f"p{d}.png") for d in range(10)
@@ -864,6 +875,75 @@ class NaverOrderWorker:
         self._log("  ✅ 비밀번호 입력 완료")
         return True
 
+    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
+        """지정된 이미지를 스크롤하며 찾아서 클릭"""
+        self._set_status(f"{name} 탐색 중")
+        self._log(f"🔍 {name} 버튼 탐색 시작 (인식될 때까지 스크롤)")
+        max_scroll_attempts = 15
+        for attempt in range(1, max_scroll_attempts + 1):
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(img_path, threshold=threshold)
+                if coords:
+                    if coords[1] < 750:
+                        self._scroll_up(distance_ratio=0.35)
+                        time.sleep(1.5)
+                        coords = self._find_image_coords(img_path, threshold=threshold)
+                        if not coords: continue
+                    elif coords[1] > 1600:
+                        self._scroll_down(distance_ratio=0.35)
+                        time.sleep(1.5)
+                        coords = self._find_image_coords(img_path, threshold=threshold)
+                        if not coords: continue
+                    self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(3)
+                    return True
+            self._log(f"  ⬇ {name} 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.45)
+            time.sleep(1.2)
+        self._log(f"  ❌ {name} 버튼 탐색 실패")
+        return False
+
+    def _click_image_basic(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
+        """지정된 이미지를 스크롤 없이 한 번만 찾아서 클릭 (또는 짧게 대기하며 재시도)"""
+        self._set_status(f"{name} 탐색 중")
+        for _ in range(3):
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(img_path, threshold=threshold)
+                if coords:
+                    self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(3)
+                    return True
+            time.sleep(1)
+        self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
+        return False
+
+    def _process_bank_transfer(self) -> bool:
+        self._log("💰 [무통장 결제] 프로세스 시작")
+        if not self._click_image_basic(IMG_OTHER_PAY, "다른결재"): return False
+        if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"): return False
+        if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"): return False
+        if not self._click_image_with_scroll(IMG_SELECT_BANK, "은행을"): return False
+        if not self._click_image_with_scroll(IMG_SHINHAN_BANK, "신한은행"): return False
+        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"): return False
+        if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"): return False
+        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"): return False
+        return True
+
+    def _process_money_payment(self, password: str) -> bool:
+        self._log("💸 [머니 결제] 프로세스 시작")
+        if not self._click_image_with_scroll(IMG_MONEY_PAY, "머니"):
+            return False
+        if not self._click_pay_button():
+            self._log("❌ 결제하기 클릭 실패")
+            return False
+        if password:
+            self._input_password(password)
+        else:
+            self._log("  ℹ 비밀번호 없음 → 건너뜀")
+        return True
+
     # ─── 주문 루프 ────────────────────────────────────────────────────────────
 
     def _order_loop(self):
@@ -980,19 +1060,27 @@ class NaverOrderWorker:
             self._log("❌ 배송지 선택 실패")
             return False
 
-        # [단계 17] 전액사용 클릭
-        self._click_full_use()
-
-        # [단계 18] 결제하기 버튼
-        if not self._click_pay_button():
-            self._log("❌ 결제하기 클릭 실패")
-            return False
-
-        # [단계 19] 비밀번호 입력
-        if row.password:
-            self._input_password(row.password)
+        # [단계 17] 전액사용 클릭 등 결제 방식 분기
+        if row.payment_method == "무통장":
+            if not self._process_bank_transfer():
+                self._log("❌ 무통장 결제 진행 실패")
+                return False
+        elif row.payment_method == "머니":
+            if not self._process_money_payment(row.password):
+                self._log("❌ 머니 결제 진행 실패")
+                return False
         else:
-            self._log("  ℹ 비밀번호 없음 → 건너뜀")
+            # 포인트 또는 기본 결제
+            self._click_full_use()
+            # [단계 18] 결제하기 버튼
+            if not self._click_pay_button():
+                self._log("❌ 결제하기 클릭 실패")
+                return False
+            # [단계 19] 비밀번호 입력
+            if row.password:
+                self._input_password(row.password)
+            else:
+                self._log("  ℹ 비밀번호 없음 → 건너뜀")
 
         self._log(f"✅ 주문 완료: {row.search_keyword}")
         return True
