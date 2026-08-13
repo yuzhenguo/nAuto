@@ -1079,54 +1079,98 @@ class NaverOrderWorker:
 
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 5) -> bool:
         """
+        [무통장입금 클릭 후 판단]
         '은행을.png' 또는 '은행선택.png' 탐색 (최대 5회 스크롤)
-        '은행선택.png' 또는 '은행을.png' 인식 시 탭 클릭 및 성공으로 판단하여 종료
+        '은행선택.png', '은행을.png' 이미지 또는 '은행' 관련 XPath 인식 시 탭 클릭 및 성공으로 판단.
+        미발견 시 무통장입금 정상 선택 실패로 판단하여 작업을 중단하고 False 반환 (실패 처리).
         """
-        self._set_status("은행 선택 탐색 중")
-        self._log(f"🔍 은행 선택 버튼 탐색 시작 ('은행선택.png' / '은행을.png', 최대 {max_scroll_attempts}회 시도)")
+        self._set_status("은행 선택 탐색 및 판단 중")
+        self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행선택.png' / '은행을.png', 최대 {max_scroll_attempts}회 시도)")
 
         bank_images = [
             (IMG_BANK_SELECT, "은행선택"),
             (IMG_SELECT_BANK, "은행을"),
         ]
+        bank_xpaths = [
+            '//android.widget.Button[contains(@text,"은행")]',
+            '//android.view.View[contains(@text,"은행")]',
+            '//*[contains(@text,"은행선택")]',
+            '//*[contains(@text,"은행을")]',
+            '//*[contains(@content-desc,"은행")]',
+        ]
 
         for attempt in range(1, max_scroll_attempts + 1):
+            # 1. 이미지 매칭 (threshold 0.70)
             for img_path, name in bank_images:
                 if os.path.exists(img_path):
-                    coords = self._find_image_coords(img_path, threshold=0.80)
+                    coords = self._find_image_coords(img_path, threshold=0.70)
                     if coords:
                         if coords[1] < 750:
                             self._scroll_up(distance_ratio=0.35)
                             time.sleep(1.5)
-                            coords = self._find_image_coords(img_path, threshold=0.80)
+                            coords = self._find_image_coords(img_path, threshold=0.70)
                             if not coords: continue
                         elif coords[1] > 1600:
                             self._scroll_down(distance_ratio=0.35)
                             time.sleep(1.5)
-                            coords = self._find_image_coords(img_path, threshold=0.80)
+                            coords = self._find_image_coords(img_path, threshold=0.70)
                             if not coords: continue
-                        self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 성공 인정 완료")
+                        self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                         time.sleep(3)
                         return True
 
-            self._log(f"  ⬇ 은행 선택 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            # 2. XPath 매칭 폴백
+            for xpath in bank_xpaths:
+                try:
+                    if ah.element_exists(self.driver, xpath, timeout=1):
+                        self._log(f"  🎯 은행 선택 XPath 발견: {xpath} -> 클릭 및 존재 확인 성공")
+                        el = self.driver.find_element(By.XPATH, xpath)
+                        if self._safe_click_element(el):
+                            time.sleep(3)
+                            return True
+                except Exception:
+                    continue
+
+            self._log(f"  ⬇ '은행을'/'은행선택' 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.35)
             time.sleep(1.2)
 
-        self._log(f"  ❌ 은행 선택 버튼 탐색 실패 (최대 {max_scroll_attempts}회 시도 초과)")
+        self._log(f"  ❌ [실패] 무통장입금 클릭 후 '은행을' / '은행선택' 미발견 (최대 {max_scroll_attempts}회 시도 초과 -> 작업 중단)")
         return False
 
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
-        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7): return False
-        if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"): return False
-        if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"): return False
-        if not self._click_bank_select_with_scroll(max_scroll_attempts=5): return False
-        if not self._click_image_with_scroll(IMG_SHINHAN_BANK, "신한은행"): return False
-        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"): return False
-        if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"): return False
-        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"): return False
+        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7):
+            self._log("❌ '다른결재' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+        if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"):
+            self._log("❌ '일반결재' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+        if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"):
+            self._log("❌ '무통장입금' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+
+        # 무통장입금 클릭 후 2초 대기하여 화면 전환 보장
+        time.sleep(2.0)
+
+        # 무통장입금 클릭 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
+        if not self._click_bank_select_with_scroll(max_scroll_attempts=5):
+            self._log("❌ 무통장입금 클릭 후 '은행을' / '은행선택' 존재하지 않음 -> 무통장 결제 중단 및 실패 처리")
+            return False
+
+        if not self._click_image_with_scroll(IMG_SHINHAN_BANK, "신한은행"):
+            self._log("❌ '신한은행' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"):
+            self._log("❌ '미신청' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+        if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"):
+            self._log("❌ '결재하기' 버튼 미발견 -> 무통장 결제 실패")
+            return False
+        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"):
+            self._log("❌ '주문하기' 버튼 미발견 -> 무통장 결제 실패")
+            return False
         return True
 
     def _process_money_payment(self, password: str) -> bool:
