@@ -1085,29 +1085,49 @@ class NaverOrderWorker:
         return True
 
     def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
-        """지정된 이미지를 스크롤하며 찾아서 클릭"""
+        """지정된 이미지를 미세 스크롤하며 찾고, 화면 중앙 영역에 정렬하여 클릭"""
         self._set_status(f"{name} 탐색 중")
-        self._log(f"🔍 {name} 버튼 탐색 시작 (인식될 때까지 스크롤, 최대 {max_scroll_attempts}회 시도)")
+        self._log(f"🔍 {name} 버튼 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        # 화면 중앙 범위 정의 (화면 높이 35% ~ 65%)
+        mid_top = int(w_h * 0.35)
+        mid_bottom = int(w_h * 0.65)
+
         for attempt in range(1, max_scroll_attempts + 1):
             if os.path.exists(img_path):
                 coords = self._find_image_coords(img_path, threshold=threshold)
                 if coords:
-                    if coords[1] < 750:
-                        self._scroll_up(distance_ratio=0.35)
-                        time.sleep(1.5)
-                        coords = self._find_image_coords(img_path, threshold=threshold)
-                        if not coords: continue
-                    elif coords[1] > 1600:
-                        self._scroll_down(distance_ratio=0.35)
-                        time.sleep(1.5)
-                        coords = self._find_image_coords(img_path, threshold=threshold)
-                        if not coords: continue
-                    self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    # 상단으로 너무 치우쳐 있는 경우 -> 미세 스크롤 업으로 중앙 조절
+                    if coords[1] < mid_top:
+                        self._log(f"  📌 {name} 버튼 상단 치우침(y={coords[1]}) -> 화면 중앙 조절용 미세 스크롤 업")
+                        self._scroll_up(distance_ratio=0.18)
+                        time.sleep(1.0)
+                        adj_coords = self._find_image_coords(img_path, threshold=threshold)
+                        if adj_coords:
+                            coords = adj_coords
+
+                    # 하단으로 너무 치우쳐 있는 경우 -> 미세 스크롤 다운으로 중앙 조절
+                    elif coords[1] > mid_bottom:
+                        self._log(f"  📌 {name} 버튼 하단 치우침(y={coords[1]}) -> 화면 중앙 조절용 미세 스크롤 다운")
+                        self._scroll_down(distance_ratio=0.18)
+                        time.sleep(1.0)
+                        adj_coords = self._find_image_coords(img_path, threshold=threshold)
+                        if adj_coords:
+                            coords = adj_coords
+
+                    self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     time.sleep(3)
                     return True
-            self._log(f"  ⬇ {name} 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.35)
+
+            self._log(f"  ⬇ {name} 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
             time.sleep(1.2)
         self._log(f"  ❌ {name} 버튼 탐색 실패")
         return False
@@ -1131,8 +1151,7 @@ class NaverOrderWorker:
         """
         [무통장입금 클릭 후 판단]
         '은행을.png' 또는 '은행선택.png' 탐색 (최대 5회 스크롤)
-        '은행선택.png', '은행을.png' 이미지 또는 '은행' 관련 XPath 인식 시 탭 클릭 및 성공으로 판단.
-        미발견 시 무통장입금 정상 선택 실패로 판단하여 작업을 중단하고 False 반환 (실패 처리).
+        '은행선택.png', '은행을.png' 이미지 또는 '은행' 관련 XPath 인식 시 화면 중앙 조절 후 탭 클릭.
         """
         self._set_status("은행 선택 탐색 및 판단 중")
         self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행선택.png' / '은행을.png', 최대 {max_scroll_attempts}회 시도)")
@@ -1149,23 +1168,35 @@ class NaverOrderWorker:
             '//*[contains(@content-desc,"은행")]',
         ]
 
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        mid_top = int(w_h * 0.35)
+        mid_bottom = int(w_h * 0.65)
+
         for attempt in range(1, max_scroll_attempts + 1):
             # 1. 이미지 매칭 (threshold 0.70)
             for img_path, name in bank_images:
                 if os.path.exists(img_path):
                     coords = self._find_image_coords(img_path, threshold=0.70)
                     if coords:
-                        if coords[1] < 750:
-                            self._scroll_up(distance_ratio=0.35)
-                            time.sleep(1.5)
-                            coords = self._find_image_coords(img_path, threshold=0.70)
-                            if not coords: continue
-                        elif coords[1] > 1600:
-                            self._scroll_down(distance_ratio=0.35)
-                            time.sleep(1.5)
-                            coords = self._find_image_coords(img_path, threshold=0.70)
-                            if not coords: continue
-                        self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
+                        if coords[1] < mid_top:
+                            self._log(f"  📌 {name} 상단 치우침 -> 미세 스크롤 업")
+                            self._scroll_up(distance_ratio=0.18)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=0.70)
+                            if adj: coords = adj
+                        elif coords[1] > mid_bottom:
+                            self._log(f"  📌 {name} 하단 치우침 -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.18)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=0.70)
+                            if adj: coords = adj
+
+                        self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                         time.sleep(3)
                         return True
@@ -1182,8 +1213,8 @@ class NaverOrderWorker:
                 except Exception:
                     continue
 
-            self._log(f"  ⬇ '은행을'/'은행선택' 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.35)
+            self._log(f"  ⬇ '은행을'/'은행선택' 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
             time.sleep(1.2)
 
         self._log(f"  ❌ [실패] 무통장입금 클릭 후 '은행을' / '은행선택' 미발견 (최대 {max_scroll_attempts}회 시도 초과 -> 작업 중단)")
@@ -1456,8 +1487,8 @@ class NaverOrderWorker:
 
     # ─── 스크롤 유틸 ──────────────────────────────────────────────────────────
 
-    def _scroll_down(self, distance_ratio: float = 0.4):
-        """아래로 스크롤 (Appium swipe + ADB input swipe 보조)"""
+    def _scroll_down(self, distance_ratio: float = 0.20):
+        """아래로 미세 스크롤 (Appium swipe + ADB input swipe 보조)"""
         w, h = 1080, 2400
         try:
             size = self.driver.get_window_size()
