@@ -323,7 +323,18 @@ class NaverOrderWorker:
             self._log("  ❌ [단계 3.2] 로그인 아이디 관리 링크 미발견 -> 계정 전환 실패")
             return False
 
-        # 4. 아이디선택.xml 구조 분석: content-desc에서 로그인아이디 필드 값 포함 요소 탐색 후 클릭 (3초 대기)
+        # 4. 아이디선택 화면에서 타겟 아이디 찾기 및 '로그인 중' 상태 확인
+        already_logged_in = False
+        verify_xpaths = [
+            f'//android.view.View[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
+            f'//*[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
+        ]
+        for xpath in verify_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=2):
+                already_logged_in = True
+                self._log(f"  ✅ [단계 3.2] 계정 [{login_id}] 이미 '로그인 중' 상태임")
+                break
+
         target_account_xpaths = [
             f'//android.view.View[contains(@content-desc, "{login_id}")]',
             f'//*[contains(@content-desc, "{login_id}")]',
@@ -342,32 +353,39 @@ class NaverOrderWorker:
             self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
             return False
 
-        # 아이디 클릭
-        if not self._safe_click_element(target_el):
-            try:
-                target_el.click()
-            except Exception as e:
-                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 클릭 실패: {e}")
-                return False
-
-        time.sleep(3)
-
-        # 5. 클릭 다한 후 로그인 중 검증: (//android.view.View[@content-desc="huangmeiling1990, 로그인 중, 간편로그인"])
-        verify_xpaths = [
-            f'//android.view.View[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
-            f'//*[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
-        ]
-        verified = False
-        for xpath in verify_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=4):
-                verified = True
-                break
-
-        if not verified:
-            self._log(f"  ❌ [단계 3.2] 계정 [{login_id}] '로그인 중' 상태 검증 실패 -> 작업 중지 및 로그 기록")
+        # 아이디 2번 클릭 시도
+        click_success = False
+        for attempt in range(1, 3):
+            self._log(f"  👉 [단계 3.2] 로그인 아이디 [{login_id}] 클릭 시도 ({attempt}/2)")
+            if self._safe_click_element(target_el):
+                click_success = True
+            else:
+                try:
+                    target_el.click()
+                    click_success = True
+                except Exception as e:
+                    self._log(f"  ⚠ 클릭 예외 발생: {e}")
+            
+            time.sleep(1)
+            
+        if not click_success:
+            self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 클릭 실패")
             return False
 
-        self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 성공 및 검증 완료")
+        time.sleep(4)
+
+        # 5. 클릭 후 로그인 중 상태 검증 (화면 전환 가능성 고려하여 실패해도 진행)
+        if not already_logged_in:
+            verified = False
+            for xpath in verify_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    verified = True
+                    break
+
+            if not verified:
+                self._log(f"  ⚠ [단계 3.2] 클릭 후 '{login_id}' '로그인 중' 미발견 (화면이 전환되었을 수 있음)")
+            else:
+                self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 성공 및 검증 완료")
 
         # 6. 존재하면 //android.widget.ScrollView/android.view.View[1]/android.widget.Button 클릭 (2초 대기)
         back_btn_xpaths = [
