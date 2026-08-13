@@ -357,49 +357,67 @@ class NaverOrderWorker:
                 self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
                 return False
 
-            # 아이디 강력 클릭 (UiAutomator click + ADB shell input tap + Appium tap)
+            # 클릭 전 좌표 미리 계산 (클릭 후 StaleElementReferenceException 방지)
             import subprocess
+            tap_x, tap_y = None, None
+            try:
+                rect = target_el.rect
+                tap_x = int(rect['x'] + min(200, rect['width'] * 0.4))
+                tap_y = int(rect['y'] + rect['height'] // 2)
+            except Exception as e:
+                self._log(f"  ⚠ 클릭 전 좌표 획득 예외: {e}")
+
+            click_triggered = False
             for attempt in range(1, 3):
                 self._log(f"  👉 [단계 3.2] 로그인 아이디 [{login_id}] 클릭 시도 ({attempt}/2)")
                 
-                # 1. UiAutomator direct click
+                # 1. UiAutomator direct click 시도
                 try:
                     target_el.click()
+                    self._log("  ✅ direct click 전송 완료")
+                    click_triggered = True
                 except Exception as e:
-                    self._log(f"  ⚠ direct click 예외: {e}")
+                    err_str = str(e)
+                    if any(kw in err_str for kw in ["StaleElement", "StaleObject", "not linked", "does not exist"]):
+                        self._log("  ✅ direct click 성공으로 화면 전환됨 (StaleElement 감지)")
+                        click_triggered = True
+                        break
+                    else:
+                        self._log(f"  ⚠ direct click 예외: {e}")
 
-                # 2. ADB input tap (우측 더보기 버튼 피해서 안전 영역 좌표 탭)
-                try:
-                    rect = target_el.rect
-                    tap_x = int(rect['x'] + min(200, rect['width'] * 0.4))
-                    tap_y = int(rect['y'] + rect['height'] // 2)
-                    self._log(f"  👉 ADB input tap 전송: ({tap_x}, {tap_y})")
-                    subprocess.run(
-                        ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
-                        capture_output=True, timeout=5
-                    )
-                except Exception as e:
-                    self._log(f"  ⚠ ADB input tap 예외: {e}")
-
-                # 3. Appium tap
-                self._safe_click_element(target_el)
+                # 2. direct click이 실패했고 좌표가 있다면 ADB input tap 전송 (폴백)
+                if not click_triggered and tap_x and tap_y:
+                    try:
+                        self._log(f"  👉 ADB input tap 전송: ({tap_x}, {tap_y})")
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
+                            capture_output=True, timeout=5
+                        )
+                        click_triggered = True
+                    except Exception as e:
+                        self._log(f"  ⚠ ADB input tap 예외: {e}")
 
                 time.sleep(3)
 
-                # 클릭 성공 여부 확인 ('로그인 중' 상태 또는 화면 전환)
-                is_switched = False
+                # 클릭 후 '로그인 중' 상태 최종 검증
+                verified = False
                 for xpath in verify_xpaths:
-                    if ah.element_exists(self.driver, xpath, timeout=2):
-                        is_switched = True
+                    if ah.element_exists(self.driver, xpath, timeout=4):
+                        verified = True
                         break
 
-                if is_switched:
-                    self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 완료 확인됨!")
+                if verified:
+                    self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] '로그인 중' 전환 확인 성공!")
                     break
                 else:
-                    self._log(f"  ⚠ [{login_id}] 전환 미확인 -> 재시도 여부 판단")
+                    self._log(f"  ⚠ [{login_id}] '로그인 중' 전환 미확인 -> 재시도")
                     if attempt < 2:
                         time.sleep(1)
+
+            # 5. 최종 검증: 이미 로그인중이었거나 클릭 후 로그인중 상태가 검증되어야 함
+            if not already_logged_in and not verified:
+                self._log(f"  ❌ [단계 3.2] 계정 [{login_id}] '로그인 중' 상태 검증 실패 -> 작업 중단 및 다음 레드로 이동")
+                return False
 
         # 6. 존재하면 //android.widget.ScrollView/android.view.View[1]/android.widget.Button 클릭 (2초 대기)
         back_btn_xpaths = [
