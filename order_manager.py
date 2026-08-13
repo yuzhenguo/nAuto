@@ -30,18 +30,20 @@ COL_PHONE           = 5   # 전화번호
 COL_PASSWORD        = 6   # 비밀번호
 COL_STATUS          = 7   # 완료여부
 COL_PAYMENT_METHOD  = 8   # 결제방식
+COL_LOGIN_ID        = 11  # 로그인아이디
 
 
 # ─── 헤더 키워드 매핑 (대소문자/공백 무시) ───────────────────────────────────
 HEADER_KEYWORDS = {
     "search_keyword": ["검색어", "search", "keyword", "검색"],
     "seller_name":    ["판매자명", "판매자", "seller", "스토어명", "스토어"],
-    "product_name":   ["상품명", "product", "상품"],
+    "product_name":   ["상품명", "product", "상품", "매칭상품명", "매칭 상품명"],
     "recipient_name": ["수취인", "수령인", "recipient", "받는사람", "받는분"],
     "phone":          ["전화번호", "전화", "phone", "연락처", "핸드폰"],
     "password":       ["비밀번호", "password", "pw", "암호"],
     "status":         ["완료여부", "완료", "상태", "status", "처리여부"],
     "payment_method": ["결제방식", "결재방식", "결제", "결재", "방식", "payment"],
+    "login_id":       ["로그인아이디", "로그인 아이디", "아이디", "login_id", "id"],
 }
 
 
@@ -56,7 +58,8 @@ class OrderRow:
                  phone: str,
                  password: str,
                  status: str,
-                 payment_method: str = ""):
+                 payment_method: str = "",
+                 login_id: str = ""):
         self.row_index      = row_index         # 엑셀 실제 행 번호 (1-based)
         self.search_keyword = search_keyword    # 검색어
         self.seller_name    = seller_name       # 판매자명
@@ -66,6 +69,7 @@ class OrderRow:
         self.password       = str(password).strip() if password else ""  # 비밀번호
         self.status         = str(status).strip() if status else ""  # 완료여부
         self.payment_method = str(payment_method).strip() if payment_method else "" # 결제방식
+        self.login_id       = str(login_id).strip() if login_id else "" # 로그인아이디
 
     def get_phone_digits(self) -> str:
         """전화번호에서 숫자만 추출"""
@@ -78,7 +82,7 @@ class OrderRow:
     def __repr__(self):
         return (f"OrderRow(row={self.row_index}, keyword={self.search_keyword!r}, "
                 f"seller={self.seller_name!r}, product={self.product_name!r}, "
-                f"recipient={self.recipient_name!r}, status={self.status!r})")
+                f"recipient={self.recipient_name!r}, status={self.status!r}, login_id={self.login_id!r})")
 
 
 def _detect_columns(ws) -> dict:
@@ -96,6 +100,7 @@ def _detect_columns(ws) -> dict:
         "password":       COL_PASSWORD,
         "status":         COL_STATUS,
         "payment_method": COL_PAYMENT_METHOD,
+        "login_id":       COL_LOGIN_ID,
     }
 
     for col_idx in range(1, ws.max_column + 1):
@@ -167,6 +172,7 @@ class OrderManager:
                             password       = self._str(ws.cell(row_idx, cm["password"]).value),
                             status         = status_str,
                             payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
+                            login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
                         ))
             except Exception as e:
                 print(f"[OrderManager] 엑셀 읽기 오류: {e}")

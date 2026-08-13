@@ -201,14 +201,25 @@ class NaverOrderWorker:
 
     # ─── 단계 3~6: 메인 → 스토어 → 마이쇼핑 ─────────────────────────────────
 
-    def _go_main_and_enter_store(self):
-        """[단계 3] 메인 페이지 진입, 7초 대기 및 3.1 웰컴 모달 처리"""
+    # ─── 단계 3~6: 메인 → 스토어 → 마이쇼핑 (3.2 계정전환 포함) ─────────────────
+
+    def _go_main_and_enter_store(self, login_id: str = "") -> bool:
+        """[단계 3] 메인 페이지 진입, 7초 대기 및 3.1 웰컴 모달 처리 -> [단계 3.2] 계정 전환 -> [단계 4~6] 스토어/마이쇼핑 진입"""
         self._set_status("메인 페이지 이동 중")
         ah.go_to_main_page(self.driver, self._log)
         time.sleep(7)
 
         # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
         self._check_and_close_welcome_modals(step_label="3.1")
+
+        # [단계 3.2] 로그인 아이디가 지정된 경우 네이버 계정 전환 수행
+        if login_id:
+            if not self._switch_account(login_id):
+                self._log(f"❌ [단계 3.2] 계정 전환 실패 (아이디: {login_id}) -> 4번 이하 단계 수행 취소 및 다음 레코드 이동")
+                return False
+            # 계정 전환 성공 후 메인 페이지로 이동하여 4번 진행
+            ah.go_to_main_page(self.driver, self._log)
+            time.sleep(3)
 
         # [단계 4] 네이버 플러스 스토어 탭 버튼 클릭
         if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
@@ -235,6 +246,153 @@ class NaverOrderWorker:
         # 마이쇼핑 진입 후 팝업 및 웰컴 모달 재처리
         self._dismiss_popups()
         self._check_and_close_welcome_modals(step_label="6.1")
+        return True
+
+    def _switch_account(self, login_id: str) -> bool:
+        """
+        [단계 3.2] 네이버 계정 자동 전환
+        1) //android.widget.ImageView[@content-desc="메뉴"] 클릭 (3초 대기)
+        2) //android.widget.ImageView[@content-desc="설정"] 클릭 (3초 대기)
+        3) //android.view.ViewGroup[contains(@content-desc, "로그인 아이디 관리")] 클릭 (3초 대기)
+        4) 아이디선택.xml 구조 참고하여 content-desc에 login_id가 포함된 요소를 탐색 및 클릭 (3초 대기)
+           - 미발견 시: 작업을 중단하고 로그 기록 후 False 반환
+        5) (//android.view.View[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]) 요소를 통해 로그인 검증
+           - 미발견/불일치 시: 작업 중단 및 로그 기록 후 False 반환
+        """
+        if not login_id:
+            self._log("ℹ [단계 3.2] 로그인 아이디 미지정 -> 계정 전환 건너뜀")
+            return True
+
+        self._set_status(f"계정 전환 시도: {login_id}")
+        self._log(f"🔑 [단계 3.2] 네이버 계정 전환 시작 (타겟 아이디: {login_id})")
+
+        # 1. 메뉴 버튼 발견 하면 클릭 (3초 대기)
+        menu_xpaths = [
+            '//android.widget.ImageView[@content-desc="메뉴"]',
+            '//*[@content-desc="메뉴"]',
+        ]
+        menu_clicked = False
+        for xpath in menu_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                self._log("  📌 메뉴 버튼 발견 -> 클릭")
+                ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
+                time.sleep(3)
+                menu_clicked = True
+                break
+
+        if not menu_clicked:
+            self._log("  ❌ [단계 3.2] 메뉴 버튼 미발견 -> 계정 전환 실패")
+            return False
+
+        # 2. 설정 버튼 발견하면 클릭 (3초 대기)
+        setting_xpaths = [
+            '//android.widget.ImageView[@content-desc="설정"]',
+            '//*[@content-desc="설정"]',
+        ]
+        setting_clicked = False
+        for xpath in setting_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                self._log("  📌 설정 버튼 발견 -> 클릭")
+                ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
+                time.sleep(3)
+                setting_clicked = True
+                break
+
+        if not setting_clicked:
+            self._log("  ❌ [단계 3.2] 설정 버튼 미발견 -> 계정 전환 실패")
+            return False
+
+        # 3. 로그인 아이디 관리 링크 발견하면 클릭 (3초 대기)
+        mgmt_xpaths = [
+            '//android.view.ViewGroup[contains(@content-desc, "로그인 아이디 관리")]',
+            '//android.widget.LinearLayout[@resource-id="com.nhn.android.search.Setup:id/pref_title_cell"]/android.widget.LinearLayout[1]',
+            '//android.widget.LinearLayout[@resource-id="com.nhn.android.search.Setup:id/pref_title_cell"]',
+            '//*[contains(@content-desc, "로그인 아이디 관리")]',
+        ]
+        mgmt_clicked = False
+        for xpath in mgmt_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                self._log("  📌 로그인 아이디 관리 링크 발견 -> 클릭")
+                ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
+                time.sleep(3)
+                mgmt_clicked = True
+                break
+
+        if not mgmt_clicked:
+            self._log("  ❌ [단계 3.2] 로그인 아이디 관리 링크 미발견 -> 계정 전환 실패")
+            return False
+
+        # 4. 아이디선택.xml 구조 분석: content-desc에서 로그인아이디 필드 값 포함 요소 탐색 후 클릭 (3초 대기)
+        target_account_xpaths = [
+            f'//android.view.View[contains(@content-desc, "{login_id}")]',
+            f'//*[contains(@content-desc, "{login_id}")]',
+        ]
+        target_el = None
+        for xpath in target_account_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                try:
+                    target_el = self.driver.find_element(By.XPATH, xpath)
+                    self._log(f"  📌 아이디선택 화면에서 '{login_id}' 발견 -> 클릭 시도")
+                    break
+                except Exception:
+                    continue
+
+        if not target_el:
+            self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
+            return False
+
+        # 아이디 클릭
+        if not self._safe_click_element(target_el):
+            try:
+                target_el.click()
+            except Exception as e:
+                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 클릭 실패: {e}")
+                return False
+
+        time.sleep(3)
+
+        # 5. 클릭 다한 후 로그인 중 검증: (//android.view.View[@content-desc="huangmeiling1990, 로그인 중, 간편로그인"])
+        verify_xpaths = [
+            f'//android.view.View[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
+            f'//*[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
+        ]
+        verified = False
+        for xpath in verify_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                verified = True
+                break
+
+        if not verified:
+            self._log(f"  ❌ [단계 3.2] 계정 [{login_id}] '로그인 중' 상태 검증 실패 -> 작업 중지 및 로그 기록")
+            return False
+
+        self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] 전환 성공 및 검증 완료")
+
+        # 6. 존재하면 //android.widget.ScrollView/android.view.View[1]/android.widget.Button 클릭 (2초 대기)
+        back_btn_xpaths = [
+            '//android.widget.ScrollView/android.view.View[1]/android.widget.Button',
+            '//android.view.View[@content-desc="뒤로"]',
+        ]
+        for xpath in back_btn_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=3):
+                self._log("  📌 아이디선택 화면 상단 뒤로/버튼 발견 -> 클릭 (2초 대기)")
+                ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+                time.sleep(2)
+                break
+
+        # 7. //android.widget.ImageView[@content-desc="이전"] 발견하면 클릭 (2초 대기)
+        prev_btn_xpaths = [
+            '//android.widget.ImageView[@content-desc="이전"]',
+            '//*[@content-desc="이전"]',
+        ]
+        for xpath in prev_btn_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=3):
+                self._log("  📌 설정 화면 '이전' 버튼 발견 -> 클릭 (2초 대기)")
+                ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+                time.sleep(2)
+                break
+
+        return True
 
     def _check_and_close_welcome_modals(self, step_label: str = "3.1/7.1"):
         """3.1 및 7.1 웰컴 모달 / 팝업 버튼 발견 시 클릭"""
@@ -1013,8 +1171,10 @@ class NaverOrderWorker:
         주문 1건 전체 흐름 (단계 3~19)
         각 주문마다 처음부터 메인 페이지로 이동하여 처리
         """
-        # [단계 3~6] 매 주문마다 메인→스토어→마이쇼핑 재진입
-        self._go_main_and_enter_store()
+        # [단계 3~6] 매 주문마다 메인→계정전환(3.2)→스토어→마이쇼핑 재진입
+        if not self._go_main_and_enter_store(login_id=row.login_id):
+            self._log("❌ 계정 전환 또는 메인 페이지/스토어/마이쇼핑 진입 실패 -> 다음 레드로 이동")
+            return False
 
         # [단계 7] 마이쇼핑 검색 버튼 클릭
         if not self._click_search_in_my_shopping():
