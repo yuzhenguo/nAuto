@@ -70,6 +70,7 @@ IMG_WOORI_BANK    = os.path.join(_IMG_DIR, "우리은행.png")
 IMG_KB_BANK       = os.path.join(_IMG_DIR, "국민은행.png")
 IMG_IBK_BANK      = os.path.join(_IMG_DIR, "기업은행.png")
 IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
+IMG_NOT_APPLY2    = os.path.join(_IMG_DIR, "미신청2.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
@@ -1267,9 +1268,15 @@ class NaverOrderWorker:
         if not bank_selected:
             self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
             return False
-        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"):
-            self._log("❌ '미신청' 버튼 미발견 -> 무통장 결제 실패")
-            return False
+            
+        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청", max_scroll_attempts=4):
+            self._log("⚠ '미신청' 미발견 -> '미신청2' 탐색 시도")
+            self._scroll_up(distance_ratio=0.6)
+            time.sleep(1)
+            if not self._click_image_with_scroll(IMG_NOT_APPLY2, "미신청2", max_scroll_attempts=4):
+                self._log("❌ '미신청' 및 '미신청2' 버튼 미발견 -> 무통장 결제 실패")
+                return False
+                
         if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"):
             self._log("❌ '결재하기' 버튼 미발견 -> 무통장 결제 실패")
             return False
