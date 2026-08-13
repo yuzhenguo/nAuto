@@ -61,6 +61,7 @@ IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
 IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
 IMG_SELECT_BANK   = os.path.join(_IMG_DIR, "은행을.png")
+IMG_BANK_SELECT   = os.path.join(_IMG_DIR, "은행선택.png")
 IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
 IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
@@ -1033,11 +1034,10 @@ class NaverOrderWorker:
         self._log("  ✅ 비밀번호 입력 완료")
         return True
 
-    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
+    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
         """지정된 이미지를 스크롤하며 찾아서 클릭"""
         self._set_status(f"{name} 탐색 중")
-        self._log(f"🔍 {name} 버튼 탐색 시작 (인식될 때까지 스크롤)")
-        max_scroll_attempts = 15
+        self._log(f"🔍 {name} 버튼 탐색 시작 (인식될 때까지 스크롤, 최대 {max_scroll_attempts}회 시도)")
         for attempt in range(1, max_scroll_attempts + 1):
             if os.path.exists(img_path):
                 coords = self._find_image_coords(img_path, threshold=threshold)
@@ -1057,7 +1057,7 @@ class NaverOrderWorker:
                     time.sleep(3)
                     return True
             self._log(f"  ⬇ {name} 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.45)
+            self._scroll_down(distance_ratio=0.35)
             time.sleep(1.2)
         self._log(f"  ❌ {name} 버튼 탐색 실패")
         return False
@@ -1077,12 +1077,52 @@ class NaverOrderWorker:
         self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
         return False
 
+    def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 5) -> bool:
+        """
+        '은행을.png' 또는 '은행선택.png' 탐색 (최대 5회 스크롤)
+        '은행선택.png' 또는 '은행을.png' 인식 시 탭 클릭 및 성공으로 판단하여 종료
+        """
+        self._set_status("은행 선택 탐색 중")
+        self._log(f"🔍 은행 선택 버튼 탐색 시작 ('은행선택.png' / '은행을.png', 최대 {max_scroll_attempts}회 시도)")
+
+        bank_images = [
+            (IMG_BANK_SELECT, "은행선택"),
+            (IMG_SELECT_BANK, "은행을"),
+        ]
+
+        for attempt in range(1, max_scroll_attempts + 1):
+            for img_path, name in bank_images:
+                if os.path.exists(img_path):
+                    coords = self._find_image_coords(img_path, threshold=0.80)
+                    if coords:
+                        if coords[1] < 750:
+                            self._scroll_up(distance_ratio=0.35)
+                            time.sleep(1.5)
+                            coords = self._find_image_coords(img_path, threshold=0.80)
+                            if not coords: continue
+                        elif coords[1] > 1600:
+                            self._scroll_down(distance_ratio=0.35)
+                            time.sleep(1.5)
+                            coords = self._find_image_coords(img_path, threshold=0.80)
+                            if not coords: continue
+                        self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 성공 인정 완료")
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                        time.sleep(3)
+                        return True
+
+            self._log(f"  ⬇ 은행 선택 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.35)
+            time.sleep(1.2)
+
+        self._log(f"  ❌ 은행 선택 버튼 탐색 실패 (최대 {max_scroll_attempts}회 시도 초과)")
+        return False
+
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
-        if not self._click_image_basic(IMG_OTHER_PAY, "다른결재"): return False
+        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7): return False
         if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"): return False
         if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"): return False
-        if not self._click_image_with_scroll(IMG_SELECT_BANK, "은행을"): return False
+        if not self._click_bank_select_with_scroll(max_scroll_attempts=5): return False
         if not self._click_image_with_scroll(IMG_SHINHAN_BANK, "신한은행"): return False
         if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청"): return False
         if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"): return False
