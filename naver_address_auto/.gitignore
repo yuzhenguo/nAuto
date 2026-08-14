@@ -1,0 +1,10 @@
+# Debug images
+*.png
+
+# Log files
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

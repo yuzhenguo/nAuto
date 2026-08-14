@@ -1,7 +1,102 @@
 {
-  "R3CR302DWEH": {
+  "R3CR30MW83N": {
     "selected": true,
-    "remark": "",
+    "remark": "11",
+    "connected": true
+  },
+  "R3CR60FENNH": {
+    "selected": true,
+    "remark": "01",
+    "connected": true
+  },
+  "R3CR60WE20K": {
+    "selected": true,
+    "remark": "19",
+    "connected": true
+  },
+  "R3CR70M9Z5N": {
+    "selected": true,
+    "remark": "09",
+    "connected": true
+  },
+  "R3CRC0QFAQN": {
+    "selected": true,
+    "remark": "18",
+    "connected": true
+  },
+  "R3CT108SA8L": {
+    "selected": true,
+    "remark": "20",
+    "connected": true
+  },
+  "R3CT10D67EV": {
+    "selected": true,
+    "remark": "13",
+    "connected": true
+  },
+  "R3CT10FBV8N": {
+    "selected": true,
+    "remark": "15",
+    "connected": true
+  },
+  "R3CT50D36EA": {
+    "selected": true,
+    "remark": "05",
+    "connected": true
+  },
+  "R3CT80541PJ": {
+    "selected": true,
+    "remark": "12",
+    "connected": true
+  },
+  "R3CW30MEWKH": {
+    "selected": true,
+    "remark": "17",
+    "connected": true
+  },
+  "R3CW50A6R5K": {
+    "selected": true,
+    "remark": "03",
+    "connected": true
+  },
+  "R3CW60B7A5P": {
+    "selected": true,
+    "remark": "06",
+    "connected": true
+  },
+  "R5CT21QWF2W": {
+    "selected": true,
+    "remark": "08",
+    "connected": true
+  },
+  "R5CT331VARV": {
+    "selected": true,
+    "remark": "14",
+    "connected": true
+  },
+  "R5CWB2TGCHF": {
+    "selected": true,
+    "remark": "07",
+    "connected": true
+  },
+  "R5CX11LQE1Z": {
+    "selected": true,
+    "remark": "10",
+    "connected": true
+  },
+  "R5CX11WYVKX": {
+    "selected": true,
+    "remark": "16",
+    "connected": true
+  },
+  "R5CX349NTSF": {
+    "selected": true,
+    "remark": "02",
+    "connected": true
+  },
+  "R5CX409P6MB": {
+    "selected": true,
+    "remark": "04",
     "connected": true
   }
 }

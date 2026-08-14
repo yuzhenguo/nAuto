@@ -228,8 +228,7 @@ class NaverWorker:
 
         max_restarts = 20
 
-        # 재부팅이 필요한지 여부 (첫 시작 시 + 에러 발생 후 항상 True)
-        need_reboot = True
+
 
         for attempt in range(1, max_restarts + 1):
 
@@ -237,28 +236,7 @@ class NaverWorker:
 
                 break
 
-            # ── 핸드폰 재부팅 → 3분 대기 → ADB 접속 체크 ──────────────────────
-            if need_reboot:
-                if attempt == 1:
-                    self._log("📵 [워커 시작] 핸드폰 재부팅 후 3분 대기 진행...")
-                else:
-                    self._log(f"📵 [오류 복구] 핸드폰 재부팅 후 3분 대기 진행... (재시도 {attempt}/{max_restarts})")
 
-                self._set_status("핸드폰 재부팅 중 (3분 대기)")
-                adb_ok = ah.reboot_and_wait_3min(self.device_id, self._log)
-
-                if not adb_ok:
-                    self._log(f"⚠️ [{self.device_id}] ADB 접속 확인 실패. 1분 추가 대기 후 재시도...")
-                    self._set_status("ADB 접속 실패 - 재시도 대기")
-                    time.sleep(60)
-                    # 접속 재확인 (재부팅 없이)
-                    adb_ok = ah.check_adb_connection(self.device_id, self._log)
-                    if not adb_ok:
-                        self._log(f"❌ [{self.device_id}] ADB 접속 최종 실패. 다음 시도로 넘어갑니다.")
-                        continue
-
-                self._log(f"✅ [{self.device_id}] ADB 접속 확인 완료. 워커 작업 진행.")
-                need_reboot = False  # 이후 성공적으로 연결될 때까지는 재부팅 불필요
 
             self._set_status(f"연결 중... (시도 {attempt}/{max_restarts})")
 
@@ -281,9 +259,9 @@ class NaverWorker:
                 self._set_status("연결 실패")
 
                 if attempt < max_restarts:
-                    # 드라이버 연결 실패 시에도 재부팅 후 재시도
-                    self._log("🔄 드라이버 연결 실패 → 핸드폰 재부팅 후 재시도합니다.")
-                    need_reboot = True
+
+                    time.sleep(3)
+
                     continue
 
                 else:
@@ -325,8 +303,6 @@ class NaverWorker:
                 self._log(f"❌ 예기치 않은 오류: {e}")
 
                 self._set_status("오류 발생")
-                # 에러 발생 시 다음 시도에서 반드시 재부팅
-                need_reboot = True
 
             finally:
 
@@ -352,8 +328,9 @@ class NaverWorker:
 
             if attempt < max_restarts:
 
-                self._log(f"🔄 오류 회복을 위해 핸드폰 재부팅 후 재시작합니다... ({attempt}/{max_restarts})")
-                # need_reboot = True 는 위에서 이미 설정됨
+                self._log(f"🔄 오류 회복을 위해 5초 후 워커를 재시작합니다... ({attempt}/{max_restarts})")
+
+                time.sleep(5)
 
             else:
 
