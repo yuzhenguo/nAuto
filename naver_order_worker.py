@@ -898,74 +898,256 @@ class NaverOrderWorker:
 
     # ─── 단계 16: 배송지 선택 ────────────────────────────────────────────────
 
-    def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
-        """현재 화면(스크롤 없이)에서 수취인을 탐색하여 클릭. 찾으면 True 반환."""
-        # 방법 1: WebView/View 전체 순회
-        list_xpaths = [
-            '//android.webkit.WebView[@text="주문/결제"]//android.view.View',
-            '//android.webkit.WebView//android.view.View',
-            '//android.view.View',
-        ]
-        for list_xpath in list_xpaths:
-            try:
-                all_views = self.driver.find_elements(By.XPATH, list_xpath)
-                for view in all_views:
+    def _check_current_delivery_address(self, recipient_name: str, phone: str) -> bool:
+        """
+        현재 주문/결제 화면에 목표 배송지가 이미 선택되어 있는지 확인합니다.
+        (변경 버튼을 클릭하기 전에 호출)
+        """
+        phone_digits = ''.join(filter(str.isdigit, phone)) if phone else ""
+        last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
+        
+        try:
+            # 주문/결제 페이지의 배송지명 뷰 탐색 (text="배송지명{이름}")
+            views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
+            for view in views:
+                text = view.get_attribute("text") or ""
+                if recipient_name in text:
+                    # 이름이 매칭됨 -> 전화번호 검증
+                    if not last4:
+                        return True
                     try:
-                        text = view.get_attribute("text") or ""
-                        desc = view.get_attribute("content-desc") or ""
-                        full_txt = f"{text} {desc}"
-                        # 수취인명 매칭
-                        if recipient_name not in full_txt:
-                            continue
-                        # 전화번호 뒷 4자리 2차 검증
-                        if phone_digits and len(phone_digits) >= 8:
-                            last4 = phone_digits[-4:]
-                            if last4 not in full_txt:
-                                continue
-                        self._log(f"  🎯 배송지 발견: '{text[:50]}'")
-                        if self._click_element_or_parent(view):
-                            time.sleep(5)
+                        # 배송지명 View의 부모 요소 안에서 모든 텍스트 수집
+                        parent = view.find_element(By.XPATH, "..")
+                        area_views = parent.find_elements(By.XPATH, ".//*")
+                        area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
+                        
+                        if last4 in area_text:
                             return True
                     except Exception:
-                        continue
-            except Exception:
-                continue
+                        pass
+        except Exception:
+            pass
+        return False
 
-        # 방법 2: XPath 직접 탐색
-        direct_xpaths = [
-            f'//android.view.View[contains(@text, "{recipient_name}")]',
-            f'//*[contains(@text, "{recipient_name}")]',
-            f'//*[contains(@content-desc, "{recipient_name}")]',
-        ]
-        for xpath in direct_xpaths:
-            try:
-                els = self.driver.find_elements(By.XPATH, xpath)
-                if els:
-                    self._log(f"  🎯 수취인 직접 XPath 매칭: {xpath}")
-                    if self._click_element_or_parent(els[0]):
-                        time.sleep(5)
+    def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
+        """
+        현재 화면(스크롤 없이)에서 수취인을 탐색하여 클릭. 찾으면 True 반환.
+
+        [XML 구조 참고]
+        ■ 주문/결제 페이지 인라인 (배송지 목록2.xml):
+          - text="배송지명김종국(친구)" 형태 (배송지명 prefix)
+          - 전화번호는 별개 View: text="연락처010-1654-2987"
+
+        ■ 별도 배송지 목록 팝업 (naver_address_auto/배송지목록.xml):
+          - text="정하늘" 처럼 수취인명만 있는 View
+          - ⚠ 전화번호가 text="010-1***-9***" 로 마스킹 → last4 검증 불가!
+          → '***' 감지 시 이름만으로 매칭 후 클릭
+        """
+        last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
+
+        # ── 방법 A: '배송지명{이름}' 패턴 탐색 (주문/결제 페이지 인라인 형태) ──
+        # XML: <android.view.View text="배송지명김종국(친구)" .../>
+        # 전화번호는 인접한 다른 View에 있으므로 이름만으로 매칭 후,
+        # 같은 부모 컨테이너 내에서 전화번호 확인
+        try:
+            all_views = self.driver.find_elements(By.XPATH, '//*')
+            for view in all_views:
+                try:
+                    text = view.get_attribute("text") or ""
+                    # '배송지명{이름}' 패턴 확인
+                    if not ("배송지명" in text and recipient_name in text):
+                        continue
+
+                    self._log(f"  🔎 '배송지명' 패턴 View 발견: '{text[:60]}'")
+
+                    # 전화번호 검증: 같은 부모 영역 내에서 '연락처{전화}' View를 찾음
+                    if last4:
+                        phone_ok = False
+                        try:
+                            # 같은 부모 레벨에서 형제 노드들을 탐색
+                            parent = view.find_element(By.XPATH, "..")
+                            sibling_texts = []
+                            try:
+                                # 형제 및 부모 영역의 모든 텍스트 수집
+                                grand_parent = parent.find_element(By.XPATH, "..")
+                                area_views = grand_parent.find_elements(By.XPATH, ".//*")
+                                for av in area_views:
+                                    try:
+                                        at = av.get_attribute("text") or ""
+                                        if at:
+                                            sibling_texts.append(at)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            area_text = " ".join(sibling_texts)
+                            # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
+                            if "***" in area_text:
+                                phone_ok = True
+                                self._log("  ℹ 전화번호 마스킹 감지 → 이름만으로 매칭")
+                            elif last4 in area_text:
+                                phone_ok = True
+                            elif "연락처" in area_text:
+                                for st in sibling_texts:
+                                    if "연락처" in st and last4 in st:
+                                        phone_ok = True
+                                        break
+                        except Exception:
+                            phone_ok = True
+                            self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 클릭 시도")
+
+                        if not phone_ok:
+                            self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 미매칭 → 스킵")
+                            continue
+
+                    self._log(f"  🎯 배송지명 패턴 매칭 성공: '{text[:60]}'")
+                    # 해당 View 자체 또는 변경 버튼 클릭
+                    if self._click_element_or_parent(view):
+                        time.sleep(3)
                         return True
-            except Exception:
-                continue
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 방법 B: 배송지 목록 팝업 형태 (수취인명 text가 바로 있는 형태) ──
+        # XML: <android.view.View text="정하늘" .../>
+        # 이름과 전화번호가 서로 다른 View에 있음 → 이름 View 찾은 후 인접 전화 View 확인
+        try:
+            # 이름이 포함된 View 탐색
+            name_xpaths = [
+                f'//*[contains(@text, "{recipient_name}")]',
+                f'//*[contains(@content-desc, "{recipient_name}")]',
+            ]
+            for nxp in name_xpaths:
+                try:
+                    name_views = self.driver.find_elements(By.XPATH, nxp)
+                    for nv in name_views:
+                        try:
+                            nv_text = nv.get_attribute("text") or ""
+                            nv_desc = nv.get_attribute("content-desc") or ""
+
+                            # '배송지명' prefix가 붙은 경우는 방법 A에서 이미 처리했으므로 패스
+                            if "배송지명" in nv_text:
+                                continue
+                            # 수취인명 매칭
+                            if recipient_name not in (nv_text + nv_desc):
+                                continue
+
+                            # 전화번호 검증 (같은 View에 있는지 먼저 확인)
+                            if last4:
+                                combined = nv_text + " " + nv_desc
+                                if last4 in combined:
+                                    # 같은 View에 전화번호도 있으면 바로 클릭
+                                    self._log(f"  🎯 배송지 발견 (이름+전화 동일 View): '{nv_text[:50]}'")
+                                    if self._click_element_or_parent(nv):
+                                        time.sleep(5)
+                                        return True
+                                else:
+                                    # 같은 View에 없으면 부모 영역 탐색
+                                    area_text = ""
+                                    try:
+                                        parent = nv.find_element(By.XPATH, "..")
+                                        gparent = parent.find_element(By.XPATH, "..")
+                                        area_els = gparent.find_elements(By.XPATH, ".//*")
+                                        area_text = " ".join(
+                                            (ae.get_attribute("text") or "") for ae in area_els
+                                        )
+                                    except Exception:
+                                        pass
+                                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
+                                    if "***" in area_text:
+                                        self._log(f"  ℹ 전화번호 마스킹 감지 → 이름만으로 클릭: '{nv_text[:40]}'")
+                                    elif area_text and last4 not in area_text:
+                                        self._log(f"  ⚠ 전화 뒷4자리 '{last4}' 부모 영역에도 없음 → 스킵")
+                                        continue
+
+                            self._log(f"  🎯 배송지 발견: '{nv_text[:50]}'")
+                            if self._click_element_or_parent(nv):
+                                time.sleep(5)
+                                return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 방법 C: RadioButton[text="선택"] 을 이름+전화가 매칭된 블록에서 직접 클릭 ──
+        # XML: <android.widget.RadioButton text="선택" resource-id="delivery_option_..."/>
+        try:
+            radio_buttons = self.driver.find_elements(
+                By.XPATH, '//android.widget.RadioButton[@text="선택"]'
+            )
+            for rb in radio_buttons:
+                try:
+                    # RadioButton의 부모 컨테이너에서 이름 탐색
+                    container = rb.find_element(By.XPATH, "..")
+                    container_els = container.find_elements(By.XPATH, ".//*")
+                    container_text = " ".join(
+                        (ce.get_attribute("text") or "") for ce in container_els
+                    )
+                    if recipient_name not in container_text:
+                        continue
+                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
+                    if last4 and "***" not in container_text and last4 not in container_text:
+                        self._log(f"  ⚠ RadioButton 블록 전화 '{last4}' 미매칭 → 스킵")
+                        continue
+                    self._log(f"  🎯 RadioButton '선택' 클릭 - 수취인 '{recipient_name}' 매칭")
+                    rb.click()
+                    time.sleep(5)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
         return False
 
     def _select_delivery_address(self, recipient_name: str, phone: str) -> bool:
         """
         [단계 16] 배송지 선택:
-        1) 스크롤 없이 현재 화면에서 수취인 존재 여부 먼저 확인
-        2) 없으면 스크롤 후 재탐색 (최대 5회)
+        1) 화면 안정화 후 스크롤 없이 현재 화면에서 수취인 탐색
+        2) 없으면 스크롤하며 재탐색 (최대 8회)
+
+        [지원 화면 형태 - XML 참고]
+        - 주문/결제 페이지 인라인 배송지: text="배송지명{이름}" 패턴
+        - 별도 배송지 목록 팝업: 수취인명이 바로 text 속성에 있는 ListView
         """
         self._set_status(f"배송지 선택: {recipient_name}")
         self._log(f"🔍 배송지 선택: 수취인={recipient_name!r}, 전화={phone!r}")
 
         phone_digits = ''.join(filter(str.isdigit, phone)) if phone else ""
-        scroll_max = 5
+        scroll_max = 8  # 스크롤 횟수 증가 (5 → 8)
+
+        # ── 화면 안정화 대기 (변경 버튼 클릭 후 팝업/페이지 로딩) ──
+        time.sleep(2)
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
         self._log("  📋 현재 화면에서 수취인 탐색 중 (스크롤 없음)...")
         if self._find_recipient_on_screen(recipient_name, phone_digits):
             return True
+
+        # ── 디버그: 현재 화면의 배송지명 View 목록 출력 ──
+        try:
+            debug_views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
+            if debug_views:
+                self._log(f"  🔎 현재 화면 '배송지명' View 목록:")
+                for dv in debug_views[:5]:
+                    self._log(f"       - text='{(dv.get_attribute('text') or '')[:80]}'")
+            else:
+                self._log("  🔎 현재 화면에 '배송지명' View 없음 (배송지 목록 팝업 가능)")
+                # 배송지 목록 팝업 화면의 ListView 존재 여부 확인
+                listview = None
+                try:
+                    listview = self.driver.find_element(
+                        By.XPATH, '//android.widget.ListView'
+                    )
+                    self._log("  ✅ android.widget.ListView 발견 → 배송지 목록 팝업 화면")
+                except Exception:
+                    self._log("  ⚠ ListView 없음")
+        except Exception:
+            pass
 
         # ── 2단계: 없으면 스크롤하며 재탐색 ──
         for scroll_cnt in range(1, scroll_max + 1):
@@ -1518,18 +1700,18 @@ class NaverOrderWorker:
             self._log("❌ 바로구매 클릭 실패")
             return False
 
-        # [단계 14] 변경 버튼
-        self._click_change_button()
-
-        # [단계 15] 스크롤 다운
-        self._log("  ⬇ 스크롤 다운 (단계 15)")
-        self._scroll_down()
-        time.sleep(1.0)
-
-        # [단계 16] 배송지 선택
-        if not self._select_delivery_address(row.recipient_name, row.phone):
-            self._log("❌ 배송지 선택 실패")
-            return False
+        # [단계 14 & 16] 배송지 확인 및 선택
+        if self._check_current_delivery_address(row.recipient_name, row.phone):
+            self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
+        else:
+            self._log("🔄 목표 배송지가 선택되어 있지 않아 변경을 시도합니다.")
+            self._click_change_button()
+            
+            # [단계 15] 스크롤 다운 → 제거 (배송지 목록이 바로 표시되므로 불필요)
+            
+            if not self._select_delivery_address(row.recipient_name, row.phone):
+                self._log("❌ 배송지 선택 실패")
+                return False
 
         # [단계 17] 전액사용 클릭 등 결제 방식 분기
         if row.payment_method == "무통장":
