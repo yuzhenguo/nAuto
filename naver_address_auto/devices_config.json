@@ -1,102 +1,107 @@
 {
   "R3CR30MW83N": {
-    "selected": true,
+    "selected": false,
     "remark": "11",
-    "connected": true
+    "connected": false
   },
   "R3CR60FENNH": {
-    "selected": true,
+    "selected": false,
     "remark": "01",
-    "connected": true
+    "connected": false
   },
   "R3CR60WE20K": {
-    "selected": true,
+    "selected": false,
     "remark": "19",
-    "connected": true
+    "connected": false
   },
   "R3CR70M9Z5N": {
-    "selected": true,
+    "selected": false,
     "remark": "09",
-    "connected": true
+    "connected": false
   },
   "R3CRC0QFAQN": {
-    "selected": true,
+    "selected": false,
     "remark": "18",
-    "connected": true
+    "connected": false
   },
   "R3CT108SA8L": {
-    "selected": true,
+    "selected": false,
     "remark": "20",
-    "connected": true
+    "connected": false
   },
   "R3CT10D67EV": {
-    "selected": true,
+    "selected": false,
     "remark": "13",
-    "connected": true
+    "connected": false
   },
   "R3CT10FBV8N": {
-    "selected": true,
+    "selected": false,
     "remark": "15",
-    "connected": true
+    "connected": false
   },
   "R3CT50D36EA": {
-    "selected": true,
+    "selected": false,
     "remark": "05",
-    "connected": true
+    "connected": false
   },
   "R3CT80541PJ": {
-    "selected": true,
+    "selected": false,
     "remark": "12",
-    "connected": true
+    "connected": false
   },
   "R3CW30MEWKH": {
-    "selected": true,
+    "selected": false,
     "remark": "17",
-    "connected": true
+    "connected": false
   },
   "R3CW50A6R5K": {
-    "selected": true,
+    "selected": false,
     "remark": "03",
-    "connected": true
+    "connected": false
   },
   "R3CW60B7A5P": {
-    "selected": true,
+    "selected": false,
     "remark": "06",
-    "connected": true
+    "connected": false
   },
   "R5CT21QWF2W": {
-    "selected": true,
+    "selected": false,
     "remark": "08",
-    "connected": true
+    "connected": false
   },
   "R5CT331VARV": {
-    "selected": true,
+    "selected": false,
     "remark": "14",
-    "connected": true
+    "connected": false
   },
   "R5CWB2TGCHF": {
-    "selected": true,
+    "selected": false,
     "remark": "07",
-    "connected": true
+    "connected": false
   },
   "R5CX11LQE1Z": {
-    "selected": true,
+    "selected": false,
     "remark": "10",
-    "connected": true
+    "connected": false
   },
   "R5CX11WYVKX": {
-    "selected": true,
+    "selected": false,
     "remark": "16",
-    "connected": true
+    "connected": false
   },
   "R5CX349NTSF": {
-    "selected": true,
+    "selected": false,
     "remark": "02",
-    "connected": true
+    "connected": false
   },
   "R5CX409P6MB": {
-    "selected": true,
+    "selected": false,
     "remark": "04",
+    "connected": false
+  },
+  "R3CR302DWEH": {
+    "selected": true,
+    "remark": "",
     "connected": true
   }
 }
