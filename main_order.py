@@ -178,6 +178,7 @@ class MainApp(tk.Tk):
         self.device_panels: dict = {}
         self.running_ports: set = set()
         self.running: bool = False
+        self.worker_semaphore = threading.Semaphore(10)  # CPU 부하 감소를 위해 동시 실행 최대 15개 제한
 
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
@@ -660,31 +661,33 @@ class MainApp(tk.Tk):
         max_retries = 5
         tried_ports: list = []
 
-        for attempt in range(1, max_retries + 1):
-            if worker._stop_event.is_set():
-                self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
-                break
-
-            port = self._new_random_port(tried_ports)
-            tried_ports.append(port)
-            worker.appium_port = port
-
-            self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
-
-            try:
-                self._start_appium_server(port)
-                time.sleep(5)
-
-                if worker.run():
+        self._on_worker_log(did, "⏳ CPU 부하 방지: 실행 대기 중 (최대 15대 동시 실행 제한)")
+        with self.worker_semaphore:
+            for attempt in range(1, max_retries + 1):
+                if worker._stop_event.is_set():
+                    self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
                     break
-                else:
-                    self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
-            except Exception as e:
-                self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
-            finally:
-                self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
-                self._kill_process_on_port(port)
-                time.sleep(2)
+
+                port = self._new_random_port(tried_ports)
+                tried_ports.append(port)
+                worker.appium_port = port
+
+                self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
+
+                try:
+                    self._start_appium_server(port)
+                    time.sleep(5)
+
+                    if worker.run():
+                        break
+                    else:
+                        self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
+                except Exception as e:
+                    self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
+                finally:
+                    self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
+                    self._kill_process_on_port(port)
+                    time.sleep(2)
 
     def _stop_all(self):
         self._log_status("⏹ 중지 요청 중...")
