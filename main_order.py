@@ -413,6 +413,12 @@ class MainApp(tk.Tk):
             fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2
         ).pack(side=tk.LEFT, padx=4)
 
+        self.reboot_btn = self._make_btn(
+            right_ctrl, "🔄 기기 재부팅", self._reboot_selected_devices,
+            fg="#ffffff", bg=CLR_WARNING
+        )
+        self.reboot_btn.pack(side=tk.LEFT, padx=4)
+
         self.start_btn = self._make_btn(
             right_ctrl, "▶  시작", self._start_all,
             fg="#ffffff", bg=CLR_NAVER
@@ -750,6 +756,92 @@ class MainApp(tk.Tk):
             messagebox.showerror("오류", "adb 명령을 찾을 수 없습니다.\nADB를 설치하고 PATH에 추가하세요.")
         except subprocess.TimeoutExpired:
             messagebox.showerror("오류", "ADB 명령 타임아웃")
+
+    def _reboot_and_hotspot(self, did):
+        try:
+            self._on_worker_log(did, "🔄 ADB 재부팅 명령 전송...")
+            self._on_worker_status(did, "재부팅 중")
+            subprocess.run(["adb", "-s", did, "reboot"], capture_output=True, timeout=5)
+            
+            self._on_worker_log(did, "⏳ 기기 부팅 완료 대기 중 (최대 3분)...")
+            boot_completed = False
+            for _ in range(36):  # 36 * 5초 = 180초 (3분)
+                time.sleep(5)
+                try:
+                    res = subprocess.run(["adb", "-s", did, "shell", "getprop", "sys.boot_completed"], 
+                                         capture_output=True, text=True, timeout=3)
+                    if "1" in res.stdout:
+                        boot_completed = True
+                        break
+                except Exception:
+                    pass
+            
+            if not boot_completed:
+                self._on_worker_log(did, "❌ 부팅 감지 시간 초과")
+                self._on_worker_status(did, "부팅 시간초과")
+                return
+                
+            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 시스템 안정화 10초 대기...")
+            time.sleep(10)
+            
+            self._on_worker_log(did, "📡 핫스팟 활성화 시도 중...")
+            self._on_worker_status(did, "핫스팟 켜는 중")
+            
+            # Wi-Fi 끄기 (핫스팟 충돌 방지)
+            subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
+            time.sleep(2)
+            
+            # 핫스팟 켜기 (Android 11+ 지원 방식)
+            res = subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"], 
+                                 capture_output=True, text=True, timeout=5)
+                                 
+            if "Error" in res.stdout or "Error" in res.stderr:
+                self._on_worker_log(did, f"⚠ 핫스팟 활성화 중 오류/경고: {res.stdout.strip()} {res.stderr.strip()}")
+            else:
+                self._on_worker_log(did, "✅ 핫스팟 활성화 성공!")
+                
+            self._on_worker_status(did, "핫스팟 완료")
+            
+        except Exception as e:
+            self._on_worker_log(did, f"❌ 재부팅/핫스팟 예외: {e}")
+            self._on_worker_status(did, "예외 발생")
+
+    def _reboot_selected_devices(self):
+        selected_devices = self._get_selected_devices()
+        if not selected_devices:
+            messagebox.showwarning("경고", "선택된 기기가 없습니다. 재부팅할 기기를 선택해주세요.")
+            return
+
+        confirm = messagebox.askyesno(
+            "재부팅 및 핫스팟 켜기",
+            f"선택된 {len(selected_devices)}대의 기기를 재부팅하고 핫스팟을 켜시겠습니까?\n(재부팅 완료 후 자동으로 핫스팟이 실행됩니다.)"
+        )
+        if not confirm:
+            return
+
+        self._log_status(f"🔄 선택된 기기 {len(selected_devices)}대 재부팅 및 핫스팟 연결 작업 시작...")
+        
+        # 로그 패널 생성을 위해 running 임시 true
+        self.running = True
+        self.start_btn.config(state=tk.DISABLED)
+        self._rebuild_device_panels()
+
+        def _reboot_all_task():
+            threads = []
+            for did in selected_devices:
+                t = threading.Thread(target=self._reboot_and_hotspot, args=(did,), daemon=True)
+                t.start()
+                threads.append(t)
+            
+            for t in threads:
+                t.join()
+                
+            self.running = False
+            self.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
+            self._log_status(f"✅ {len(selected_devices)}대 기기 재부팅 및 핫스팟 처리 완료")
+            self.after(0, lambda: messagebox.showinfo("작업 완료", "모든 기기의 재부팅 및 핫스팟 켜기 작업이 완료되었습니다."))
+
+        threading.Thread(target=_reboot_all_task, daemon=True).start()
 
     # ─── 엑셀 파일 선택 ──────────────────────────────────────────────────────
 
