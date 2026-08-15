@@ -534,6 +534,49 @@ class NaverWorker:
             self._log("  ❌ [단계 3.2] 메뉴 버튼 미발견 -> 계정 전환 실패")
             return False
 
+        # 1.5. 설정 버튼 찾기 전 "7일간 보지 않기" 팝업이 뜨면 클릭 (7일간.png 참고)
+        dismiss_7days_xpaths = [
+            '//android.widget.Button[@text="7일간 보지 않기"]',
+            '//android.widget.Button[contains(@text, "7일")]',
+            '//*[contains(@text, "7일간 보지 않기")]',
+            '//*[contains(@text, "7일간 보이지 않기")]',
+            '//*[contains(@text, "7일 동안 보지 않기")]',
+            '//*[contains(@text, "7일간")]',
+            '//*[contains(@content-desc, "7일간")]',
+            '//*[contains(@content-desc, "7일 동안")]',
+        ]
+        for xpath in dismiss_7days_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=2):
+                self._log("  📌 [단계 3.2] '7일간 보이지 않기' 팝업 발견 -> 클릭")
+                ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+                time.sleep(2)
+                break
+
+        # 7일간.png 이미지 템플릿 매칭 보조 (XPath 미감지 시 대비)
+        tpl_7days = os.path.join(os.path.dirname(__file__), "7일간.png")
+        if os.path.exists(tpl_7days):
+            try:
+                import cv2
+                import numpy as np
+
+                res = subprocess.run(["adb", "-s", self.device_id, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
+                if res.stdout and len(res.stdout) > 100:
+                    img_arr = np.frombuffer(res.stdout, np.uint8)
+                    screen_img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                    template_img = cv2.imread(tpl_7days, cv2.IMREAD_COLOR)
+                    if screen_img is not None and template_img is not None:
+                        result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                        if max_val >= 0.65:
+                            h, w = template_img.shape[:2]
+                            cx = max_loc[0] + w // 2
+                            cy = max_loc[1] + h // 2
+                            self._log(f"  📌 [이미지 인식] '7일간.png' 발견 (일치율: {max_val:.2f}) -> 좌표 탭: ({cx}, {cy})")
+                            subprocess.run(["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)], capture_output=True, timeout=3)
+                            time.sleep(2)
+            except Exception as e:
+                self._log(f"  ⚠ 7일간.png 이미지 인식 예외: {e}")
+
         # 2. 설정 버튼 발견하면 클릭 (3초 대기)
         setting_xpaths = [
             '//android.widget.ImageView[@content-desc="설정"]',
@@ -677,7 +720,29 @@ class NaverWorker:
                     except Exception as e:
                         self._log(f"  ⚠ ADB input tap 예외: {e}")
 
-                time.sleep(3)
+                time.sleep(1.5)
+
+                # 아이디 클릭 후 팝업(android:id/message) 감지 시 확인 버튼(android:id/button1) 클릭
+                msg_xpaths = [
+                    '//android.widget.TextView[@resource-id="android:id/message"]',
+                    '//*[@resource-id="android:id/message"]',
+                ]
+                btn1_xpaths = [
+                    '//android.widget.Button[@resource-id="android:id/button1"]',
+                    '//*[@resource-id="android:id/button1"]',
+                ]
+                for msg_xpath in msg_xpaths:
+                    if ah.element_exists(self.driver, msg_xpath, timeout=2):
+                        self._log("  📌 [단계 3.2] 알림 메시지 팝업 감지 (android:id/message) -> 확인 버튼(button1) 클릭")
+                        for btn_xpath in btn1_xpaths:
+                            if ah.element_exists(self.driver, btn_xpath, timeout=3):
+                                ah.wait_and_click(self.driver, btn_xpath, timeout=3, log_callback=self._log)
+                                self._log("  ✅ 확인 버튼(button1) 클릭 완료")
+                                time.sleep(2)
+                                break
+                        break
+
+                time.sleep(1.5)
 
                 # 클릭 후 '로그인 중' 상태 최종 검증
                 verified = False
@@ -738,63 +803,79 @@ class NaverWorker:
 
 
     def _dismiss_hide_popup(self, max_count: int = 2):
-
-        """'하루 동안 보지 않기' 팝업 반복 처리"""
-
+        """'하루 동안 보지 않기' / '7일간 보지 않기' 팝업 반복 처리 (XPath 및 7일간.png 이미지 인식)"""
+        popup_xpaths = [
+            '//android.widget.Button[@text="7일간 보지 않기"]',
+            '//android.widget.Button[@text="하루 동안 보지 않기"]',
+            '//android.widget.Button[contains(@text, "7일")]',
+            '//*[contains(@text, "7일간 보지 않기")]',
+            '//*[contains(@text, "7일간 보이지 않기")]',
+            '//*[contains(@text, "7일 동안 보지 않기")]',
+            '//*[contains(@text, "하루 동안 보지 않기")]',
+        ]
         for i in range(max_count):
+            dismissed = False
+            for xpath in popup_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=2):
+                    self._log(f"📌 팝업 감지 ({xpath[:30]}) → 클릭 (회차 {i+1})")
+                    ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+                    time.sleep(2)
+                    dismissed = True
+                    break
 
-            if ah.element_exists(self.driver, HIDE_BTN_XPATH, timeout=5):
+            # 7일간.png 이미지 템플릿 매칭 검사
+            tpl_7days = os.path.join(os.path.dirname(__file__), "7일간.png")
+            if not dismissed and os.path.exists(tpl_7days):
+                try:
+                    import cv2
+                    import numpy as np
 
-                self._log(f"📌 '하루 동안 보지 않기' 팝업 감지 → 클릭 (회차 {i+1})")
+                    res = subprocess.run(["adb", "-s", self.device_id, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
+                    if res.stdout and len(res.stdout) > 100:
+                        img_arr = np.frombuffer(res.stdout, np.uint8)
+                        screen_img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                        template_img = cv2.imread(tpl_7days, cv2.IMREAD_COLOR)
+                        if screen_img is not None and template_img is not None:
+                            result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                            if max_val >= 0.65:
+                                h, w = template_img.shape[:2]
+                                cx = max_loc[0] + w // 2
+                                cy = max_loc[1] + h // 2
+                                self._log(f"📌 [이미지 인식] '7일간.png' 발견 (일치율: {max_val:.2f}) -> 좌표 탭: ({cx}, {cy})")
+                                subprocess.run(["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)], capture_output=True, timeout=3)
+                                time.sleep(2)
+                                dismissed = True
+                except Exception as e:
+                    self._log(f"  ⚠ 7일간.png 이미지 인식 예외: {e}")
 
-                ah.wait_and_click(self.driver, HIDE_BTN_XPATH, timeout=5, log_callback=self._log)
-
-                time.sleep(2)
-
-            else:
-
+            if not dismissed:
                 break
 
-
-
     def _navigate_to_delivery_mgmt(self) -> bool:
-
-        """
-
-        [단계 7~8] 설정 → 배송지 관리 화면 진입
-
-        """
+        """[단계 7~8] 설정 → 배송지 관리 화면 진입"""
+        # [단계 7 전] 사전 팝업 ('7일간 보지 않기' / '하루 동안 보지 않기') 처리
+        self._dismiss_hide_popup(max_count=2)
 
         # [단계 7] 설정 클릭
-
         self._set_status("설정 클릭")
-
-        if not ah.wait_and_click(self.driver, SETTING_XPATH, timeout=10, log_callback=self._log):
-
-            self._log("❌ 설정 버튼을 찾지 못했습니다.")
-
-            return False
+        if not ah.wait_and_click(self.driver, SETTING_XPATH, timeout=5, log_callback=self._log):
+            self._log("  ⚠ 설정 버튼 미발견 -> 팝업 재감지 시도 후 설정 버튼 재탐색...")
+            self._dismiss_hide_popup(max_count=2)
+            if not ah.wait_and_click(self.driver, SETTING_XPATH, timeout=5, log_callback=self._log):
+                self._log("❌ 설정 버튼을 찾지 못했습니다.")
+                return False
 
         time.sleep(2)
 
-
-
         # [단계 8] 배송지 관리 클릭
-
         self._set_status("배송지 관리 클릭")
-
         if not ah.wait_and_click(self.driver, DELIVERY_MGMT_XPATH, timeout=10, log_callback=self._log):
-
             self._log("❌ 배송지 관리 버튼을 찾지 못했습니다.")
-
             return False
 
-
-
         time.sleep(3)
-
         self._log("✅ 배송지 관리 화면 진입")
-
         return True
 
 
