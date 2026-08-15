@@ -7,12 +7,14 @@
   "R3CR60FENNH": {
     "selected": false,
     "remark": "01",
-    "connected": false
+    "connected": false,
+    "tethering": true
   },
   "R3CR60WE20K": {
     "selected": false,
     "remark": "19",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R3CR70M9Z5N": {
     "selected": false,
@@ -22,12 +24,14 @@
   "R3CRC0QFAQN": {
     "selected": false,
     "remark": "18",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R3CT108SA8L": {
     "selected": false,
     "remark": "20",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R3CT10D67EV": {
     "selected": false,
@@ -52,7 +56,8 @@
   "R3CW30MEWKH": {
     "selected": false,
     "remark": "17",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R3CW50A6R5K": {
     "selected": false,
@@ -77,31 +82,37 @@
   "R5CWB2TGCHF": {
     "selected": false,
     "remark": "07",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R5CX11LQE1Z": {
     "selected": false,
     "remark": "10",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R5CX11WYVKX": {
     "selected": false,
     "remark": "16",
-    "connected": false
+    "connected": false,
+    "tethering": false
   },
   "R5CX349NTSF": {
     "selected": false,
     "remark": "02",
-    "connected": false
+    "connected": false,
+    "tethering": true
   },
   "R5CX409P6MB": {
     "selected": false,
     "remark": "04",
-    "connected": false
+    "connected": false,
+    "tethering": true
   },
   "R3CR302DWEH": {
-    "selected": true,
+    "selected": false,
     "remark": "",
-    "connected": true
+    "connected": true,
+    "tethering": true
   }
 }

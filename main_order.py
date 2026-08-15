@@ -251,43 +251,73 @@ class MainApp(tk.Tk):
 
     # ─── 기기 목록 콜백 ──────────────────────────────────────────────────────
 
+    def _update_selected_count_label(self):
+        selected_count = sum(1 for d in self.devices_data.values() if d.get("selected", False))
+        connected_count = sum(1 for d in self.devices_data.values() if d.get("connected", False))
+        if hasattr(self, "dev_header_label"):
+            self.dev_header_label.config(
+                text=f"📱 기기 선택  ({connected_count}대 연결 / {selected_count}대 선택)"
+            )
+        if hasattr(self, "select_all_var"):
+            all_selected = (
+                all(info.get("selected", False) for info in self.devices_data.values())
+                if self.devices_data else False
+            )
+            self.select_all_var.set(all_selected)
+
     def _on_select_all_toggled(self):
         is_selected = self.select_all_var.get()
         for did in self.devices_data:
             self.devices_data[did]["selected"] = is_selected
+            if hasattr(self, "device_check_vars") and did in self.device_check_vars:
+                self.device_check_vars[did].set(is_selected)
         self._save_devices_config()
-        self._draw_device_list()
-        if not self.running:
-            self._rebuild_device_panels()
+        self._update_selected_count_label()
 
     def _on_device_select_toggled(self, device_id: str, is_selected: bool):
         if device_id in self.devices_data:
             self.devices_data[device_id]["selected"] = is_selected
         self._save_devices_config()
+        self._update_selected_count_label()
+
+    def _toggle_remark_sort(self):
+        self.sort_desc = not getattr(self, "sort_desc", False)
         self._draw_device_list()
-        if not self.running:
-            self._rebuild_device_panels()
+
+    def _remark_sort_key(self, item):
+        did, info = item
+        remark = str(info.get("remark", "")).strip()
+        if not remark:
+            return (2, 999999, did)
+        try:
+            return (0, int(remark), did)
+        except ValueError:
+            return (1, remark.lower(), did)
 
     def _on_remark_changed(self, device_id: str, remark: str):
         if device_id in self.devices_data:
             if self.devices_data[device_id].get("remark") != remark:
                 self.devices_data[device_id]["remark"] = remark
                 self._save_devices_config()
-                if not self.running:
-                    self._rebuild_device_panels()
+                self._draw_device_list()
+
+    def _on_tethering_toggled(self, device_id: str, is_tethering: bool):
+        if device_id in self.devices_data:
+            self.devices_data[device_id]["tethering"] = is_tethering
+        self._save_devices_config()
 
     def _draw_device_list(self):
-        """기기 목록 UI 갱신"""
+        """기기 목록 UI 갱신 (비고 메모 오름차순/내림차순 정렬)"""
         for w in self.scroll_frame.scrollable_frame.winfo_children():
             w.destroy()
 
+        self.device_check_vars = {}
+
+        is_desc = getattr(self, "sort_desc", False)
         sorted_devices = sorted(
             self.devices_data.items(),
-            key=lambda item: (
-                not item[1].get("connected", False),   # 연결된 기기 먼저
-                not item[1].get("selected", False),    # 선택된 기기 먼저
-                item[0]                                 # 기기 ID 알파벳순
-            )
+            key=self._remark_sort_key,
+            reverse=is_desc
         )
 
         selected_count = sum(1 for d in self.devices_data.values() if d.get("selected", False))
@@ -317,6 +347,7 @@ class MainApp(tk.Tk):
 
             # 체크박스
             var = tk.BooleanVar(value=is_selected)
+            self.device_check_vars[did] = var
             chk = tk.Checkbutton(
                 row_frame, variable=var, bg=row_bg, activebackground=row_bg,
                 selectcolor="#ffffff",
@@ -356,6 +387,17 @@ class MainApp(tk.Tk):
                 row_frame, text=status_text, fg=status_color, bg=row_bg,
                 font=("Segoe UI", 9), width=7, anchor="center"
             ).pack(side=tk.LEFT)
+
+            # 테더링 여부 체크박스 (시안/스카이블루 고대비 색상 적용)
+            tether_var = tk.BooleanVar(value=info.get("tethering", True))
+            tether_chk = tk.Checkbutton(
+                row_frame, text="테더링", variable=tether_var, bg=row_bg, fg="#38bdf8",
+                activebackground=row_bg, activeforeground="#38bdf8",
+                selectcolor="#ffffff", font=("Segoe UI", 9, "bold"),
+                state=tk.DISABLED if is_running else tk.NORMAL,
+                command=lambda d=did, v=tether_var: self._on_tethering_toggled(d, v.get())
+            )
+            tether_chk.pack(side=tk.LEFT, padx=(4, 6))
 
             # 비고 입력
             remark_var = tk.StringVar(value=info.get("remark", ""))
@@ -498,8 +540,11 @@ class MainApp(tk.Tk):
                  font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
         tk.Label(col_hdr, text="상태", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
                  font=("Segoe UI", 9, "bold"), width=7, anchor="center").pack(side=tk.LEFT)
-        tk.Label(col_hdr, text="비고", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-                 font=("Segoe UI", 9, "bold"), anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sort_icon = " ▼" if getattr(self, "sort_desc", False) else " ▲"
+        lbl_remark = tk.Label(col_hdr, text=f"비고{sort_icon}", fg=CLR_PRIMARY, bg=CLR_SURFACE,
+                              font=("Segoe UI", 9, "bold"), cursor="hand2", anchor="w")
+        lbl_remark.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        lbl_remark.bind("<Button-1>", lambda e: self._toggle_remark_sort())
 
         tk.Frame(self.dev_list_frame, bg=CLR_BORDER, height=1).pack(fill=tk.X)
 
@@ -856,9 +901,9 @@ class MainApp(tk.Tk):
             time.sleep(2.5)
             tree = get_ui_nodes("ui_tether_direct.xml")
 
-        # Step 3: 모바일 핫스팟 스위치 확실한 ON 클릭 (최대 3회 재시도)
-        for attempt in range(1, 4):
-            if tree is None:
+        # Step 3: 모바일 핫스팟 스위치 확실한 ON 클릭 (활성화될 때까지 최대 10회 반복 체크)
+        for attempt in range(1, 11):
+            if tree is None or attempt > 1:
                 tree = get_ui_nodes(f"ui_tether_retry{attempt}.xml")
 
             switch_node = None
@@ -887,22 +932,22 @@ class MainApp(tk.Tk):
 
             # 이미 활성화(checked="true") 상태인지 체크
             if switch_node is not None and switch_node.attrib.get('checked') == 'true':
-                self._on_worker_log(did, "✅ 모바일 핫스팟이 이미 '켜짐(활성화)' 상태입니다.")
+                self._on_worker_log(did, f"✅ 모바일 핫스팟 활성화(ON) 감지 완료! ({attempt}회차)")
                 return True
 
             # 스위치 탭 수행
             if switch_node is not None:
                 center = get_center(switch_node)
                 if center:
-                    tap_center(center[0], center[1], f"핫스팟 스위치 ON 탭 ({attempt}/3)")
+                    tap_center(center[0], center[1], f"핫스팟 스위치 ON 탭 ({attempt}/10)")
                 else:
-                    tap_center(912, 381, f"핫스팟 스위치 우측 좌표 탭 ({attempt}/3)")
+                    tap_center(912, 381, f"핫스팟 스위치 우측 좌표 탭 ({attempt}/10)")
             elif title_node is not None:
                 center = get_center(title_node)
                 cy = center[1] if center else 381
-                tap_center(912, cy, f"핫스팟 제목 우측 스위치 영역 탭 ({attempt}/3)")
+                tap_center(912, cy, f"핫스팟 제목 우측 스위치 영역 탭 ({attempt}/10)")
             else:
-                tap_center(912, 381, f"핫스팟 스위치 표준 좌표 탭 ({attempt}/3)")
+                tap_center(912, 381, f"핫스팟 스위치 표준 좌표 탭 ({attempt}/10)")
 
             time.sleep(1.5)
 
@@ -920,19 +965,36 @@ class MainApp(tk.Tk):
                             break
 
             # 탭 후 활성화 여부 다시 재검증
-            tree = get_ui_nodes(f"ui_verify{attempt}.xml")
-            if tree is not None:
-                for node in tree.iter('node'):
+            verify_tree = get_ui_nodes(f"ui_verify{attempt}.xml")
+            if verify_tree is not None:
+                for node in verify_tree.iter('node'):
                     desc = node.attrib.get('content-desc', '')
                     res_id = node.attrib.get('resource-id', '')
                     checked = node.attrib.get('checked', '')
                     if (desc == "모바일 핫스팟" or "switch_widget" in res_id) and checked == 'true':
-                        self._on_worker_log(did, "✅ 모바일 핫스팟 켜기 성공!")
+                        self._on_worker_log(did, f"✅ 모바일 핫스팟 켜기 성공! ({attempt}회차)")
                         return True
 
         self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")
         subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"],
                        capture_output=True, timeout=5)
+        return True
+
+    def _enable_wifi_macro(self, did: str) -> bool:
+        """테더링 미체크 설비: 핫스팟 종료 및 Wi-Fi 활성화"""
+        self._on_worker_log(did, "🏠 홈 화면 이동 및 테더링 중지...")
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "3"], capture_output=True, timeout=3)
+        
+        # 핫스팟 종료
+        subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "stop-tethering"], capture_output=True, timeout=5)
+        time.sleep(1.0)
+        
+        # Wi-Fi 활성화
+        self._on_worker_log(did, "📶 Wi-Fi 활성화 (svc wifi enable)...")
+        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "enable"], capture_output=True, timeout=5)
+        time.sleep(2.0)
         return True
 
     def _reboot_and_hotspot(self, did):
@@ -959,19 +1021,25 @@ class MainApp(tk.Tk):
                 self._on_worker_status(did, "부팅 시간초과")
                 return
                 
-            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 타 부팅 프로그램 작업 완료 대기 (60초)...")
-            time.sleep(60) # 부팅 후 1분(60초) 대기
+            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 타 부팅 프로그램 작업 완료 대기 (75초)...")
+            time.sleep(75) # 부팅 후 75초 대기
             
-            self._on_worker_log(did, "📡 설정 매크로 방식으로 핫스팟 활성화 시작 (갤럭시 S9~S25)...")
-            self._on_worker_status(did, "핫스팟 매크로 실행")
-            
-            self._enable_samsung_hotspot_macro(did)
-            
-            self._on_worker_log(did, "✅ 핫스팟 매크로 실행 완료!")
-            self._on_worker_status(did, "핫스팟 완료")
+            is_tethering = self.devices_data.get(did, {}).get("tethering", True)
+            if is_tethering:
+                self._on_worker_log(did, "📡 [테더링 체크됨] 설정 매크로 방식으로 핫스팟 활성화 시작...")
+                self._on_worker_status(did, "핫스팟 매크로 실행")
+                self._enable_samsung_hotspot_macro(did)
+                self._on_worker_log(did, "✅ 핫스팟 매크로 실행 완료!")
+                self._on_worker_status(did, "핫스팟 완료")
+            else:
+                self._on_worker_log(did, "📶 [테더링 미체크] Wi-Fi 활성화 실행...")
+                self._on_worker_status(did, "Wi-Fi 활성화")
+                self._enable_wifi_macro(did)
+                self._on_worker_log(did, "✅ Wi-Fi 활성화 완료!")
+                self._on_worker_status(did, "Wi-Fi 완료")
             
         except Exception as e:
-            self._on_worker_log(did, f"❌ 재부팅/핫스팟 예외: {e}")
+            self._on_worker_log(did, f"❌ 재부팅 예외: {e}")
             self._on_worker_status(did, "예외 발생")
 
     def _reboot_selected_devices(self):
