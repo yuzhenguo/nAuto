@@ -332,38 +332,69 @@ class NaverOrderWorker:
             self._log("  ❌ [단계 3.2] 로그인 아이디 관리 링크 미발견 -> 계정 전환 실패")
             return False
 
+        # 3.5. 오타 보정 로직: 화면에 보이는 아이디들과 비교해서 가장 비슷한 아이디(actual_login_id)로 보정
+        actual_login_id = login_id
+        try:
+            id_els = self.driver.find_elements(By.XPATH, '//*[@resource-id="com.nhn.android.search:id/idText"]')
+            available_ids = []
+            for el in id_els:
+                try:
+                    txt = el.get_attribute("text")
+                    if txt:
+                        available_ids.append(txt)
+                except Exception:
+                    pass
+            
+            if available_ids:
+                if login_id in available_ids:
+                    actual_login_id = login_id
+                else:
+                    import difflib
+                    matches = difflib.get_close_matches(login_id, available_ids, n=1, cutoff=0.6)
+                    if matches:
+                        actual_login_id = matches[0]
+                        self._log(f"  ℹ 아이디 오타 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
+                    else:
+                        for aid in available_ids:
+                            if aid.startswith(login_id[:4]) or login_id.startswith(aid[:4]):
+                                actual_login_id = aid
+                                self._log(f"  ℹ 아이디 접두사 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
+                                break
+        except Exception as e:
+            self._log(f"  ⚠ 아이디 목록 추출 중 예외: {e}")
+
         # 4. 아이디선택 화면에서 타겟 아이디 찾기 및 '로그인 중' 상태 확인
         already_logged_in = False
         verify_xpaths = [
-            f'//android.view.View[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
-            f'//*[contains(@content-desc, "{login_id}") and contains(@content-desc, "로그인 중")]',
+            f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "로그인 중")]',
+            f'//*[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "로그인 중")]',
         ]
         for xpath in verify_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=2):
                 already_logged_in = True
-                self._log(f"  ✅ [단계 3.2] 계정 [{login_id}] 이미 '로그인 중' 상태임")
+                self._log(f"  ✅ [단계 3.2] 계정 [{actual_login_id}] 이미 '로그인 중' 상태임")
                 break
 
         if not already_logged_in:
             target_account_xpaths = [
-                f'//android.view.View[contains(@content-desc, "{login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//*[contains(@content-desc, "{login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//android.view.View[contains(@content-desc, "{login_id}")]',
-                f'//*[contains(@content-desc, "{login_id}")]',
-                f'//*[contains(@text, "{login_id}")]',
+                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
+                f'//*[contains(@content-desc, "{actual_login_id}")]',
+                f'//*[contains(@text, "{actual_login_id}")]',
             ]
             target_el = None
             for xpath in target_account_xpaths:
                 if ah.element_exists(self.driver, xpath, timeout=4):
                     try:
                         target_el = self.driver.find_element(By.XPATH, xpath)
-                        self._log(f"  📌 아이디선택 화면에서 '{login_id}' 발견 -> 강력 클릭 진행")
+                        self._log(f"  📌 아이디선택 화면에서 '{actual_login_id}' 발견 -> 강력 클릭 진행")
                         break
                     except Exception:
                         continue
 
             if not target_el:
-                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{login_id}] 미발견 -> 작업 중지 및 로그 기록")
+                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{actual_login_id}] 미발견 -> 작업 중지 및 로그 기록")
                 return False
 
             # 클릭 전 좌표 미리 계산 (클릭 후 StaleElementReferenceException 방지)
@@ -378,7 +409,7 @@ class NaverOrderWorker:
 
             click_triggered = False
             for attempt in range(1, 3):
-                self._log(f"  👉 [단계 3.2] 로그인 아이디 [{login_id}] 클릭 시도 ({attempt}/2)")
+                self._log(f"  👉 [단계 3.2] 로그인 아이디 [{actual_login_id}] 클릭 시도 ({attempt}/2)")
                 
                 # 1. UiAutomator direct click 시도
                 try:
@@ -416,16 +447,16 @@ class NaverOrderWorker:
                         break
 
                 if verified:
-                    self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{login_id}] '로그인 중' 전환 확인 성공!")
+                    self._log(f"  ✅ [단계 3.2] 로그인 아이디 [{actual_login_id}] '로그인 중' 전환 확인 성공!")
                     break
                 else:
-                    self._log(f"  ⚠ [{login_id}] '로그인 중' 전환 미확인 -> 재시도")
+                    self._log(f"  ⚠ [{actual_login_id}] '로그인 중' 전환 미확인 -> 재시도")
                     if attempt < 2:
                         time.sleep(1)
 
             # 5. 최종 검증: 이미 로그인중이었거나 클릭 후 로그인중 상태가 검증되어야 함
             if not already_logged_in and not verified:
-                self._log(f"  ❌ [단계 3.2] 계정 [{login_id}] '로그인 중' 상태 검증 실패 -> 작업 중단 및 다음 레드로 이동")
+                self._log(f"  ❌ [단계 3.2] 계정 [{actual_login_id}] '로그인 중' 상태 검증 실패 -> 작업 중단 및 다음 레드로 이동")
                 return False
 
         # 6. 존재하면 //android.widget.ScrollView/android.view.View[1]/android.widget.Button 클릭 (2초 대기)
