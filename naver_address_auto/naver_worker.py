@@ -470,26 +470,35 @@ class NaverWorker:
 
 
 
-        # [단계 4] 스토어홈 - "하루 동안 보지 않기" 팝업 처리 (최대 2회)
-
+        # [단계 4] 스토어홈 - 팝업 처리 ('7일간 보지 않기' / '하루 동안 보지 않기' / 7일간.png) (최대 2회)
         self._dismiss_hide_popup(max_count=2)
 
-
-
-        # [단계 5] 마이쇼핑 클릭
-
+        # [단계 5] 마이쇼핑 클릭 (7일간 팝업 가림 방지)
         self._set_status("마이쇼핑 클릭")
+        my_shopping_xpaths = [
+            MY_SHOPPING_XPATH,
+            '//*[contains(@content-desc, "마이쇼핑")]',
+            '//*[contains(@text, "마이쇼핑")]',
+        ]
+        my_shopping_clicked = False
+        for attempt in range(1, 3):
+            self._dismiss_hide_popup(max_count=1)
+            for xpath in my_shopping_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    self._log("📌 마이쇼핑 버튼 발견 → 클릭")
+                    ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
+                    self._log("✅ 마이쇼핑 클릭 완료")
+                    time.sleep(4)
+                    my_shopping_clicked = True
+                    break
+            if my_shopping_clicked:
+                break
+            time.sleep(1)
 
-        if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
-
-            ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
-            
-            self._log("✅ 마이쇼핑 클릭 완료")
-            time.sleep(5)
-        else:
+        if not my_shopping_clicked:
             self._log("⚠ 마이쇼핑 버튼 미발견. 계속 진행합니다.")
-            time.sleep(3)
-            
+            time.sleep(2)
+
         self._dismiss_hide_popup(max_count=1)
         self._check_and_close_welcome_modals(step_label="6.1")
         return True
@@ -659,25 +668,67 @@ class NaverWorker:
                 break
 
         if not already_logged_in:
-            target_account_xpaths = [
-                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
-                f'//*[contains(@content-desc, "{actual_login_id}")]',
-                f'//*[contains(@text, "{actual_login_id}")]',
-            ]
             target_el = None
-            for xpath in target_account_xpaths:
-                if ah.element_exists(self.driver, xpath, timeout=4):
+            for scroll_idx in range(5):
+                # 아이디 오타/접두사 보정 재검사
+                try:
+                    id_els = self.driver.find_elements(By.XPATH, '//*[@resource-id="com.nhn.android.search:id/idText"] | //*[@content-desc]')
+                    available_ids = []
+                    for el in id_els:
+                        txt = el.text or el.get_attribute("content-desc") or ""
+                        if txt and len(txt) >= 3:
+                            available_ids.append(txt)
+
+                    if available_ids:
+                        if login_id not in available_ids:
+                            import difflib
+                            matches = difflib.get_close_matches(login_id, available_ids, n=1, cutoff=0.55)
+                            if matches:
+                                actual_login_id = matches[0]
+                                self._log(f"  ℹ 아이디 유사 보정 (스크롤 {scroll_idx+1}): '{login_id}' -> '{actual_login_id}'")
+                            else:
+                                for aid in available_ids:
+                                    if aid.startswith(login_id[:3]) or login_id.startswith(aid[:3]):
+                                        actual_login_id = aid
+                                        self._log(f"  ℹ 아이디 접두사 보정 (스크롤 {scroll_idx+1}): '{login_id}' -> '{actual_login_id}'")
+                                        break
+                except Exception:
+                    pass
+
+                target_account_xpaths = [
+                    f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                    f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
+                    f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
+                    f'//*[contains(@content-desc, "{actual_login_id}")]',
+                    f'//*[contains(@text, "{actual_login_id}")]',
+                    f'//*[@resource-id="com.nhn.android.search:id/idText" and contains(@text, "{actual_login_id[:4]}")]/ancestor-or-self::*[@clickable="true"]',
+                ]
+
+                for xpath in target_account_xpaths:
+                    if ah.element_exists(self.driver, xpath, timeout=2):
+                        try:
+                            target_el = self.driver.find_element(By.XPATH, xpath)
+                            self._log(f"  📌 아이디선택 화면에서 '{actual_login_id}' 발견 -> 강력 클릭 진행 (스크롤 {scroll_idx+1}회차)")
+                            break
+                        except Exception:
+                            continue
+
+                if target_el:
+                    break
+
+                if scroll_idx < 4:
+                    self._log(f"  📜 타겟 아이디 [{actual_login_id}] 탐색 중... 목록 하단 스크롤 ({scroll_idx+1}/4)")
                     try:
-                        target_el = self.driver.find_element(By.XPATH, xpath)
-                        self._log(f"  📌 아이디선택 화면에서 '{actual_login_id}' 발견 -> 강력 클릭 진행")
-                        break
+                        ah.swipe_up(self.driver)
                     except Exception:
-                        continue
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "swipe", "500", "1500", "500", "800", "300"],
+                            capture_output=True, timeout=5
+                        )
+                    time.sleep(1.5)
 
             if not target_el:
-                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{actual_login_id}] 미발견 -> 작업 중지 및 로그 기록")
+                self._log(f"  ❌ [단계 3.2] 로그인 아이디 [{actual_login_id}] 5회 스크롤 후에도 미발견 -> 계정 전환 실패")
                 return False
 
             # 클릭 전 좌표 미리 계산 (클릭 후 StaleElementReferenceException 방지)
@@ -854,23 +905,84 @@ class NaverWorker:
 
     def _navigate_to_delivery_mgmt(self) -> bool:
         """[단계 7~8] 설정 → 배송지 관리 화면 진입"""
-        # [단계 7 전] 사전 팝업 ('7일간 보지 않기' / '하루 동안 보지 않기') 처리
-        self._dismiss_hide_popup(max_count=2)
+        # [단계 7 전] "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 사전 팝업 감지 및 클릭
+        self._dismiss_hide_popup(max_count=3)
 
-        # [단계 7] 설정 클릭
+        # [단계 7] 설정 클릭 (7일간 팝업 재감지 및 다중 후보 XPath 적용)
         self._set_status("설정 클릭")
-        if not ah.wait_and_click(self.driver, SETTING_XPATH, timeout=5, log_callback=self._log):
-            self._log("  ⚠ 설정 버튼 미발견 -> 팝업 재감지 시도 후 설정 버튼 재탐색...")
-            self._dismiss_hide_popup(max_count=2)
-            if not ah.wait_and_click(self.driver, SETTING_XPATH, timeout=5, log_callback=self._log):
-                self._log("❌ 설정 버튼을 찾지 못했습니다.")
-                return False
+        setting_clicked = False
 
-        time.sleep(2)
+        setting_xpaths = [
+            '//android.view.View[@content-desc="설정"]',
+            '//*[@content-desc="설정"]',
+            '//android.widget.ImageView[@content-desc="설정"]',
+            '//android.view.ViewGroup[@content-desc="설정"]',
+            '//android.view.View[contains(@content-desc, "설정")]',
+            '//*[contains(@content-desc, "설정")]',
+            '//android.widget.Button[@text="설정"]',
+            '//android.view.View[@text="설정"]',
+        ]
+
+        for attempt in range(1, 4):
+            # 매 시도마다 7일간 보지 않기 / 7일간.png 팝업 체크
+            self._dismiss_hide_popup(max_count=1)
+
+            for xpath in setting_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    self._log(f"📌 설정 버튼 발견 ({xpath[:35]}) → 클릭 (시도 {attempt}/3)")
+                    if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
+                        setting_clicked = True
+                        time.sleep(2.5)
+                        break
+
+            if setting_clicked:
+                break
+
+            self._log(f"  ⚠ 설정 버튼 미발견 ({attempt}/3) -> 7일간 팝업 재감지 후 재시도...")
+            time.sleep(1.5)
+
+        if not setting_clicked:
+            self._log("  🔄 설정 버튼 미발견 -> 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
+            ah.go_to_main_page(self.driver, self._log)
+            time.sleep(3)
+            self._dismiss_hide_popup(max_count=2)
+
+            if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+
+            self._dismiss_hide_popup(max_count=2)
+            if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+
+            self._dismiss_hide_popup(max_count=2)
+            for xpath in setting_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
+                        setting_clicked = True
+                        time.sleep(2.5)
+                        break
+
+        if not setting_clicked:
+            self._log("❌ 설정 버튼을 최종적으로 찾지 못했습니다.")
+            return False
 
         # [단계 8] 배송지 관리 클릭
         self._set_status("배송지 관리 클릭")
-        if not ah.wait_and_click(self.driver, DELIVERY_MGMT_XPATH, timeout=10, log_callback=self._log):
+        delivery_mgmt_xpaths = [
+            DELIVERY_MGMT_XPATH,
+            '//*[contains(@text, "배송지 관리")]',
+            '//*[contains(@content-desc, "배송지 관리")]',
+        ]
+        mgmt_clicked = False
+        for xpath in delivery_mgmt_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=5):
+                if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
+                    mgmt_clicked = True
+                    break
+
+        if not mgmt_clicked:
             self._log("❌ 배송지 관리 버튼을 찾지 못했습니다.")
             return False
 
