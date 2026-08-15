@@ -159,6 +159,38 @@ class ScrollableFrame(tk.Frame):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
+def check_image_exists_on_device(did: str, template_path: str, threshold: float = 0.65) -> bool:
+    """ADB 스크린샷 캡처 후 template_path(활성.png)가 화면상에 존재하는지 OpenCV 템플릿 매칭 검사"""
+    if not os.path.exists(template_path):
+        return False
+    try:
+        import cv2
+        import numpy as np
+
+        res = subprocess.run(["adb", "-s", did, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
+        if not res.stdout or len(res.stdout) < 100:
+            return False
+
+        img_array = np.frombuffer(res.stdout, np.uint8)
+        screen_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if screen_img is None:
+            return False
+
+        template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
+        if template_img is None:
+            return False
+
+        result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(result)
+
+        if max_val >= threshold:
+            print(f"[ImageMatch:{did}] 템플릿 '{os.path.basename(template_path)}' 인식 성공 (일치율: {max_val:.2f})")
+            return True
+    except Exception as e:
+        print(f"[ImageMatch:{did}] 이미지 인식 예외: {e}")
+    return False
+
+
 # ─── 메인 앱 ──────────────────────────────────────────────────────────────────
 
 class MainApp(tk.Tk):
@@ -901,8 +933,17 @@ class MainApp(tk.Tk):
             time.sleep(2.5)
             tree = get_ui_nodes("ui_tether_direct.xml")
 
-        # Step 3: 모바일 핫스팟 스위치 확실한 ON 클릭 (활성화될 때까지 최대 10회 반복 체크)
+        # Step 3: 모바일 핫스팟 스위치 ON 클릭 (활성.png 이미지 인식 시 즉시 중단 후 다음 단계 진입)
+        tpl_path = os.path.join(os.path.dirname(__file__), "활성.png")
+        if not os.path.exists(tpl_path):
+            tpl_path = os.path.join(os.path.dirname(__file__), "naver_address_auto", "활성.png")
+
         for attempt in range(1, 11):
+            # 이미지 인식 검사: 활성.png 이미지가 발견되면 즉시 종료 및 다음 단계 진입
+            if check_image_exists_on_device(did, tpl_path, threshold=0.65):
+                self._on_worker_log(did, f"✅ [이미지 인식] '활성.png' 상태 감지 완료! ({attempt}회차) -> 다음 단계 진행")
+                return True
+
             if tree is None or attempt > 1:
                 tree = get_ui_nodes(f"ui_tether_retry{attempt}.xml")
 
@@ -932,7 +973,7 @@ class MainApp(tk.Tk):
 
             # 이미 활성화(checked="true") 상태인지 체크
             if switch_node is not None and switch_node.attrib.get('checked') == 'true':
-                self._on_worker_log(did, f"✅ 모바일 핫스팟 활성화(ON) 감지 완료! ({attempt}회차)")
+                self._on_worker_log(did, f"✅ [XML 검증] 모바일 핫스팟 ON 감지 완료! ({attempt}회차) -> 다음 단계 진행")
                 return True
 
             # 스위치 탭 수행
@@ -964,6 +1005,11 @@ class MainApp(tk.Tk):
                             time.sleep(1.5)
                             break
 
+            # 탭 수행 후 이미지 인식 재확인
+            if check_image_exists_on_device(did, tpl_path, threshold=0.65):
+                self._on_worker_log(did, f"✅ [이미지 인식] 탭 후 '활성.png' 감지 성공! ({attempt}회차) -> 다음 단계 진행")
+                return True
+
             # 탭 후 활성화 여부 다시 재검증
             verify_tree = get_ui_nodes(f"ui_verify{attempt}.xml")
             if verify_tree is not None:
@@ -972,7 +1018,7 @@ class MainApp(tk.Tk):
                     res_id = node.attrib.get('resource-id', '')
                     checked = node.attrib.get('checked', '')
                     if (desc == "모바일 핫스팟" or "switch_widget" in res_id) and checked == 'true':
-                        self._on_worker_log(did, f"✅ 모바일 핫스팟 켜기 성공! ({attempt}회차)")
+                        self._on_worker_log(did, f"✅ [XML 검증] 핫스팟 켜기 성공! ({attempt}회차) -> 다음 단계 진행")
                         return True
 
         self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")

@@ -730,6 +730,37 @@ class MainApp(tk.Tk):
         self.after(0, _update)
 
     def _on_worker_status(self, device_id: str, status: str):
+        def check_image_exists_on_device(did: str, template_path: str, threshold: float = 0.65) -> bool:
+            """ADB 스크린샷 캡처 후 template_path(활성.png)가 화면상에 존재하는지 OpenCV 템플릿 매칭 검사"""
+            if not os.path.exists(template_path):
+                return False
+            try:
+                import cv2
+                import numpy as np
+
+                res = subprocess.run(["adb", "-s", did, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
+                if not res.stdout or len(res.stdout) < 100:
+                    return False
+
+                img_array = np.frombuffer(res.stdout, np.uint8)
+                screen_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if screen_img is None:
+                    return False
+
+                template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
+                if template_img is None:
+                    return False
+
+                result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(result)
+
+                if max_val >= threshold:
+                    print(f"[ImageMatch:{did}] 템플릿 '{os.path.basename(template_path)}' 인식 성공 (일치율: {max_val:.2f})")
+                    return True
+            except Exception as e:
+                print(f"[ImageMatch:{did}] 이미지 인식 예외: {e}")
+            return False
+
         def _update():
             if device_id in self.device_panels:
                 self.device_panels[device_id].set_status(status)
@@ -756,55 +787,51 @@ class MainApp(tk.Tk):
             messagebox.showerror("오류", "ADB 명령 타임아웃")
 
     def _enable_samsung_hotspot_macro(self, did: str) -> bool:
-        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화 (부팅 프로그램 대기 후 홈 이동 & 설정 진입)"""
-        import xml.etree.ElementTree as ET
-        import re
+        """삼성 갤럭시 (S9 ~ S25) 설정 앱 매크로 방식 핫스팟 활성화"""
+        self._on_worker_log(did, "🔓 화면 깨우기 및 Wi-Fi 비활성화...")
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=3)
+        time.sleep(1.0)
 
-        def get_ui_nodes(filename="ui_hotspot.xml"):
+        # Step 1: 설정 앱 메인 진입 (새 윈도우 생성)
+        self._on_worker_log(did, "⚙️ 설정 앱 메인 진입...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "force-stop", "com.android.settings"], capture_output=True, timeout=3)
+        time.sleep(0.5)
+        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"], capture_output=True, timeout=5)
+        time.sleep(2.5)
+
+        def get_center(node):
+            bounds = node.attrib.get('bounds', '')
+            if bounds and bounds.startswith('[') and '][' in bounds:
+                try:
+                    parts = bounds.replace('[', '').replace(']', ',').split(',')
+                    x1, y1, x2, y2 = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+                    return ((x1 + x2) // 2, (y1 + y2) // 2)
+                except Exception:
+                    pass
+            return None
+
+        def tap_center(cx, cy, msg=""):
+            self._on_worker_log(did, f"👉 {msg} -> 좌표 탭: ({cx}, {cy})")
+            subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)], capture_output=True, timeout=3)
+
+        def get_ui_nodes(out_filename="ui_dump.xml"):
+            local_dump_path = os.path.join(os.path.dirname(__file__), out_filename)
             try:
-                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", f"/sdcard/{filename}"],
-                               capture_output=True, timeout=10)
-                res = subprocess.run(["adb", "-s", did, "shell", "cat", f"/sdcard/{filename}"],
-                                     capture_output=True, text=True, timeout=5)
-                xml_str = (res.stdout or "").strip()
-                if xml_str and "<hierarchy" in xml_str:
-                    return ET.fromstring(xml_str)
+                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], capture_output=True, timeout=8)
+                time.sleep(0.5)
+                subprocess.run(["adb", "-s", did, "pull", "/sdcard/window_dump.xml", local_dump_path], capture_output=True, timeout=5)
+                if os.path.exists(local_dump_path):
+                    import xml.etree.ElementTree as ET
+                    return ET.parse(local_dump_path).getroot()
             except Exception as e:
                 self._on_worker_log(did, f"  ⚠ UI 덤프 예외: {e}")
             return None
 
-        def get_center(node):
-            bounds = node.attrib.get('bounds', '')
-            m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
-            if m:
-                x1, y1, x2, y2 = map(int, m.groups())
-                return (x1 + x2) // 2, (y1 + y2) // 2
-            return None
+        tree = get_ui_nodes("ui_main.py.xml")
 
-        def tap_center(cx, cy, label=""):
-            self._on_worker_log(did, f"  👆 [매크로 탭] {label} ({cx}, {cy})")
-            subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
-                           capture_output=True, timeout=5)
-
-        # 0. 화면 깨우기, HOME 키 이동 및 Wi-Fi 비활성화 (타 시작 앱 이탈)
-        self._on_worker_log(did, "🏠 홈 화면 이동, 화면 깨우기 및 Wi-Fi 비활성화...")
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "3"], capture_output=True, timeout=3) # HOME 키
-        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
-        time.sleep(2.0)
-
-        # 1. 설정 앱 완전 종료 후 메인 새로 실행
-        self._on_worker_log(did, "⚙️ 설정 앱 완전 종료 후 메인 새로 진입...")
-        subprocess.run(["adb", "-s", did, "shell", "am", "force-stop", "com.android.settings"], capture_output=True, timeout=3)
-        time.sleep(0.5)
-        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"],
-                       capture_output=True, timeout=5)
-        time.sleep(2.5)
-
-        tree = get_ui_nodes("ui_main.xml")
-
-        # Step 1: 설정 메인 화면에서 '연결' 탐색 및 클릭
+        # 메인 설정 화면에서 '연결' 메뉴 클릭
         if tree is not None:
             conn_target = None
             for node in tree.iter('node'):
@@ -854,8 +881,17 @@ class MainApp(tk.Tk):
             time.sleep(2.5)
             tree = get_ui_nodes("ui_tether_direct.xml")
 
-        # Step 3: 모바일 핫스팟 스위치 확실한 ON 클릭 (활성화될 때까지 최대 10회 반복 체크)
+        # Step 3: 모바일 핫스팟 스위치 ON 클릭 (활성.png 이미지 인식 시 즉시 중단 후 다음 단계 진입)
+        tpl_path = os.path.join(os.path.dirname(__file__), "활성.png")
+        if not os.path.exists(tpl_path):
+            tpl_path = "활성.png"
+
         for attempt in range(1, 11):
+            # 이미지 인식 검사: 활성.png 이미지가 발견되면 즉시 종료 및 다음 단계 진입
+            if check_image_exists_on_device(did, tpl_path, threshold=0.65):
+                self._on_worker_log(did, f"✅ [이미지 인식] '활성.png' 상태 감지 완료! ({attempt}회차) -> 다음 단계 진행")
+                return True
+
             if tree is None or attempt > 1:
                 tree = get_ui_nodes(f"ui_tether_retry{attempt}.xml")
 
@@ -885,7 +921,7 @@ class MainApp(tk.Tk):
 
             # 이미 활성화(checked="true") 상태인지 체크
             if switch_node is not None and switch_node.attrib.get('checked') == 'true':
-                self._on_worker_log(did, f"✅ 모바일 핫스팟 활성화(ON) 감지 완료! ({attempt}회차)")
+                self._on_worker_log(did, f"✅ [XML 검증] 모바일 핫스팟 ON 감지 완료! ({attempt}회차) -> 다음 단계 진행")
                 return True
 
             # 스위치 탭 수행
