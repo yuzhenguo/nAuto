@@ -758,7 +758,7 @@ class MainApp(tk.Tk):
             messagebox.showerror("오류", "ADB 명령 타임아웃")
 
     def _enable_samsung_hotspot_macro(self, did: str) -> bool:
-        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화 (스위치 클릭 100% 보장)"""
+        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화 (부팅 프로그램 대기 후 홈 이동 & 설정 진입)"""
         import xml.etree.ElementTree as ET
         import re
 
@@ -788,18 +788,21 @@ class MainApp(tk.Tk):
             subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
                            capture_output=True, timeout=5)
 
-        # 0. 화면 깨우기 & UNLOCK & Wi-Fi 비활성화
-        self._on_worker_log(did, "🔓 화면 깨우기 및 Wi-Fi 비활성화...")
+        # 0. 화면 깨우기, HOME 키 이동 및 Wi-Fi 비활성화 (타 시작 앱 이탈)
+        self._on_worker_log(did, "🏠 홈 화면 이동, 화면 깨우기 및 Wi-Fi 비활성화...")
         subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
         subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "3"], capture_output=True, timeout=3) # HOME 키
         subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
-        time.sleep(1.5)
+        time.sleep(2.0)
 
-        # 1. 설정 앱 실행
-        self._on_worker_log(did, "⚙️ 설정 앱 메인 실행...")
+        # 1. 설정 앱 완전 종료 후 메인 새로 실행
+        self._on_worker_log(did, "⚙️ 설정 앱 완전 종료 후 메인 새로 진입...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "force-stop", "com.android.settings"], capture_output=True, timeout=3)
+        time.sleep(0.5)
         subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"],
                        capture_output=True, timeout=5)
-        time.sleep(2.0)
+        time.sleep(2.5)
 
         tree = get_ui_nodes("ui_main.xml")
 
@@ -956,8 +959,8 @@ class MainApp(tk.Tk):
                 self._on_worker_status(did, "부팅 시간초과")
                 return
                 
-            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 시스템 안정화 10초 대기...")
-            time.sleep(10)
+            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 타 부팅 프로그램 작업 완료 대기 (60초)...")
+            time.sleep(60) # 부팅 후 1분(60초) 대기
             
             self._on_worker_log(did, "📡 설정 매크로 방식으로 핫스팟 활성화 시작 (갤럭시 S9~S25)...")
             self._on_worker_status(did, "핫스팟 매크로 실행")
