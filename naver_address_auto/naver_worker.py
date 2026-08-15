@@ -1037,6 +1037,12 @@ class NaverWorker:
                 self._log("✅ 모든 주소 처리 완료")
 
                 break
+                
+            # 폰 ID(기기 ID) 명시적 확인 (자신의 기기에 할당된 작업만 수행)
+            if row.device_id != self.device_id:
+                self._log(f"⏭ [건너뜀] 기기 ID 불일치 (내 기기: {self.device_id}, 할당: {row.device_id})")
+                self.address_manager.mark_failed(row.row_index)
+                continue
 
 
 
@@ -1151,6 +1157,18 @@ class NaverWorker:
         배송지 1건 등록 전체 흐름 (단계 9~22)
 
         """
+
+        # 계정 전환 및 화면 진입
+        if getattr(self, 'current_naver_id', None) != row.naver_id or not getattr(self, 'is_initialized', False):
+            self._log(f"🔄 계정 전환/초기화 (현재: {getattr(self, 'current_naver_id', '없음')} -> 대상: {row.naver_id})")
+            if not self._go_main_and_enter_store(login_id=row.naver_id):
+                self._log("❌ 메인 이동 및 계정 전환 실패")
+                return False
+            if not self._navigate_to_delivery_mgmt():
+                self._log("❌ 배송지 관리 화면 진입 실패")
+                return False
+            self.current_naver_id = row.naver_id
+            self.is_initialized = True
 
         # [단계 9] 9열(주소초기화) 값을 최초 1회만 확인하여 기존 배송지 삭제 여부 결정
 
