@@ -711,105 +711,176 @@ class MainApp(tk.Tk):
             messagebox.showerror("오류", "ADB 명령 타임아웃")
 
     def _enable_samsung_hotspot_macro(self, did: str) -> bool:
-        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화"""
+        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화 (스위치 클릭 100% 보장)"""
         import xml.etree.ElementTree as ET
         import re
 
-        def get_ui_nodes():
+        def get_ui_nodes(filename="ui_hotspot.xml"):
             try:
-                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", "/sdcard/ui_hotspot.xml"],
+                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", f"/sdcard/{filename}"],
                                capture_output=True, timeout=10)
-                res = subprocess.run(["adb", "-s", did, "shell", "cat", "/sdcard/ui_hotspot.xml"],
+                res = subprocess.run(["adb", "-s", did, "shell", "cat", f"/sdcard/{filename}"],
                                      capture_output=True, text=True, timeout=5)
-                xml_str = res.stdout.strip()
+                xml_str = (res.stdout or "").strip()
                 if xml_str and "<hierarchy" in xml_str:
                     return ET.fromstring(xml_str)
             except Exception as e:
                 self._on_worker_log(did, f"  ⚠ UI 덤프 예외: {e}")
             return None
 
-        def click_node(node, label=""):
+        def get_center(node):
             bounds = node.attrib.get('bounds', '')
             m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
             if m:
                 x1, y1, x2, y2 = map(int, m.groups())
-                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                self._on_worker_log(did, f"  👆 [매크로 탭] {label} ({cx}, {cy})")
-                subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
-                               capture_output=True, timeout=5)
-                return True
-            return False
+                return (x1 + x2) // 2, (y1 + y2) // 2
+            return None
 
-        def find_and_click(tree, keywords, is_switch=False):
-            if tree is None:
-                return False
-            for node in tree.iter('node'):
-                text = node.attrib.get('text', '')
-                desc = node.attrib.get('content-desc', '')
-                cls = node.attrib.get('class', '')
-                checked = node.attrib.get('checked', '')
+        def tap_center(cx, cy, label=""):
+            self._on_worker_log(did, f"  👆 [매크로 탭] {label} ({cx}, {cy})")
+            subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
+                           capture_output=True, timeout=5)
 
-                if is_switch:
-                    if 'Switch' in cls or 'CompoundButton' in cls or 'switch' in node.attrib.get('resource-id', '').lower():
-                        if checked == 'true':
-                            self._on_worker_log(did, "  ℹ️ 모바일 핫스팟이 이미 '켜짐' 상태입니다.")
-                            return True
-                        return click_node(node, "핫스팟 토글 스위치")
-                else:
-                    for kw in keywords:
-                        if kw and (kw in text or kw in desc):
-                            return click_node(node, f"'{kw}' 항목")
-            return False
-
-        # 0. 화면 해제 및 Wi-Fi 사전 끄기
+        # 0. 화면 깨우기 & UNLOCK & Wi-Fi 비활성화
         self._on_worker_log(did, "🔓 화면 깨우기 및 Wi-Fi 비활성화...")
         subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
         subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
         subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
         time.sleep(1.5)
 
-        # 1차 시도: '모바일 핫스팟 및 테더링' 설정 페이지 직행 (Samsung One UI 표준 설정 인텐트)
-        self._on_worker_log(did, "⚙️ 설정 > 모바일 핫스팟 및 테더링 직행 인텐트 호출...")
-        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-a", "android.settings.TETHER_SETTINGS"],
-                       capture_output=True, timeout=5)
-        time.sleep(2.5)
-
-        tree = get_ui_nodes()
-        if tree is not None:
-            if find_and_click(tree, [], is_switch=True):
-                time.sleep(1.5)
-                pop_tree = get_ui_nodes()
-                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
-                return True
-
-            if find_and_click(tree, ["모바일 핫스팟", "Mobile Hotspot"]):
-                time.sleep(1.5)
-                pop_tree = get_ui_nodes()
-                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
-                return True
-
-        # 2차 시도: 설정 메인 -> 연결 -> 모바일 핫스팟 및 테더링 단계별 매크로 클릭 (폴백)
-        self._on_worker_log(did, "🔄 설정 앱 메인 진입 후 단계별 매크로 탐색...")
-        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-a", "android.settings.SETTINGS"],
+        # 1. 설정 앱 실행
+        self._on_worker_log(did, "⚙️ 설정 앱 메인 실행...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"],
                        capture_output=True, timeout=5)
         time.sleep(2.0)
 
-        tree_main = get_ui_nodes()
-        if find_and_click(tree_main, ["연결", "Connections"]):
-            time.sleep(2.0)
-            tree_conn = get_ui_nodes()
-            if find_and_click(tree_conn, ["모바일 핫스팟 및 테더링", "Mobile Hotspot and Tethering"]):
-                time.sleep(2.0)
-                tree_tether = get_ui_nodes()
-                if not find_and_click(tree_tether, [], is_switch=True):
-                    find_and_click(tree_tether, ["모바일 핫스팟", "Mobile Hotspot"])
-                time.sleep(1.5)
-                pop_tree = get_ui_nodes()
-                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
+        tree = get_ui_nodes("ui_main.xml")
+
+        # Step 1: 설정 메인 화면에서 '연결' 탐색 및 클릭
+        if tree is not None:
+            conn_target = None
+            for node in tree.iter('node'):
+                text = node.attrib.get('text', '')
+                res_id = node.attrib.get('resource-id', '')
+                if (text == "연결" and "title" in res_id) or ("Wi-Fi" in text and "블루투스" in text):
+                    conn_target = node
+                    break
+                if text == "연결":
+                    conn_target = node
+
+            if conn_target is not None:
+                center = get_center(conn_target)
+                if center:
+                    tap_center(center[0], center[1], "'연결' 메뉴 클릭")
+                    time.sleep(2.0)
+                    tree = get_ui_nodes("ui_conn.xml")
+
+        # Step 2: 연결 화면에서 '모바일 핫스팟 및 테더링' 탐색 및 클릭
+        if tree is not None:
+            tether_menu_target = None
+            for node in tree.iter('node'):
+                text = node.attrib.get('text', '')
+                if text == "모바일 핫스팟 및 테더링" or ("핫스팟" in text and "테더링" in text):
+                    tether_menu_target = node
+                    break
+
+            if tether_menu_target is not None:
+                center = get_center(tether_menu_target)
+                if center:
+                    tap_center(center[0], center[1], "'모바일 핫스팟 및 테더링' 메뉴 클릭")
+                    time.sleep(2.0)
+                    tree = get_ui_nodes("ui_tether.xml")
+
+        # 핫스팟 화면 진입 여부 확인 및 보조 인텐트 직행
+        has_hotspot_screen = False
+        if tree is not None:
+            for node in tree.iter('node'):
+                if node.attrib.get('text') == "모바일 핫스팟 및 테더링" or node.attrib.get('content-desc') == "모바일 핫스팟":
+                    has_hotspot_screen = True
+                    break
+
+        if not has_hotspot_screen:
+            self._on_worker_log(did, "⚙️ '모바일 핫스팟 및 테더링' 직행 인텐트 시도...")
+            subprocess.run(["adb", "-s", did, "shell", "am", "start", "-a", "android.settings.TETHER_SETTINGS"],
+                           capture_output=True, timeout=5)
+            time.sleep(2.5)
+            tree = get_ui_nodes("ui_tether_direct.xml")
+
+        # Step 3: 모바일 핫스팟 스위치 확실한 ON 클릭 (최대 3회 재시도)
+        for attempt in range(1, 4):
+            if tree is None:
+                tree = get_ui_nodes(f"ui_tether_retry{attempt}.xml")
+
+            switch_node = None
+            title_node = None
+
+            if tree is not None:
+                for node in tree.iter('node'):
+                    desc = node.attrib.get('content-desc', '')
+                    res_id = node.attrib.get('resource-id', '')
+                    cls = node.attrib.get('class', '')
+                    text = node.attrib.get('text', '')
+
+                    if (desc == "모바일 핫스팟" and ("Switch" in cls or "switch_widget" in res_id)) or \
+                       (res_id == "android:id/switch_widget" and desc == "모바일 핫스팟") or \
+                       ("Switch" in cls and desc == "모바일 핫스팟"):
+                        switch_node = node
+                        break
+                    if text == "모바일 핫스팟":
+                        title_node = node
+
+                if switch_node is None:
+                    for node in tree.iter('node'):
+                        if "Switch" in node.attrib.get('class', '') or "switch_widget" in node.attrib.get('resource-id', ''):
+                            switch_node = node
+                            break
+
+            # 이미 활성화(checked="true") 상태인지 체크
+            if switch_node is not None and switch_node.attrib.get('checked') == 'true':
+                self._on_worker_log(did, "✅ 모바일 핫스팟이 이미 '켜짐(활성화)' 상태입니다.")
                 return True
 
-        # 3차 시도: 시스템 명령어 보조 실행
-        self._on_worker_log(did, "⚡ 핫스팟 명령어 보조 실행...")
+            # 스위치 탭 수행
+            if switch_node is not None:
+                center = get_center(switch_node)
+                if center:
+                    tap_center(center[0], center[1], f"핫스팟 스위치 ON 탭 ({attempt}/3)")
+                else:
+                    tap_center(912, 381, f"핫스팟 스위치 우측 좌표 탭 ({attempt}/3)")
+            elif title_node is not None:
+                center = get_center(title_node)
+                cy = center[1] if center else 381
+                tap_center(912, cy, f"핫스팟 제목 우측 스위치 영역 탭 ({attempt}/3)")
+            else:
+                tap_center(912, 381, f"핫스팟 스위치 표준 좌표 탭 ({attempt}/3)")
+
+            time.sleep(1.5)
+
+            # 팝업 (확인 / 켜기 / Turn on) 자동 처리
+            pop_tree = get_ui_nodes(f"ui_pop{attempt}.xml")
+            if pop_tree is not None:
+                for pnode in pop_tree.iter('node'):
+                    ptext = pnode.attrib.get('text', '')
+                    pdesc = pnode.attrib.get('content-desc', '')
+                    if any(k in ptext or k in pdesc for k in ["확인", "켜기", "Turn on", "OK"]):
+                        pcenter = get_center(pnode)
+                        if pcenter:
+                            tap_center(pcenter[0], pcenter[1], f"팝업 '{ptext or pdesc}' 버튼 클릭")
+                            time.sleep(1.5)
+                            break
+
+            # 탭 후 활성화 여부 다시 재검증
+            tree = get_ui_nodes(f"ui_verify{attempt}.xml")
+            if tree is not None:
+                for node in tree.iter('node'):
+                    desc = node.attrib.get('content-desc', '')
+                    res_id = node.attrib.get('resource-id', '')
+                    checked = node.attrib.get('checked', '')
+                    if (desc == "모바일 핫스팟" or "switch_widget" in res_id) and checked == 'true':
+                        self._on_worker_log(did, "✅ 모바일 핫스팟 켜기 성공!")
+                        return True
+
+        self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")
         subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"],
                        capture_output=True, timeout=5)
         return True
