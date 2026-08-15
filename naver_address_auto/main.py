@@ -168,6 +168,40 @@ class ScrollableFrame(tk.Frame):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
+def check_image_exists_on_device(did: str, template_path: str, threshold: float = 0.65) -> bool:
+    """ADB 스크린샷 캡처 후 template_path(활성.png)가 화면상에 존재하는지 OpenCV 템플릿 매칭 검사"""
+    if not os.path.exists(template_path):
+        return False
+    try:
+        import cv2
+        import numpy as np
+
+        res = subprocess.run(["adb", "-s", did, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
+        if not res.stdout or len(res.stdout) < 100:
+            return False
+
+        img_array = np.frombuffer(res.stdout, np.uint8)
+        screen_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if screen_img is None:
+            return False
+
+        template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
+        if template_img is None:
+            return False
+
+        result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(result)
+
+        if max_val >= threshold:
+            print(f"[ImageMatch:{did}] 템플릿 '{os.path.basename(template_path)}' 인식 성공 (일치율: {max_val:.2f})")
+            return True
+    except Exception as e:
+        print(f"[ImageMatch:{did}] 이미지 인식 예외: {e}")
+    return False
+
+
+# ─── 메인 앱 ──────────────────────────────────────────────────────────────────
+
 class MainApp(tk.Tk):
     """메인 애플리케이션 윈도우"""
 
@@ -730,37 +764,6 @@ class MainApp(tk.Tk):
         self.after(0, _update)
 
     def _on_worker_status(self, device_id: str, status: str):
-        def check_image_exists_on_device(did: str, template_path: str, threshold: float = 0.65) -> bool:
-            """ADB 스크린샷 캡처 후 template_path(활성.png)가 화면상에 존재하는지 OpenCV 템플릿 매칭 검사"""
-            if not os.path.exists(template_path):
-                return False
-            try:
-                import cv2
-                import numpy as np
-
-                res = subprocess.run(["adb", "-s", did, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
-                if not res.stdout or len(res.stdout) < 100:
-                    return False
-
-                img_array = np.frombuffer(res.stdout, np.uint8)
-                screen_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                if screen_img is None:
-                    return False
-
-                template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
-                if template_img is None:
-                    return False
-
-                result = cv2.matchTemplate(screen_img, template_img, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, _ = cv2.minMaxLoc(result)
-
-                if max_val >= threshold:
-                    print(f"[ImageMatch:{did}] 템플릿 '{os.path.basename(template_path)}' 인식 성공 (일치율: {max_val:.2f})")
-                    return True
-            except Exception as e:
-                print(f"[ImageMatch:{did}] 이미지 인식 예외: {e}")
-            return False
-
         def _update():
             if device_id in self.device_panels:
                 self.device_panels[device_id].set_status(status)
