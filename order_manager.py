@@ -30,6 +30,7 @@ COL_PHONE           = 5   # 전화번호
 COL_PASSWORD        = 6   # 비밀번호
 COL_STATUS          = 7   # 완료여부
 COL_PAYMENT_METHOD  = 8   # 결제방식
+COL_DEVICE_ID       = 9   # 폰ID (기기 ID)
 COL_LOGIN_ID        = 11  # 로그인아이디
 
 
@@ -43,6 +44,7 @@ HEADER_KEYWORDS = {
     "password":       ["비밀번호", "password", "pw", "암호"],
     "status":         ["완료여부", "완료", "상태", "status", "처리여부"],
     "payment_method": ["결제방식", "결재방식", "결제", "결재", "방식", "payment"],
+    "device_id":      ["폰id", "폰 id", "기기id", "기기 id", "device_id", "deviceid", "단말기id"],
     "login_id":       ["로그인아이디", "로그인 아이디", "아이디", "login_id", "id"],
 }
 
@@ -59,6 +61,7 @@ class OrderRow:
                  password: str,
                  status: str,
                  payment_method: str = "",
+                 device_id: str = "",
                  login_id: str = ""):
         self.row_index      = row_index         # 엑셀 실제 행 번호 (1-based)
         self.search_keyword = search_keyword    # 검색어
@@ -69,6 +72,7 @@ class OrderRow:
         self.password       = str(password).strip() if password else ""  # 비밀번호
         self.status         = str(status).strip() if status else ""  # 완료여부
         self.payment_method = str(payment_method).strip() if payment_method else "" # 결제방식
+        self.device_id      = str(device_id).strip() if device_id else ""  # 폰ID
         self.login_id       = str(login_id).strip() if login_id else "" # 로그인아이디
 
     def get_phone_digits(self) -> str:
@@ -82,7 +86,8 @@ class OrderRow:
     def __repr__(self):
         return (f"OrderRow(row={self.row_index}, keyword={self.search_keyword!r}, "
                 f"seller={self.seller_name!r}, product={self.product_name!r}, "
-                f"recipient={self.recipient_name!r}, status={self.status!r}, login_id={self.login_id!r})")
+                f"recipient={self.recipient_name!r}, status={self.status!r}, "
+                f"device_id={self.device_id!r}, login_id={self.login_id!r})")
 
 
 def _detect_columns(ws) -> dict:
@@ -100,6 +105,7 @@ def _detect_columns(ws) -> dict:
         "password":       COL_PASSWORD,
         "status":         COL_STATUS,
         "payment_method": COL_PAYMENT_METHOD,
+        "device_id":      COL_DEVICE_ID,
         "login_id":       COL_LOGIN_ID,
     }
 
@@ -136,8 +142,10 @@ class OrderManager:
     def _str(self, val) -> str:
         return str(val).strip() if val is not None else ""
 
-    def get_pending_rows(self) -> List[OrderRow]:
-        """완료여부가 공백인 미처리 행 목록 반환"""
+    def get_pending_rows(self, device_id: str = "") -> List[OrderRow]:
+        """완료여부가 공백인 미처리 행 목록 반환.
+        device_id가 지정되면 엑셀의 폰ID 컬럼 값과 일치하는 행만 반환.
+        """
         with self._lock:
             rows = []
             try:
@@ -161,26 +169,36 @@ class OrderManager:
                     status_val = ws.cell(row_idx, cm["status"]).value
                     status_str = self._str(status_val)
 
-                    if status_str == "":  # 미처리만
-                        rows.append(OrderRow(
-                            row_index      = row_idx,
-                            search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
-                            seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
-                            product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
-                            recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
-                            phone          = self._str(ws.cell(row_idx, cm["phone"]).value),
-                            password       = self._str(ws.cell(row_idx, cm["password"]).value),
-                            status         = status_str,
-                            payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
-                            login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
-                        ))
+                    if status_str != "":  # 완료여부 공백인 행만 처리
+                        continue
+
+                    # 폰ID 필터링: 엑셀 폰ID가 현재 기기ID와 정확히 일치해야만 처리
+                    row_device_id = ""
+                    if "device_id" in cm:
+                        row_device_id = self._str(ws.cell(row_idx, cm["device_id"]).value)
+                    if device_id and row_device_id != device_id:
+                        continue  # 폰ID 불일치(공백 포함) → 무조건 건너뜀
+
+                    rows.append(OrderRow(
+                        row_index      = row_idx,
+                        search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
+                        seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
+                        product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
+                        recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
+                        phone          = self._str(ws.cell(row_idx, cm["phone"]).value),
+                        password       = self._str(ws.cell(row_idx, cm["password"]).value),
+                        status         = status_str,
+                        payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
+                        device_id      = row_device_id,
+                        login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
+                    ))
             except Exception as e:
                 print(f"[OrderManager] 엑셀 읽기 오류: {e}")
             return rows
 
-    def get_next_pending(self) -> Optional[OrderRow]:
-        """미처리 행 중 첫 번째 반환"""
-        rows = self.get_pending_rows()
+    def get_next_pending(self, device_id: str = "") -> Optional[OrderRow]:
+        """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상."""
+        rows = self.get_pending_rows(device_id=device_id)
         return rows[0] if rows else None
 
     def mark_success(self, row_index: int):

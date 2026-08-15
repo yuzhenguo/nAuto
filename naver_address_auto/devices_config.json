@@ -90,9 +90,9 @@
     "connected": false
   },
   "R5CX349NTSF": {
-    "selected": false,
+    "selected": true,
     "remark": "02",
-    "connected": false
+    "connected": true
   },
   "R5CX409P6MB": {
     "selected": false,
@@ -100,7 +100,7 @@
     "connected": false
   },
   "R3CR302DWEH": {
-    "selected": true,
+    "selected": false,
     "remark": "",
     "connected": true
   }

@@ -1328,15 +1328,15 @@ class NaverOrderWorker:
 
     def _order_loop(self):
         """[단계 2~19] 결재목록 루프 주문 처리"""
-        self._log("📋 주문 루프 시작")
+        self._log(f"📋 주문 루프 시작 (폰ID 필터: {self.device_id})")
 
         while not self._stop_event.is_set():
-            row = self.order_manager.get_next_pending()
+            row = self.order_manager.get_next_pending(device_id=self.device_id)
             if not row:
-                self._log("✅ 모든 주문 처리 완료")
+                self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
                 break
 
-            self._log(f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}")
+            self._log(f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, 폰ID={row.device_id!r}")
             self._set_status(f"주문 중: {row.search_keyword}")
 
             try:
