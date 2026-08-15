@@ -757,6 +757,110 @@ class MainApp(tk.Tk):
         except subprocess.TimeoutExpired:
             messagebox.showerror("오류", "ADB 명령 타임아웃")
 
+    def _enable_samsung_hotspot_macro(self, did: str) -> bool:
+        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화"""
+        import xml.etree.ElementTree as ET
+        import re
+
+        def get_ui_nodes():
+            try:
+                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", "/sdcard/ui_hotspot.xml"],
+                               capture_output=True, timeout=10)
+                res = subprocess.run(["adb", "-s", did, "shell", "cat", "/sdcard/ui_hotspot.xml"],
+                                     capture_output=True, text=True, timeout=5)
+                xml_str = res.stdout.strip()
+                if xml_str and "<hierarchy" in xml_str:
+                    return ET.fromstring(xml_str)
+            except Exception as e:
+                self._on_worker_log(did, f"  ⚠ UI 덤프 예외: {e}")
+            return None
+
+        def click_node(node, label=""):
+            bounds = node.attrib.get('bounds', '')
+            m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+            if m:
+                x1, y1, x2, y2 = map(int, m.groups())
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                self._on_worker_log(did, f"  👆 [매크로 탭] {label} ({cx}, {cy})")
+                subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
+                               capture_output=True, timeout=5)
+                return True
+            return False
+
+        def find_and_click(tree, keywords, is_switch=False):
+            if tree is None:
+                return False
+            for node in tree.iter('node'):
+                text = node.attrib.get('text', '')
+                desc = node.attrib.get('content-desc', '')
+                cls = node.attrib.get('class', '')
+                checked = node.attrib.get('checked', '')
+
+                if is_switch:
+                    if 'Switch' in cls or 'CompoundButton' in cls or 'switch' in node.attrib.get('resource-id', '').lower():
+                        if checked == 'true':
+                            self._on_worker_log(did, "  ℹ️ 모바일 핫스팟이 이미 '켜짐' 상태입니다.")
+                            return True
+                        return click_node(node, "핫스팟 토글 스위치")
+                else:
+                    for kw in keywords:
+                        if kw and (kw in text or kw in desc):
+                            return click_node(node, f"'{kw}' 항목")
+            return False
+
+        # 0. 화면 해제 및 Wi-Fi 사전 끄기
+        self._on_worker_log(did, "🔓 화면 깨우기 및 Wi-Fi 비활성화...")
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
+        time.sleep(1.5)
+
+        # 1차 시도: '모바일 핫스팟 및 테더링' 설정 페이지 직행 (Samsung One UI 표준 설정 인텐트)
+        self._on_worker_log(did, "⚙️ 설정 > 모바일 핫스팟 및 테더링 직행 인텐트 호출...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-a", "android.settings.TETHER_SETTINGS"],
+                       capture_output=True, timeout=5)
+        time.sleep(2.5)
+
+        tree = get_ui_nodes()
+        if tree is not None:
+            if find_and_click(tree, [], is_switch=True):
+                time.sleep(1.5)
+                pop_tree = get_ui_nodes()
+                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
+                return True
+
+            if find_and_click(tree, ["모바일 핫스팟", "Mobile Hotspot"]):
+                time.sleep(1.5)
+                pop_tree = get_ui_nodes()
+                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
+                return True
+
+        # 2차 시도: 설정 메인 -> 연결 -> 모바일 핫스팟 및 테더링 단계별 매크로 클릭 (폴백)
+        self._on_worker_log(did, "🔄 설정 앱 메인 진입 후 단계별 매크로 탐색...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-a", "android.settings.SETTINGS"],
+                       capture_output=True, timeout=5)
+        time.sleep(2.0)
+
+        tree_main = get_ui_nodes()
+        if find_and_click(tree_main, ["연결", "Connections"]):
+            time.sleep(2.0)
+            tree_conn = get_ui_nodes()
+            if find_and_click(tree_conn, ["모바일 핫스팟 및 테더링", "Mobile Hotspot and Tethering"]):
+                time.sleep(2.0)
+                tree_tether = get_ui_nodes()
+                if not find_and_click(tree_tether, [], is_switch=True):
+                    find_and_click(tree_tether, ["모바일 핫스팟", "Mobile Hotspot"])
+                time.sleep(1.5)
+                pop_tree = get_ui_nodes()
+                find_and_click(pop_tree, ["확인", "켜기", "Turn on", "OK"])
+                return True
+
+        # 3차 시도: 시스템 명령어 보조 실행
+        self._on_worker_log(did, "⚡ 핫스팟 명령어 보조 실행...")
+        subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"],
+                       capture_output=True, timeout=5)
+        return True
+
     def _reboot_and_hotspot(self, did):
         try:
             self._on_worker_log(did, "🔄 ADB 재부팅 명령 전송...")
@@ -784,22 +888,12 @@ class MainApp(tk.Tk):
             self._on_worker_log(did, "✅ 부팅 완료 감지됨! 시스템 안정화 10초 대기...")
             time.sleep(10)
             
-            self._on_worker_log(did, "📡 핫스팟 활성화 시도 중...")
-            self._on_worker_status(did, "핫스팟 켜는 중")
+            self._on_worker_log(did, "📡 설정 매크로 방식으로 핫스팟 활성화 시작 (갤럭시 S9~S25)...")
+            self._on_worker_status(did, "핫스팟 매크로 실행")
             
-            # Wi-Fi 끄기 (핫스팟 충돌 방지)
-            subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
-            time.sleep(2)
+            self._enable_samsung_hotspot_macro(did)
             
-            # 핫스팟 켜기 (Android 11+ 지원 방식)
-            res = subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"], 
-                                 capture_output=True, text=True, timeout=5)
-                                 
-            if "Error" in res.stdout or "Error" in res.stderr:
-                self._on_worker_log(did, f"⚠ 핫스팟 활성화 중 오류/경고: {res.stdout.strip()} {res.stderr.strip()}")
-            else:
-                self._on_worker_log(did, "✅ 핫스팟 활성화 성공!")
-                
+            self._on_worker_log(did, "✅ 핫스팟 매크로 실행 완료!")
             self._on_worker_status(did, "핫스팟 완료")
             
         except Exception as e:
