@@ -907,26 +907,56 @@ class NaverOrderWorker:
         last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
         
         try:
-            # 주문/결제 페이지의 배송지명 뷰 탐색 (text="배송지명{이름}")
+            if phone_digits and len(phone_digits) >= 8:
+                formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}"
+                # '연락처' 접두사가 포함된 전화번호 텍스트를 우선 탐색
+                phone_xpaths = [
+                    f'//*[contains(@text, "연락처{formatted_phone}")]',
+                    f'//*[contains(@text, "연락처") and contains(@text, "{last4}")]',
+                    f'//*[contains(@text, "연락처{phone}")]'
+                ]
+                
+                for px in phone_xpaths:
+                    try:
+                        views = self.driver.find_elements(By.XPATH, px)
+                        for view in views:
+                            text = view.get_attribute("text") or ""
+                            if "연락처" in text:
+                                # 전화번호를 찾았으므로 조상 컨테이너(최대 4단계)에서 수취인명 확인
+                                node = view
+                                for _ in range(4):
+                                    try:
+                                        node = node.find_element(By.XPATH, "..")
+                                        els = node.find_elements(By.XPATH, ".//*")
+                                        area_text = " ".join([e.get_attribute("text") or "" for e in els])
+                                        if recipient_name in area_text:
+                                            return True
+                                    except Exception:
+                                        break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+            
+        # 기존 폴백 로직 (배송지명으로 탐색)
+        try:
             views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
             for view in views:
                 text = view.get_attribute("text") or ""
                 if recipient_name in text:
-                    # 이름이 매칭됨 -> 전화번호 검증
                     if not last4:
                         return True
                     try:
-                        # 배송지명 View의 부모 요소 안에서 모든 텍스트 수집
                         parent = view.find_element(By.XPATH, "..")
                         area_views = parent.find_elements(By.XPATH, ".//*")
                         area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
-                        
                         if last4 in area_text:
                             return True
                     except Exception:
                         pass
         except Exception:
             pass
+            
         return False
 
     def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
@@ -1010,13 +1040,12 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # ── 방법 B: 배송지 목록 팝업 형태 (전화번호 직접 클릭) ──
-        # XML: <android.view.View text="010-1654-2987" />
-        # 전략: 전화번호 텍스트를 가진 View를 먼저 찾아 부모 블록에 수취인명이 있으면 해당 전화번호 View를 클릭!
+        # ── 방법 B: 배송지 목록 팝업 형태 (명확한 '선택' 버튼 좌표 클릭) ──
+        # 전략: 전화번호 View를 찾은 후, 동일 블록 내 수취인명과 "선택"(또는 "선택됨") 버튼을 확인하고,
+        # 버튼의 중앙 좌표(bounds 파싱)를 직접 계산하여 터치합니다. (엉뚱한 신규배송지 클릭 방지)
         try:
             if phone_digits and len(phone_digits) >= 8:
                 formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}"
-                # 하이픈 포함 전화번호 또는 뒷4자리
                 phone_xpaths = [
                     f'//*[contains(@text, "{formatted_phone}")]',
                     f'//*[contains(@text, "{last4}")]'
@@ -1027,29 +1056,58 @@ class NaverOrderWorker:
                         for pv in p_views:
                             try:
                                 pv_text = pv.get_attribute("text") or ""
-                                # '연락처'가 붙어있는 경우는 방법 A(주문결제 메인화면)이므로 패스
                                 if "연락처" in pv_text:
                                     continue
                                 
-                                # 조상 노드로 올라가며 이름 확인 (최대 4단계)
                                 node = pv
+                                target_button = None
                                 found_name = False
-                                for _ in range(4):
+                                
+                                # 조상 노드를 5단계까지 올라가며 수취인명과 선택버튼 탐색
+                                for _ in range(5):
                                     try:
                                         node = node.find_element(By.XPATH, "..")
                                         els = node.find_elements(By.XPATH, ".//*")
-                                        area_text = " ".join((e.get_attribute("text") or "") for e in els)
-                                        if recipient_name in area_text:
-                                            found_name = True
+                                        
+                                        # 이름 검증
+                                        if not found_name:
+                                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
+                                            if recipient_name in area_text:
+                                                found_name = True
+                                        
+                                        # 버튼 탐색
+                                        if not target_button:
+                                            for e in els:
+                                                e_class = e.get_attribute("class") or ""
+                                                e_text = e.get_attribute("text") or ""
+                                                if "Button" in e_class and e_text in ["선택", "선택됨"]:
+                                                    target_button = e
+                                                    break
+                                                    
+                                        if found_name and target_button:
                                             break
                                     except Exception:
                                         break
                                 
-                                if found_name:
-                                    self._log(f"  🎯 팝업에서 매칭 성공! '{pv_text}' (전화번호) 클릭 시도")
-                                    if self._click_element_or_parent(pv):
-                                        time.sleep(3)
-                                        return True
+                                if found_name and target_button:
+                                    btn_text = target_button.get_attribute("text")
+                                    bounds_str = target_button.get_attribute("bounds")
+                                    self._log(f"  🎯 팝업 매칭! '{pv_text}' 그룹의 '{btn_text}' 버튼 클릭 시도 (bounds: {bounds_str})")
+                                    
+                                    # 명시적으로 bounds 중앙을 파싱해 클릭
+                                    import re
+                                    match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                                    if match:
+                                        x1, y1, x2, y2 = map(int, match.groups())
+                                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                                        self._log(f"  👉 '{btn_text}' 버튼 정중앙 탭: X={cx}, Y={cy}")
+                                        self.driver.tap([(cx, cy)])
+                                    else:
+                                        self._log("  ⚠ 좌표 파싱 실패 -> 기본 요소 클릭 사용")
+                                        self._click_element_or_parent(target_button)
+                                        
+                                    time.sleep(3)
+                                    return True
                             except Exception:
                                 continue
                     except Exception:
