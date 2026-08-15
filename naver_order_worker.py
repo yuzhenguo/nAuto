@@ -1010,11 +1010,55 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # ── 방법 B: 배송지 목록 팝업 형태 (수취인명 text가 바로 있는 형태) ──
-        # XML: <android.view.View text="정하늘" .../>
-        # 이름과 전화번호가 서로 다른 View에 있음 → 이름 View 찾은 후 인접 전화 View 확인
+        # ── 방법 B: 배송지 목록 팝업 형태 (전화번호 직접 클릭) ──
+        # XML: <android.view.View text="010-1654-2987" />
+        # 전략: 전화번호 텍스트를 가진 View를 먼저 찾아 부모 블록에 수취인명이 있으면 해당 전화번호 View를 클릭!
         try:
-            # 이름이 포함된 View 탐색
+            if phone_digits and len(phone_digits) >= 8:
+                formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}"
+                # 하이픈 포함 전화번호 또는 뒷4자리
+                phone_xpaths = [
+                    f'//*[contains(@text, "{formatted_phone}")]',
+                    f'//*[contains(@text, "{last4}")]'
+                ]
+                for px in phone_xpaths:
+                    try:
+                        p_views = self.driver.find_elements(By.XPATH, px)
+                        for pv in p_views:
+                            try:
+                                pv_text = pv.get_attribute("text") or ""
+                                # '연락처'가 붙어있는 경우는 방법 A(주문결제 메인화면)이므로 패스
+                                if "연락처" in pv_text:
+                                    continue
+                                
+                                # 조상 노드로 올라가며 이름 확인 (최대 4단계)
+                                node = pv
+                                found_name = False
+                                for _ in range(4):
+                                    try:
+                                        node = node.find_element(By.XPATH, "..")
+                                        els = node.find_elements(By.XPATH, ".//*")
+                                        area_text = " ".join((e.get_attribute("text") or "") for e in els)
+                                        if recipient_name in area_text:
+                                            found_name = True
+                                            break
+                                    except Exception:
+                                        break
+                                
+                                if found_name:
+                                    self._log(f"  🎯 팝업에서 매칭 성공! '{pv_text}' (전화번호) 클릭 시도")
+                                    if self._click_element_or_parent(pv):
+                                        time.sleep(3)
+                                        return True
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # ── 방법 B-2: 이름으로 먼저 찾는 폴백 로직 (전화번호가 마스킹된 경우 대비) ──
+        try:
             name_xpaths = [
                 f'//*[contains(@text, "{recipient_name}")]',
                 f'//*[contains(@content-desc, "{recipient_name}")]',
