@@ -898,72 +898,84 @@ class NaverOrderWorker:
 
     # ─── 단계 16: 배송지 선택 ────────────────────────────────────────────────
 
+    def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
+        """현재 화면(스크롤 없이)에서 수취인을 탐색하여 클릭. 찾으면 True 반환."""
+        # 방법 1: WebView/View 전체 순회
+        list_xpaths = [
+            '//android.webkit.WebView[@text="주문/결제"]//android.view.View',
+            '//android.webkit.WebView//android.view.View',
+            '//android.view.View',
+        ]
+        for list_xpath in list_xpaths:
+            try:
+                all_views = self.driver.find_elements(By.XPATH, list_xpath)
+                for view in all_views:
+                    try:
+                        text = view.get_attribute("text") or ""
+                        desc = view.get_attribute("content-desc") or ""
+                        full_txt = f"{text} {desc}"
+                        # 수취인명 매칭
+                        if recipient_name not in full_txt:
+                            continue
+                        # 전화번호 뒷 4자리 2차 검증
+                        if phone_digits and len(phone_digits) >= 8:
+                            last4 = phone_digits[-4:]
+                            if last4 not in full_txt:
+                                continue
+                        self._log(f"  🎯 배송지 발견: '{text[:50]}'")
+                        if self._click_element_or_parent(view):
+                            time.sleep(5)
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # 방법 2: XPath 직접 탐색
+        direct_xpaths = [
+            f'//android.view.View[contains(@text, "{recipient_name}")]',
+            f'//*[contains(@text, "{recipient_name}")]',
+            f'//*[contains(@content-desc, "{recipient_name}")]',
+        ]
+        for xpath in direct_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xpath)
+                if els:
+                    self._log(f"  🎯 수취인 직접 XPath 매칭: {xpath}")
+                    if self._click_element_or_parent(els[0]):
+                        time.sleep(5)
+                        return True
+            except Exception:
+                continue
+
+        return False
+
     def _select_delivery_address(self, recipient_name: str, phone: str) -> bool:
         """
-        [단계 16] 배송지목록.xml 참고:
-        수취인명 포함 text 탐색 + 전화번호 2차 검증 후 클릭
+        [단계 16] 배송지 선택:
+        1) 스크롤 없이 현재 화면에서 수취인 존재 여부 먼저 확인
+        2) 없으면 스크롤 후 재탐색 (최대 5회)
         """
         self._set_status(f"배송지 선택: {recipient_name}")
         self._log(f"🔍 배송지 선택: 수취인={recipient_name!r}, 전화={phone!r}")
 
         phone_digits = ''.join(filter(str.isdigit, phone)) if phone else ""
-
         scroll_max = 5
-        for scroll_cnt in range(scroll_max + 1):
-            # 배송지 목록 내 View 탐색 (배송지목록.xml의 WebView 내부 구조)
-            list_xpaths = [
-                '//android.webkit.WebView[@text="주문/결제"]//android.view.View',
-                '//android.webkit.WebView//android.view.View',
-                '//android.view.View',
-            ]
 
-            for list_xpath in list_xpaths:
-                try:
-                    all_views = self.driver.find_elements(By.XPATH, list_xpath)
-                    for view in all_views:
-                        try:
-                            text = view.get_attribute("text") or ""
-                            # 수취인명 매칭
-                            if recipient_name not in text and recipient_name not in (view.get_attribute("content-desc") or ""):
-                                continue
-                            # 전화번호 2차 검증 (전화번호 정보 포함)
-                            if phone_digits and len(phone_digits) >= 8:
-                                last4 = phone_digits[-4:]
-                                if last4 not in text and last4 not in (view.get_attribute("content-desc") or ""):
-                                    # 같은 수취인이 여러 명이면 전화번호로 구분
-                                    continue
+        # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
+        self._log("  📋 현재 화면에서 수취인 탐색 중 (스크롤 없음)...")
+        if self._find_recipient_on_screen(recipient_name, phone_digits):
+            return True
 
-                            self._log(f"  🎯 배송지 발견: '{text[:50]}'")
-                            if self._click_element_or_parent(view):
-                                time.sleep(5)
-                                return True
-                        except Exception:
-                            continue
-                    # 하나라도 텍스트로 수취인을 찾으면 break
-                except Exception:
-                    continue
+        # ── 2단계: 없으면 스크롤하며 재탐색 ──
+        for scroll_cnt in range(1, scroll_max + 1):
+            self._log(f"  ⬇ 배송지 목록 스크롤 ({scroll_cnt}/{scroll_max})")
+            self._scroll_down()
+            time.sleep(1.5)
 
-            # XPath 직접 탐색
-            direct_xpaths = [
-                f'//android.view.View[contains(@text, "{recipient_name}")]',
-                f'//*[contains(@text, "{recipient_name}")]',
-                f'//*[contains(@content-desc, "{recipient_name}")]',
-            ]
-            for xpath in direct_xpaths:
-                try:
-                    els = self.driver.find_elements(By.XPATH, xpath)
-                    if els:
-                        self._log(f"  🎯 수취인 직접 XPath 매칭: {xpath}")
-                        if self._click_element_or_parent(els[0]):
-                            time.sleep(5)
-                            return True
-                except Exception:
-                    continue
-
-            if scroll_cnt < scroll_max:
-                self._log(f"  ⬇ 배송지 목록 스크롤 ({scroll_cnt + 1}/{scroll_max})")
-                self._scroll_down()
-                time.sleep(1.5)
+            self._log(f"  📋 스크롤 후 수취인 재탐색...")
+            if self._find_recipient_on_screen(recipient_name, phone_digits):
+                return True
 
         self._log(f"  ❌ 배송지 '{recipient_name}' 매칭 실패")
         return False
