@@ -191,6 +191,31 @@ def check_image_exists_on_device(did: str, template_path: str, threshold: float 
     return False
 
 
+def wake_and_keep_screen_on(did: str):
+    """ADB 화면 꺼짐/잠금 상태 감시, 화면 자동 깨우기 및 상시 켜짐 유지 (stay_on_while_plugged_in=7)"""
+    try:
+        # USB 충전 중 화면 상시 켜짐 설정 (7 = AC + USB + Wireless)
+        subprocess.run(["adb", "-s", did, "shell", "settings", "put", "global", "stay_on_while_plugged_in", "7"], capture_output=True, timeout=3)
+        # 화면 자동 꺼짐 타임아웃 30분(1800000ms)으로 확장
+        subprocess.run(["adb", "-s", did, "shell", "settings", "put", "system", "screen_off_timeout", "1800000"], capture_output=True, timeout=3)
+
+        # 화면 꺼짐/어두워짐(Dozing/Asleep) 여부 감시
+        res = subprocess.run(["adb", "-s", did, "shell", "dumpsys", "power"], capture_output=True, text=True, timeout=4)
+        out = res.stdout or ""
+        is_off = ("mWakefulness=Asleep" in out or "mWakefulness=Dozing" in out or 
+                  "Display Power: state=OFF" in out or "isScreenOn=false" in out or "mHoldingDisplaySuspendBlocker=false" in out)
+
+        if is_off:
+            print(f"[ScreenWake:{did}] ⚡ 화면 꺼짐/어두워짐 감지! 화면 깨우기 및 잠금 해제 전송...")
+            subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3) # WAKEUP
+            time.sleep(0.3)
+            subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)  # UNLOCK
+            time.sleep(0.3)
+            subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "3"], capture_output=True, timeout=3)   # HOME
+    except Exception as e:
+        print(f"[ScreenWake:{did}] 화면 감시 예외: {e}")
+
+
 # ─── 메인 앱 ──────────────────────────────────────────────────────────────────
 
 class MainApp(tk.Tk):
@@ -939,6 +964,7 @@ class MainApp(tk.Tk):
             tpl_path = os.path.join(os.path.dirname(__file__), "naver_address_auto", "활성.png")
 
         for attempt in range(1, 11):
+            wake_and_keep_screen_on(did)
             # 이미지 인식 검사: 활성.png 이미지가 발견되면 즉시 종료 및 다음 단계 진입
             if check_image_exists_on_device(did, tpl_path, threshold=0.65):
                 self._on_worker_log(did, f"✅ [이미지 인식] '활성.png' 상태 감지 완료! ({attempt}회차) -> 다음 단계 진행")
@@ -1067,8 +1093,10 @@ class MainApp(tk.Tk):
                 self._on_worker_status(did, "부팅 시간초과")
                 return
                 
-            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 타 부팅 프로그램 작업 완료 대기 (75초)...")
-            time.sleep(75) # 부팅 후 75초 대기
+            self._on_worker_log(did, "✅ 부팅 완료 감지됨! 타 부팅 앱 대기 (75초, 화면 꺼짐 감시 및 자동 깨우기)...")
+            for _ in range(15):  # 15 * 5초 = 75초
+                time.sleep(5)
+                wake_and_keep_screen_on(did)
             
             is_tethering = self.devices_data.get(did, {}).get("tethering", True)
             if is_tethering:
