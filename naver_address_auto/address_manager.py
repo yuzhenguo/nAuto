@@ -23,7 +23,8 @@ class AddressRow:
     """주소록 단일 행 데이터"""
     def __init__(self, row_index: int, name: str, address_search: str,
                  zipcode: str, phone: str, detail_address: str,
-                 status: str, device_id: str, delete_existing: bool = False):
+                 status: str, device_id: str, delete_existing: bool = False,
+                 naver_id: str = ""):
         self.row_index = row_index            # 엑셀 실제 행 번호 (1-based)
         self.name = name                      # 1열: 수취인
         self.address_search = address_search  # 2열: 주소 검색어
@@ -33,6 +34,7 @@ class AddressRow:
         self.status = str(status).strip() if status else ""      # 6열: 상태
         self.device_id = str(device_id).strip() if device_id else ""  # 7열: 기기 ID
         self.delete_existing = delete_existing  # 9열: 기존 주소 삭제 여부
+        self.naver_id = str(naver_id).strip() if naver_id else "" # 11열: 네이버아이디
 
     def get_phone_middle(self) -> str:
         """전화번호 중간 4자리 반환 (앞 3자리 제거)"""
@@ -100,6 +102,10 @@ class AddressManager:
                         delete_existing = False
                         if delete_val:
                             delete_existing = str(delete_val).strip().upper() == "Y"
+                            
+                        # 11열 (네이버아이디)
+                        naver_id_val = ws.cell(row_idx, 11).value
+                        naver_id = str(naver_id_val).strip() if naver_id_val else ""
 
                         rows.append(AddressRow(
                             row_index=row_idx,
@@ -110,7 +116,8 @@ class AddressManager:
                             detail_address=str(detail).strip() if detail else "",
                             status=status_str,
                             device_id=dev_str,
-                            delete_existing=delete_existing
+                            delete_existing=delete_existing,
+                            naver_id=naver_id
                         ))
             except Exception as e:
                 print(f"[AddressManager] 엑셀 읽기 오류: {e}")

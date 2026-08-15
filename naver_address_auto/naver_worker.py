@@ -102,6 +102,13 @@ DELETE_BTN_XPATH   = '//android.widget.Button[@text="삭제"]'
 
 DELETE_CONFIRM_XPATH = '//android.widget.Button[@resource-id="android:id/button1"]'
 
+# 웰컴 모달 / 팝업 닫기 버튼 목록
+WELCOME_MODAL_XPATHS = [
+    '//android.view.View[@resource-id="joinBeginWelcomeModal"]/android.view.View/android.view.View[2]',
+    '//android.widget.Button[@resource-id="btnWelcomeClose"]',
+    '//android.view.ViewGroup[@content-desc="홈 버튼"]/android.view.ViewGroup/android.widget.ImageView[@resource-id="com.nhn.android.search.InAppBrowser:id/toolbarIconView"]',
+]
+
 # 배송지 신규입력
 
 NEW_ADDRESS_BTN_XPATH = '//android.widget.Button[@text="배송지 신규입력"]'
@@ -214,6 +221,10 @@ class NaverWorker:
 
         self.has_checked_initial_delete = False  # 삭제 여부 최초 1회만 판단
 
+        self.current_naver_id = None
+
+        self.is_initialized = False
+
 
 
     # ─── 공개 메서드 ──────────────────────────────────────────────────────────
@@ -274,27 +285,11 @@ class NaverWorker:
 
             try:
 
-                # ① 앱 메인 → 스토어 진입
+                # 배송지 등록 루프 (내부에서 계정 전환 및 화면 진입 처리)
 
-                self._go_main_and_enter_store()
+                self._register_address_loop()
 
-
-
-                # ② 배송지 관리 화면 진입
-
-                if not self._navigate_to_delivery_mgmt():
-
-                    self._log("❌ 배송지 관리 화면 진입 실패")
-
-                    self._set_status("실패")
-
-                else:
-
-                    # ③ 배송지 등록 루프
-
-                    self._register_address_loop()
-
-                    success = True
+                success = True
 
 
 
@@ -428,7 +423,7 @@ class NaverWorker:
 
 
 
-    def _go_main_and_enter_store(self):
+    def _go_main_and_enter_store(self, login_id: str = "") -> bool:
 
         """
 
@@ -444,6 +439,17 @@ class NaverWorker:
 
         time.sleep(7)
 
+        # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
+        self._check_and_close_welcome_modals(step_label="3.1")
+
+        # [단계 3.2] 로그인 아이디가 지정된 경우 네이버 계정 전환 수행
+        if login_id:
+            if not self._switch_account(login_id):
+                self._log(f"❌ [단계 3.2] 계정 전환 실패 (아이디: {login_id})")
+                return False
+            # 계정 전환 성공 후 메인 페이지로 이동
+            ah.go_to_main_page(self.driver, self._log)
+            time.sleep(3)
 
 
         # [단계 3] 네이버 플러스 스토어 탭 버튼이 존재하면 클릭
@@ -477,22 +483,18 @@ class NaverWorker:
         if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
 
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
-
+            
             self._log("✅ 마이쇼핑 클릭 완료")
-
             time.sleep(5)
-
         else:
-
-            self._log("⚠ 마이쇼핑 버튼을 찾지 못했습니다. 계속 진행합니다.")
-
+            self._log("⚠ 마이쇼핑 버튼 미발견. 계속 진행합니다.")
             time.sleep(3)
-
-
-
-        # [단계 6] 마이쇼핑 진입 후 팝업 처리
-
+            
         self._dismiss_hide_popup(max_count=1)
+        self._check_and_close_welcome_modals(step_label="6.1")
+        return True
+
+
 
 
 
