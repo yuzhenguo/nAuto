@@ -225,9 +225,11 @@ class NaverOrderWorker:
             if not self._switch_account(login_id):
                 self._log(f"❌ [단계 3.2] 계정 전환 실패 (아이디: {login_id}) -> 4번 이하 단계 수행 취소 및 다음 레코드 이동")
                 return False
-            # 계정 전환 성공 후 메인 페이지로 이동하여 4번 진행
-            ah.go_to_main_page(self.driver, self._log)
-            time.sleep(3)
+            # 계정 전환 성공 후 → 네이버 앱 강제 재시작으로 UiAutomator2 안정화
+            self._log("🔄 [단계 3.2 완료] 계정 전환 후 네이버 앱 재시작으로 UiAutomator2 안정화")
+            ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
+            # UiAutomator2 instrumentation 완전 안정화 대기
+            self._wait_for_uiautomator_ready(max_wait=15)
 
         # [단계 4] 네이버 플러스 스토어 탭 버튼 클릭
         if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
@@ -451,6 +453,30 @@ class NaverOrderWorker:
                 break
 
         return True
+
+    def _wait_for_uiautomator_ready(self, max_wait: int = 15):
+        """
+        UiAutomator2 instrumentation 서버가 정상 동작할 때까지 대기.
+        계정 전환 후 설정 앱 왕복 과정에서 instrumentation이 불안정해지는 현상 대응.
+        간단한 get_window_size 호출로 서버 응답을 확인하고 실패 시 재시도.
+        """
+        self._log(f"⏳ UiAutomator2 안정화 대기 (최대 {max_wait}초)...")
+        interval = 2
+        for i in range(max_wait // interval):
+            try:
+                self.driver.get_window_size()
+                self._log(f"  ✅ UiAutomator2 정상 응답 확인 ({i * interval}초 경과)")
+                return
+            except Exception as e:
+                err_str = str(e)
+                if "instrumentation" in err_str or "not connected" in err_str or "not running" in err_str:
+                    self._log(f"  ⚠ UiAutomator2 아직 불안정 ({i * interval}초 경과), {interval}초 후 재시도...")
+                    time.sleep(interval)
+                else:
+                    # 다른 종류의 에러는 그냥 넘어감
+                    time.sleep(interval)
+        # 최대 대기 후에도 실패하면 경고만 남기고 계속 진행 (재시작 로직이 외부에 있음)
+        self._log(f"  ⚠ UiAutomator2 안정화 대기 {max_wait}초 초과, 계속 진행합니다.")
 
     def _check_and_close_welcome_modals(self, step_label: str = "3.1/7.1"):
         """3.1 및 7.1 웰컴 모달 / 팝업 버튼 발견 시 클릭"""
