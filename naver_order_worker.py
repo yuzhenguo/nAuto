@@ -54,7 +54,10 @@ _NUM_DIR = os.path.join(_IMG_DIR, "숫자")
 IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력창 (단계 8)
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
+IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
+IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
+IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
 
 # 추가된 결제방식 이미지
@@ -1047,17 +1050,31 @@ class NaverOrderWorker:
         self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
 
         w_h = 2400
+        w_w = 1080
         try:
-            w_h = self.driver.get_window_size()['height']
+            size = self.driver.get_window_size()
+            w_h = size['height']
+            w_w = size['width']
         except Exception:
             pass
 
         min_y_check = int(w_h * 0.40)  # 화면 하단 40% 이하 영역
         max_y_check = int(w_h * 0.90)  # y=2160 이하, 최하단 네비게이션 바(y>0.93) 제외
+        max_x_check = int(w_w * 0.40)  # 체크박스는 화면 좌측에 위치하므로 X축 제한
+
+        # 0순위: 옵션 선택(위) ~ 배송정보(아래) 사이로 Y축 제한 탐색 (사용자 요청 사항)
+        if os.path.exists(IMG_OPTION_SELECT) and os.path.exists(IMG_DELIVERY_INFO):
+            opt_coords = self._find_image_coords(IMG_OPTION_SELECT, threshold=0.70)
+            del_coords = self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.70)
+            
+            if opt_coords and del_coords and opt_coords[1] < del_coords[1]:
+                min_y_check = opt_coords[1]
+                max_y_check = del_coords[1]
+                self._log(f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션~배송정보): {min_y_check} ~ {max_y_check}")
 
         # 1순위: 템플릿 이미지 매칭 (threshold 0.65 로 설정하여 0.7518 점수 수용)
         if os.path.exists(IMG_CHECKBOX):
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.65, min_y=min_y_check, max_y=max_y_check)
+            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.65, min_x=0, max_x=max_x_check, min_y=min_y_check, max_y=max_y_check)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 체크박스 이미지 인식 클릭 완료")
@@ -1082,10 +1099,11 @@ class NaverOrderWorker:
                             els = self.driver.find_elements(By.XPATH, xpath)
                             for el in els:
                                 rect = el.rect
+                                cx = rect['x'] + rect['width'] // 2
                                 cy = rect['y'] + rect['height'] // 2
-                                if min_y_check <= cy <= max_y_check:
+                                if min_y_check <= cy <= max_y_check and cx <= max_x_check:
                                     self._safe_click_element(el)
-                                    self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, y={cy}): {xpath}")
+                                    self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
                                     time.sleep(1.5)
                                     return True
                         except Exception:
@@ -1107,10 +1125,11 @@ class NaverOrderWorker:
                     els = self.driver.find_elements(By.XPATH, xpath)
                     for el in els:
                         rect = el.rect
+                        cx = rect['x'] + rect['width'] // 2
                         cy = rect['y'] + rect['height'] // 2
-                        if min_y_check <= cy <= max_y_check:
+                        if min_y_check <= cy <= max_y_check and cx <= max_x_check:
                             self._safe_click_element(el)
-                            self._log(f"  ✅ 체크박스 XPath 클릭 (y={cy}): {xpath}")
+                            self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
                             time.sleep(1.5)
                             return True
                 except Exception:
@@ -1136,7 +1155,7 @@ class NaverOrderWorker:
 
         for attempt in range(1, 3):
             if os.path.exists(IMG_BUY_NOW):
-                coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.70, min_y=min_y_buynow, max_y=max_y_buynow)
+                coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.65, min_y=min_y_buynow, max_y=max_y_buynow)
                 if coords:
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     self._log("✅ 바로구매 이미지 인식 클릭 완료")
@@ -1178,6 +1197,14 @@ class NaverOrderWorker:
                     break
 
         self._log("  ❌ 바로구매 버튼 미발견")
+
+        # 미발견 시 주문결재.png 가 존재하는지 확인 (이미 다음 페이지로 넘어갔을 경우 대비)
+        if os.path.exists(IMG_ORDER_PAY):
+            self._log("  🔍 주문결재.png 존재 여부 확인 중...")
+            if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
+                self._log("  ✅ 주문결재.png 확인됨! 바로구매 버튼 클릭 성공으로 간주하고 계속 진행")
+                return True
+                
         return False
 
     # ─── 단계 14: 변경 버튼 클릭 ─────────────────────────────────────────────
@@ -2421,6 +2448,8 @@ class NaverOrderWorker:
 
     def _find_image_coords(self, template_path: str,
                            threshold: float = 0.75,
+                           min_x: Optional[int] = None,
+                           max_x: Optional[int] = None,
                            min_y: Optional[int] = None,
                            max_y: Optional[int] = None) -> Optional[tuple]:
         """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색"""
@@ -2441,11 +2470,15 @@ class NaverOrderWorker:
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             screen_h, screen_w = screen_gray.shape
 
-            # min_y, max_y 제약이 있다면 탐색 영역 밖을 검정색으로 지워서 오탐 방지
+            # min_x, max_x, min_y, max_y 제약이 있다면 탐색 영역 밖을 검정색으로 지워서 오탐 방지
             if min_y is not None and min_y > 0:
                 screen_gray[:min_y, :] = 0
             if max_y is not None and max_y < screen_h:
                 screen_gray[max_y:, :] = 0
+            if min_x is not None and min_x > 0:
+                screen_gray[:, :min_x] = 0
+            if max_x is not None and max_x < screen_w:
+                screen_gray[:, max_x:] = 0
 
             if not os.path.exists(template_path):
                 self._log(f"  [이미지 매칭] 템플릿 없음: {template_path}")
@@ -2487,6 +2520,12 @@ class NaverOrderWorker:
             if best_score >= threshold and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2
                 cy = best_loc[1] + best_th // 2
+                if min_x is not None and cx < min_x:
+                    self._log(f"  ❌ [이미지 매칭] 매칭 좌표 x({cx}) < min_x({min_x}) → 무효 처리")
+                    return None
+                if max_x is not None and cx > max_x:
+                    self._log(f"  ❌ [이미지 매칭] 매칭 좌표 x({cx}) > max_x({max_x}) → 무효 처리")
+                    return None
                 if min_y is not None and cy < min_y:
                     self._log(f"  ❌ [이미지 매칭] 매칭 좌표 y({cy}) < min_y({min_y}) → 무효 처리")
                     return None
