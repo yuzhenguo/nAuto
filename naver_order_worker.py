@@ -332,27 +332,35 @@ class NaverOrderWorker:
             self._log("  ❌ [단계 3.2] 로그인 아이디 관리 링크 미발견 -> 계정 전환 실패")
             return False
 
-        # 3.5. 오타 보정 로직: 화면에 보이는 아이디들과 비교해서 가장 비슷한 아이디(actual_login_id)로 보정
+        # 3.5. 오타 보정 로직: resource-id 비존재 시 content-desc 기반으로도 수집
         actual_login_id = login_id
         try:
-            id_els = self.driver.find_elements(By.XPATH, '//*[@resource-id="com.nhn.android.search:id/idText"]')
+            import difflib as _difflib
+            id_els = self.driver.find_elements(
+                By.XPATH,
+                '//*[@resource-id="com.nhn.android.search:id/idText"]'
+                ' | //android.view.View[contains(@content-desc, "간편로그인")]'
+                ' | //android.view.View[contains(@content-desc, "로그인 중")]'
+            )
             available_ids = []
             for el in id_els:
                 try:
                     txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
                     if txt:
-                        txt = txt.replace(", 더보기", "").replace(" , 간편로그인", "").replace(", 간편로그인", "").strip()
-                        if len(txt) >= 3:
+                        for suffix in [", 로그인 중, 간편로그인", ", 로그인 중",
+                                       " , 간편로그인", ", 간편로그인", ", 더보기"]:
+                            txt = txt.replace(suffix, "")
+                        txt = txt.strip()
+                        if len(txt) >= 3 and " " not in txt:
                             available_ids.append(txt)
                 except Exception:
                     pass
-            
+
             if available_ids:
                 if login_id in available_ids:
                     actual_login_id = login_id
                 else:
-                    import difflib
-                    matches = difflib.get_close_matches(login_id, available_ids, n=1, cutoff=0.6)
+                    matches = _difflib.get_close_matches(login_id, available_ids, n=1, cutoff=0.6)
                     if matches:
                         actual_login_id = matches[0]
                         self._log(f"  ℹ 아이디 오타 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
@@ -365,17 +373,57 @@ class NaverOrderWorker:
         except Exception as e:
             self._log(f"  ⚠ 아이디 목록 추출 중 예외: {e}")
 
-        # 4. 아이디선택 화면에서 타겟 아이디 찾기 및 '로그인 중' 상태 확인
+        # 4. '로그인 중' 상태 확인
+        # 방법1: XPath contains 체크 (login_id / actual_login_id 양쪽)
+        # 방법2: 화면의 모든 '로그인 중' 요소를 수집해서 difflib 유사도 체크 (오타 대응)
         already_logged_in = False
+        for cid in [login_id, actual_login_id]:
+            for xpath in [
+                f'//android.view.View[contains(@content-desc, "{cid}") and contains(@content-desc, "로그인 중")]',
+                f'//*[contains(@content-desc, "{cid}") and contains(@content-desc, "로그인 중")]',
+            ]:
+                if ah.element_exists(self.driver, xpath, timeout=2):
+                    already_logged_in = True
+                    self._log(f"  ✅ [단계 3.2] 계정 [{actual_login_id}] 이미 '로그인 중' 상태임 (XPath 매칭)")
+                    break
+            if already_logged_in:
+                break
+
+        # XPath 미감지 시 → '로그인 중' 요소 전수 조사 (difflib 유사도)
+        if not already_logged_in:
+            try:
+                import difflib as _difflib
+                login_els = self.driver.find_elements(
+                    By.XPATH, '//*[contains(@content-desc, "로그인 중")]'
+                )
+                for el in login_els:
+                    desc = el.get_attribute("content-desc") or ""
+                    raw_id = desc
+                    for suffix in [", 로그인 중, 간편로그인", ", 로그인 중", " , 간편로그인", ", 간편로그인"]:
+                        raw_id = raw_id.replace(suffix, "")
+                    raw_id = raw_id.strip()
+                    if not raw_id:
+                        continue
+                    for cid in [login_id, actual_login_id]:
+                        sim = _difflib.SequenceMatcher(None, cid, raw_id).ratio()
+                        if sim >= 0.75 or raw_id.startswith(cid[:5]) or cid.startswith(raw_id[:5]):
+                            actual_login_id = raw_id
+                            already_logged_in = True
+                            self._log(
+                                f"  ✅ [단계 3.2] 계정 [{raw_id}] 이미 '로그인 중' 상태임"
+                                f" (유사도 {sim:.2f}, 입력 아이디: {cid})"
+                            )
+                            break
+                    if already_logged_in:
+                        break
+            except Exception as e:
+                self._log(f"  ⚠ '로그인 중' 전수 조사 예외: {e}")
+
+        # verify_xpaths는 클릭 후 검증에서 재사용
         verify_xpaths = [
             f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "로그인 중")]',
             f'//*[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "로그인 중")]',
         ]
-        for xpath in verify_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=2):
-                already_logged_in = True
-                self._log(f"  ✅ [단계 3.2] 계정 [{actual_login_id}] 이미 '로그인 중' 상태임")
-                break
 
         if not already_logged_in:
             target_account_xpaths = [
