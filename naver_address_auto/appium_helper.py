@@ -374,13 +374,16 @@ def element_exists(driver, xpath: str, timeout: int = 3) -> bool:
         return False
 
 
-def go_to_main_page(driver, log_callback=None):
-    """네이버 앱 메인 페이지로 이동 (앱 재활성화)"""
+def go_to_main_page(driver, device_id: str = None, log_callback=None):
+    """네이버 앱 메인 페이지로 이동 (device_id 전달 시 앱 강제 재시작으로 원위치 복구)"""
     try:
-        driver.activate_app(NAVER_PACKAGE)
-        time.sleep(2)
+        if device_id:
+            force_stop_and_restart_app(driver, device_id, log_callback)
+        else:
+            driver.activate_app(NAVER_PACKAGE)
+            time.sleep(2)
         _log(log_callback, "메인 페이지 이동 완료")
-    except WebDriverException as e:
+    except Exception as e:
         _log(log_callback, f"[오류] 메인 페이지 이동 실패: {e}")
 
 

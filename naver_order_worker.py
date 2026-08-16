@@ -265,8 +265,8 @@ class NaverOrderWorker:
     def _go_main_and_enter_store(self, login_id: str = "") -> bool:
         """[단계 3] 메인 페이지 진입, 7초 대기 및 3.1 웰컴 모달 처리 -> [단계 3.2] 계정 전환 -> [단계 4~6] 스토어/마이쇼핑 진입"""
         self._set_status("메인 페이지 이동 중")
-        ah.go_to_main_page(self.driver, self._log)
-        time.sleep(5)
+        ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
+        time.sleep(3)
 
         # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
         self._check_and_close_welcome_modals(step_label="3.1")
@@ -1042,7 +1042,7 @@ class NaverOrderWorker:
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
     def _click_checkbox(self) -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 클릭, 2초 대기 (threshold 0.75, min_y 1000)"""
+        """[단계 12] 체크박스.png 이미지 인식 클릭, 2초 대기 (threshold 0.80, min_y 0.45*h, max_y 0.86*h)"""
         self._set_status("체크박스 클릭")
 
         w_h = 2400
@@ -1052,9 +1052,10 @@ class NaverOrderWorker:
             pass
 
         min_y_check = int(w_h * 0.45)  # 화면 하단 절반 영역에서만 체크박스 탐색
+        max_y_check = int(w_h * 0.86)  # 네비게이션 바/하단 핸들 영역(y > 86%) 강제 제외
 
         if os.path.exists(IMG_CHECKBOX):
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.75, min_y=min_y_check)
+            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.80, min_y=min_y_check, max_y=max_y_check)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 체크박스 이미지 인식 클릭 완료")
@@ -1067,13 +1068,13 @@ class NaverOrderWorker:
             '//*[@checkable="true"]',
         ]
         for xpath in checkbox_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=3):
+            if ah.element_exists(self.driver, xpath, timeout=2):
                 try:
                     els = self.driver.find_elements(By.XPATH, xpath)
                     for el in els:
                         rect = el.rect
                         cy = rect['y'] + rect['height'] // 2
-                        if cy >= min_y_check:
+                        if min_y_check <= cy <= max_y_check:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 체크박스 XPath 클릭 (y={cy}): {xpath}")
                             time.sleep(1.5)
@@ -1087,7 +1088,7 @@ class NaverOrderWorker:
     # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
 
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기 (threshold 0.78, min_y 1200)"""
+        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기 (threshold 0.75, min_y 0.50*h, max_y 0.92*h)"""
         self._set_status("바로구매 클릭")
 
         w_h = 2400
@@ -1096,37 +1097,50 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_buynow = int(w_h * 0.55)  # 바로구매 버튼은 화면 하단 55% 이하 영역만 유효
+        min_y_buynow = int(w_h * 0.50)  # 바로구매 버튼은 화면 하단 50% 이하 영역만 유효
+        max_y_buynow = int(w_h * 0.92)  # 시스템 바 제외
 
-        if os.path.exists(IMG_BUY_NOW):
-            coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.78, min_y=min_y_buynow)
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log("✅ 바로구매 이미지 인식 클릭 완료")
-                time.sleep(5)
-                return True
+        for attempt in range(1, 3):
+            if os.path.exists(IMG_BUY_NOW):
+                coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.75, min_y=min_y_buynow, max_y=max_y_buynow)
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log("✅ 바로구매 이미지 인식 클릭 완료")
+                    time.sleep(5)
+                    return True
 
-        # XPath 폴백
-        buy_now_xpaths = [
-            '//android.widget.Button[@text="바로구매"]',
-            '//android.widget.Button[contains(@text,"바로구매")]',
-            '//android.widget.Button[contains(@text,"구매")]',
-            '//*[@text="바로구매"]',
-        ]
-        for xpath in buy_now_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=3):
-                try:
-                    els = self.driver.find_elements(By.XPATH, xpath)
-                    for el in els:
-                        rect = el.rect
-                        cy = rect['y'] + rect['height'] // 2
-                        if cy >= min_y_buynow:
-                            self._safe_click_element(el)
-                            self._log(f"  ✅ 바로구매 XPath 클릭 (y={cy}): {xpath}")
-                            time.sleep(5)
-                            return True
-                except Exception:
-                    pass
+            # XPath 폴백
+            buy_now_xpaths = [
+                '//android.widget.Button[@text="바로구매"]',
+                '//android.widget.Button[contains(@text,"바로구매")]',
+                '//android.widget.Button[contains(@text,"구매")]',
+                '//*[@text="바로구매"]',
+            ]
+            for xpath in buy_now_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=2):
+                    try:
+                        els = self.driver.find_elements(By.XPATH, xpath)
+                        for el in els:
+                            rect = el.rect
+                            cy = rect['y'] + rect['height'] // 2
+                            if min_y_buynow <= cy <= max_y_buynow:
+                                self._safe_click_element(el)
+                                self._log(f"  ✅ 바로구매 XPath 클릭 (y={cy}): {xpath}")
+                                time.sleep(5)
+                                return True
+                    except Exception:
+                        pass
+
+            # 바로구매 버튼을 찾지 못한 경우 (하단 바가 닫혔을 가능성 대응)
+            if attempt == 1:
+                self._log("  ⚠ 바로구매 버튼 미발견 (1회차) → '구매하기' 버튼 재클릭으로 옵션 드로어 복구 시도")
+                if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=3):
+                    ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=3, log_callback=self._log)
+                    self._log("  ✅ '구매하기' 버튼 재클릭 완료 → 3초 대기 후 바로구매 재시도")
+                    time.sleep(3)
+                else:
+                    self._log("  ⚠ '구매하기' 버튼도 화면에 없음")
+                    break
 
         self._log("  ❌ 바로구매 버튼 미발견")
         return False
@@ -2201,7 +2215,7 @@ class NaverOrderWorker:
                     if attempt > 0:
                         self._log(f"  🔄 [{attempt}차 실패 재시도] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 진행...")
                         try:
-                            ah.go_to_main_page(self.driver, self._log)
+                            ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
                             time.sleep(2)
                         except Exception:
                             pass
@@ -2438,6 +2452,12 @@ class NaverOrderWorker:
             if best_score >= threshold and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2
                 cy = best_loc[1] + best_th // 2
+                if min_y is not None and cy < min_y:
+                    self._log(f"  ❌ [이미지 매칭] 매칭 좌표 y({cy}) < min_y({min_y}) → 무효 처리")
+                    return None
+                if max_y is not None and cy > max_y:
+                    self._log(f"  ❌ [이미지 매칭] 매칭 좌표 y({cy}) > max_y({max_y}) → 무효 처리")
+                    return None
                 self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy}), 점수: {best_score:.4f}")
                 return cx, cy
             else:
