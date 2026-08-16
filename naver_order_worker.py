@@ -2036,6 +2036,50 @@ class NaverOrderWorker:
             time.sleep(0.8)
         self._log(f"  ❌ {name} 버튼 탐색 실패")
         return False
+        
+    def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
+        """여러 이미지 중 하나라도 발견되면 미세 스크롤 조정 후 클릭"""
+        names_str = " / ".join(n for _, n in images)
+        self._set_status(f"{names_str} 탐색 중")
+        self._log(f"🔍 [{names_str}] 중 하나 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        mid_top    = int(w_h * 0.35)
+        mid_bottom = int(w_h * 0.65)
+
+        for attempt in range(1, max_scroll_attempts + 1):
+            for img_path, name in images:
+                if os.path.exists(img_path):
+                    coords = self._find_image_coords(img_path, threshold=threshold)
+                    if coords:
+                        if coords[1] < mid_top:
+                            self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
+                            self._scroll_up(distance_ratio=0.18)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=threshold)
+                            if adj: coords = adj
+                        elif coords[1] > mid_bottom:
+                            self._log(f"  📌 {name} 하단 치우침(y={coords[1]}) -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.18)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=threshold)
+                            if adj: coords = adj
+
+                        self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                        time.sleep(2)
+                        return True
+
+            self._log(f"  ⬇ [{names_str}] 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
+            time.sleep(0.8)
+        self._log(f"  ❌ [{names_str}] 버튼 모두 탐색 실패")
+        return False
 
     def _click_image_basic(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
         """지정된 이미지를 스크롤 없이 한 번만 찾아서 클릭 (또는 짧게 대기하며 재시도)"""
@@ -2226,18 +2270,14 @@ class NaverOrderWorker:
                 self._log("❌ '미신청' 및 '미신청2' 버튼 미발견 -> 무통장 결제 실패")
                 return False
 
-        # ── 결재하기 탐색 전: 팝업/닫기 버튼 점검 ──
+        # ── 결제/주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
         self._dismiss_payment_benefit_popup()
 
-        if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"):
-            self._log("❌ '결재하기' 버튼 미발견 -> 무통장 결제 실패")
-            return False
-
-        # ── 주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
-        self._dismiss_payment_benefit_popup()
-
-        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"):
-            self._log("❌ '주문하기' 버튼 미발견 -> 무통장 결제 실패")
+        if not self._click_any_image_with_scroll([
+            (IMG_DO_PAY, "결재하기"),
+            (IMG_DO_ORDER, "주문하기")
+        ]):
+            self._log("❌ '결재하기' 또는 '주문하기' 버튼 미발견 -> 무통장 결제 실패")
             return False
         return True
 
