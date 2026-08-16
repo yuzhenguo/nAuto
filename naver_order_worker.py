@@ -2190,8 +2190,17 @@ class NaverOrderWorker:
         bank_selected = False
         for bank_img, bank_name in random_bank_options:
             self._log(f"🎲 랜덤 은행 선택 시도: {bank_name}")
-            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=5):
-                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료")
+            
+            # 1. 최초 1회(실제 3번 재시도)는 스크롤 없이 탐색 (UI 렌더링 지연 대비)
+            if self._click_image_basic(bank_img, bank_name, threshold=0.70):
+                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 없이 발견)")
+                bank_selected = True
+                break
+                
+            # 2. 스크롤 없이 못 찾았을 경우 미세 스크롤 탐색 시작
+            self._log(f"🔄 {bank_name} 제자리 미발견 -> 스크롤 탐색 시작")
+            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=4):
+                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 탐색 발견)")
                 bank_selected = True
                 break
             else:
