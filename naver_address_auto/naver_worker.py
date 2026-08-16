@@ -1,4 +1,4 @@
-"""
+﻿"""
 
 naver_worker.py
 
@@ -15,6 +15,8 @@ import os
 import time
 
 import threading
+
+import subprocess
 
 from typing import Callable, Optional
 
@@ -567,6 +569,7 @@ class NaverWorker:
             try:
                 import cv2
                 import numpy as np
+                import subprocess
 
                 res = subprocess.run(["adb", "-s", self.device_id, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
                 if res.stdout and len(res.stdout) > 100:
@@ -965,6 +968,7 @@ class NaverWorker:
                 try:
                     import cv2
                     import numpy as np
+                    import subprocess
 
                     res = subprocess.run(["adb", "-s", self.device_id, "exec-out", "screencap", "-p"], capture_output=True, timeout=5)
                     if res.stdout and len(res.stdout) > 100:
@@ -3099,7 +3103,7 @@ class NaverWorker:
 
             # 원본 캡처 이미지 무조건 저장 (Unicode 경로 대응)
 
-            ss_dir = os.path.join(os.path.dirname(template_path), "screenshots")
+            ss_dir = os.path.join(os.path.dirname(template_path), "캡쳐")
             os.makedirs(ss_dir, exist_ok=True)
             screenshot_path = os.path.join(ss_dir, f"debug_screenshot_{self.device_id}.png")
 
@@ -3389,7 +3393,7 @@ class NaverWorker:
 
             # 디버그 캡처 저장
 
-            ss_dir = os.path.join(os.path.dirname(__file__), "screenshots")
+            ss_dir = os.path.join(os.path.dirname(__file__), "캡쳐")
             os.makedirs(ss_dir, exist_ok=True)
             debug_zip_path = os.path.join(ss_dir, f"debug_zipcode_screenshot_{self.device_id}.png")
 

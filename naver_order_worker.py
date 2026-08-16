@@ -845,43 +845,73 @@ class NaverOrderWorker:
 
     def _safe_click_element(self, el) -> bool:
         """
-        요소의 화면 위치(bounds/rect)를 구하여 중심 좌표를 탭(tap_by_coords)
-        화면 외부에 있을 경우 클릭 가능 위치로 스크롤 조절
+        요소의 bounds를 파싱하여 중심 좌표를 ADB tap으로 클릭
+        언제나 좌표 탭만 사용 (el.click() 다중 실행 금지)
         """
+        import re as _re
+        import subprocess
         try:
-            rect = el.rect
-            x = rect['x'] + rect['width'] // 2
-            y = rect['y'] + rect['height'] // 2
-            w_w, w_h = 1080, 2400
+            # 1. bounds attribute 직접 파싱 (가장 정확)
+            bounds_str = None
+            try:
+                bounds_str = el.get_attribute("bounds")
+            except Exception:
+                pass
 
+            if bounds_str:
+                m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                if m:
+                    x1, y1, x2, y2 = map(int, m.groups())
+                    x = (x1 + x2) // 2
+                    y = (y1 + y2) // 2
+                else:
+                    bounds_str = None
+
+            # 2. bounds 파싱 실패 시 rect 사용
+            if not bounds_str:
+                rect = el.rect
+                x = rect['x'] + rect['width'] // 2
+                y = rect['y'] + rect['height'] // 2
+
+            w_w, w_h = 1080, 2400
             try:
                 size = self.driver.get_window_size()
                 w_w, w_h = size['width'], size['height']
             except Exception:
                 pass
 
-            # 화면 영역 내부인지 검사 (상단 바 150px, 하단 바 200px 제외)
+            # 화면 영역 내부인지 검사
             if 150 <= y <= w_h - 200 and 0 < x < w_w:
-                self._log(f"  👉 상품 좌표 탭 클릭 시도: ({x}, {y})")
-                # 1순위: 좌표 탭
-                ah.tap_by_coords(self.driver, x, y, self._log)
-                time.sleep(0.5)
-                # 2순위: 요소 direct click 보조 실행
-                try:
-                    el.click()
-                except Exception:
-                    pass
+                self._log(f"  👉 ADB 좌표 탭: ({x}, {y})")
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap",
+                     str(x), str(y)],
+                    capture_output=True, timeout=5
+                )
                 return True
             else:
                 self._log(f"  ⚠ 요소 좌표가 화면 표시 범위를 벗어남 (y={y}, 화면높이={w_h}) -> 미세 스크롤")
                 self._scroll_down()
                 time.sleep(1)
                 # 스크롤 후 재시도
-                rect = el.rect
-                x = rect['x'] + rect['width'] // 2
-                y = rect['y'] + rect['height'] // 2
+                try:
+                    bounds_str2 = el.get_attribute("bounds")
+                    m2 = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str2 or "")
+                    if m2:
+                        x1, y1, x2, y2 = map(int, m2.groups())
+                        x, y = (x1 + x2) // 2, (y1 + y2) // 2
+                    else:
+                        rect = el.rect
+                        x = rect['x'] + rect['width'] // 2
+                        y = rect['y'] + rect['height'] // 2
+                except Exception:
+                    pass
                 if 150 <= y <= w_h - 200:
-                    ah.tap_by_coords(self.driver, x, y, self._log)
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(x), str(y)],
+                        capture_output=True, timeout=5
+                    )
                     return True
 
         except Exception as e:
@@ -1119,10 +1149,32 @@ class NaverOrderWorker:
                             continue
 
                     self._log(f"  🎯 배송지명 패턴 매칭 성공: '{text[:60]}'")
-                    # 해당 View 자체 또는 변경 버튼 클릭
-                    if self._click_element_or_parent(view):
+                    # bounds 를 직접 파싱해 정확한 중심 좌표로 ADB tap
+                    import re as _re, subprocess
+                    try:
+                        bounds_str = view.get_attribute("bounds") or ""
+                        m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                        if m:
+                            x1, y1, x2, y2 = map(int, m.groups())
+                            tap_x = (x1 + x2) // 2
+                            tap_y = (y1 + y2) // 2
+                        else:
+                            rect = view.rect
+                            tap_x = rect['x'] + rect['width'] // 2
+                            tap_y = rect['y'] + rect['height'] // 2
+                        self._log(f"  👉 배송지명 직접 ADB 탭: ({tap_x}, {tap_y})")
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "tap",
+                             str(tap_x), str(tap_y)],
+                            capture_output=True, timeout=5
+                        )
                         time.sleep(3)
                         return True
+                    except Exception as e:
+                        self._log(f"  ⚠ 배송지명 좌표 클릭 실패: {e}")
+                        if self._safe_click_element(view):
+                            time.sleep(3)
+                            return True
                 except Exception:
                     continue
         except Exception:
@@ -1778,7 +1830,7 @@ class NaverOrderWorker:
             
         time.sleep(2)
         
-        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots", "무통장")
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "캡쳐", "무통장")
         os.makedirs(save_dir, exist_ok=True)
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")
