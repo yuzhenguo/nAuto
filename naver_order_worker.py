@@ -1041,9 +1041,10 @@ class NaverOrderWorker:
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
-    def _click_checkbox(self) -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 클릭, 2초 대기 (threshold 0.80, min_y 0.45*h, max_y 0.86*h)"""
-        self._set_status("체크박스 클릭")
+    def _click_checkbox(self, product_name: str = "") -> bool:
+        """[단계 12] 체크박스.png 이미지 인식 및 옵션 항목 클릭, 2초 대기 (threshold 0.65, min_y 0.40*h, max_y 0.90*h)"""
+        self._set_status("체크박스/옵션 선택")
+        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
 
         w_h = 2400
         try:
@@ -1051,24 +1052,57 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_check = int(w_h * 0.45)  # 화면 하단 절반 영역에서만 체크박스 탐색
-        max_y_check = int(w_h * 0.86)  # 네비게이션 바/하단 핸들 영역(y > 86%) 강제 제외
+        min_y_check = int(w_h * 0.40)  # 화면 하단 40% 이하 영역
+        max_y_check = int(w_h * 0.90)  # y=2160 이하, 최하단 네비게이션 바(y>0.93) 제외
 
+        # 1순위: 템플릿 이미지 매칭 (threshold 0.65 로 설정하여 0.7518 점수 수용)
         if os.path.exists(IMG_CHECKBOX):
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.80, min_y=min_y_check, max_y=max_y_check)
+            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.65, min_y=min_y_check, max_y=max_y_check)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 체크박스 이미지 인식 클릭 완료")
                 time.sleep(1.5)
                 return True
 
-        # XPath 폴백
+        # 2순위: 상품명 키워드 기반 옵션 텍스트 XPath 탐색 (예: "유기농 올리브", "2박스", "레드비트샷" 등)
+        if product_name:
+            import re
+            clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
+            keywords = [k.strip() for k in clean_prod.split() if len(k.strip()) >= 2]
+            for kw in keywords[:3]:
+                safe_kw = kw.replace('"', '').replace("'", "")
+                option_xpaths = [
+                    f'//android.view.View[contains(@text, "{safe_kw}")]',
+                    f'//android.widget.TextView[contains(@text, "{safe_kw}")]',
+                    f'//*[contains(@text, "{safe_kw}")]',
+                ]
+                for xpath in option_xpaths:
+                    if ah.element_exists(self.driver, xpath, timeout=1):
+                        try:
+                            els = self.driver.find_elements(By.XPATH, xpath)
+                            for el in els:
+                                rect = el.rect
+                                cy = rect['y'] + rect['height'] // 2
+                                if min_y_check <= cy <= max_y_check:
+                                    self._safe_click_element(el)
+                                    self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, y={cy}): {xpath}")
+                                    time.sleep(1.5)
+                                    return True
+                        except Exception:
+                            pass
+
+        # 3순위: 기본 CheckBox / checkable / 옵션 키워드 XPath 폴백
         checkbox_xpaths = [
             '//android.widget.CheckBox',
             '//*[@checkable="true"]',
+            '//*[contains(@text, "박스")]',
+            '//*[contains(@text, "포")]',
+            '//*[contains(@text, "개")]',
+            '//*[contains(@text, "동의")]',
+            '//*[contains(@text, "구매조건")]',
         ]
         for xpath in checkbox_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=2):
+            if ah.element_exists(self.driver, xpath, timeout=1):
                 try:
                     els = self.driver.find_elements(By.XPATH, xpath)
                     for el in els:
@@ -1088,7 +1122,7 @@ class NaverOrderWorker:
     # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
 
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기 (threshold 0.75, min_y 0.50*h, max_y 0.92*h)"""
+        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기 (threshold 0.70, min_y 0.50*h, max_y 0.93*h)"""
         self._set_status("바로구매 클릭")
 
         w_h = 2400
@@ -1098,22 +1132,23 @@ class NaverOrderWorker:
             pass
 
         min_y_buynow = int(w_h * 0.50)  # 바로구매 버튼은 화면 하단 50% 이하 영역만 유효
-        max_y_buynow = int(w_h * 0.92)  # 시스템 바 제외
+        max_y_buynow = int(w_h * 0.93)  # 시스템 바 제외
 
         for attempt in range(1, 3):
             if os.path.exists(IMG_BUY_NOW):
-                coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.75, min_y=min_y_buynow, max_y=max_y_buynow)
+                coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.70, min_y=min_y_buynow, max_y=max_y_buynow)
                 if coords:
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     self._log("✅ 바로구매 이미지 인식 클릭 완료")
                     time.sleep(5)
                     return True
 
-            # XPath 폴백
+            # XPath 폴백 ("구매조건" 동의 문구 오매칭 방지를 위해 정확한 바로구매 문구만 탐색)
             buy_now_xpaths = [
                 '//android.widget.Button[@text="바로구매"]',
                 '//android.widget.Button[contains(@text,"바로구매")]',
-                '//android.widget.Button[contains(@text,"구매")]',
+                '//android.view.View[contains(@text,"바로구매")]',
+                '//*[@content-desc="바로구매"]',
                 '//*[@text="바로구매"]',
             ]
             for xpath in buy_now_xpaths:
@@ -2332,8 +2367,8 @@ class NaverOrderWorker:
         # [단계 11] 구매하기 버튼
         self._click_buy_button()
 
-        # [단계 12] 체크박스 클릭
-        self._click_checkbox()
+        # [단계 12] 체크박스/옵션 항목 클릭
+        self._click_checkbox(row.product_name)
 
         # [단계 13] 바로구매 클릭
         if not self._click_buy_now():
