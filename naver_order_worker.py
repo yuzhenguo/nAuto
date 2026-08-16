@@ -339,9 +339,11 @@ class NaverOrderWorker:
             available_ids = []
             for el in id_els:
                 try:
-                    txt = el.get_attribute("text")
+                    txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
                     if txt:
-                        available_ids.append(txt)
+                        txt = txt.replace(", 더보기", "").replace(" , 간편로그인", "").replace(", 간편로그인", "").strip()
+                        if len(txt) >= 3:
+                            available_ids.append(txt)
                 except Exception:
                     pass
             
@@ -379,11 +381,9 @@ class NaverOrderWorker:
             target_account_xpaths = [
                 f'//android.view.View[@content-desc="{actual_login_id} , 간편로그인"]',
                 f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "간편로그인")]',
-                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
-                f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
-                f'//*[contains(@content-desc, "{actual_login_id}")]',
-                f'//*[contains(@text, "{actual_login_id}")]',
+                f'//android.view.View[contains(@content-desc, "{actual_login_id}") and not(contains(@content-desc, "더보기"))]',
+                f'//*[contains(@content-desc, "{actual_login_id}") and not(contains(@content-desc, "더보기"))]',
+                f'//*[contains(@text, "{actual_login_id}") and not(contains(@text, "더보기"))]',
             ]
             target_el = None
             for xpath in target_account_xpaths:
