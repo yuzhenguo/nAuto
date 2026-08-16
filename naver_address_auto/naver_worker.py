@@ -1086,6 +1086,7 @@ class NaverWorker:
         """
 
         [단계 9.1~9.3] 기본배송지 제외 기존 배송지 모두 삭제
+        삭제.png 이미지 인식으로 삭제 버튼 탐색, 스크롤 반복 (최대 15회)
 
         """
 
@@ -1093,95 +1094,114 @@ class NaverWorker:
 
         self._log("🗑 기존 배송지 삭제 시작")
 
-
-
-        # 대기 추가: 배송지 관리 화면 로드 대기 (최대 10초)
-
+        # 배송지 관리 화면 로드 대기 (최대 10초)
         ah.wait_for_element(self.driver, NEW_ADDRESS_BTN_XPATH, timeout=10, log_callback=self._log)
 
+        delete_img_path = os.path.join(os.path.dirname(__file__), "삭제.png")
+        img_based = os.path.exists(delete_img_path)
+        if img_based:
+            self._log(f"  📂 삭제.png 이미지 파일 발견: {delete_img_path}")
+        else:
+            self._log(f"  ⚠ 삭제.png 파일 없음 → XPath 기반 삭제로 전환 ({delete_img_path})")
 
+        MAX_LOOPS = 15
+        deleted_count = 0
 
-        for loop_count in range(DELETE_LOOP_MAX):
+        for loop_count in range(MAX_LOOPS):
 
             if self._stop_event.is_set():
-
                 break
-
-
 
             time.sleep(1)
 
+            tap_x, tap_y = None, None
 
+            # ─── 1순위: 삭제.png 이미지 매칭으로 삭제 버튼 좌표 탐색 ───
+            if img_based:
+                coords = self._find_image_coords(delete_img_path, threshold=0.70)
+                if coords:
+                    tap_x, tap_y = coords
+                    self._log(f"  🎯 [이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
 
-            # ListView 내 기본배송지가 아닌 삭제 버튼 탐색
+            # ─── 2순위: 이미지 미감지 시 XPath로 폴백 ───
+            if tap_x is None:
+                target_btn = self._find_non_default_delete_button()
+                if target_btn:
+                    try:
+                        rect = target_btn.rect
+                        tap_x = int(rect['x'] + rect['width'] // 2)
+                        tap_y = int(rect['y'] + rect['height'] // 2)
+                        self._log(f"  📌 [XPath 폴백] 삭제 버튼 발견 좌표: ({tap_x}, {tap_y})")
+                    except Exception:
+                        try:
+                            target_btn.click()
+                            self._log(f"  📌 [XPath 폴백] 삭제 버튼 direct click (loop {loop_count + 1})")
+                            tap_x = 0  # click 완료 표시용
+                            tap_y = 0
+                        except Exception as e:
+                            self._log(f"  ⚠ 삭제 버튼 클릭 실패: {e}")
 
-            target_delete_btn = self._find_non_default_delete_button()
-
-
-
-            if not target_delete_btn:
-
-                # 스크롤 후 재탐색
-
+            # ─── 삭제 버튼 미발견: 스크롤 후 재탐색, 없으면 종료 ───
+            if tap_x is None:
+                self._log(f"  📜 삭제 버튼 미발견 → 스크롤 후 재탐색 (loop {loop_count + 1})")
                 self._scroll_down()
-
                 time.sleep(1.5)
 
-                target_delete_btn = self._find_non_default_delete_button()
+                # 스크롤 후 재탐색
+                if img_based:
+                    coords = self._find_image_coords(delete_img_path, threshold=0.70)
+                    if coords:
+                        tap_x, tap_y = coords
+                        self._log(f"  🎯 [스크롤 후 이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
 
-                if not target_delete_btn:
+                if tap_x is None:
+                    target_btn = self._find_non_default_delete_button()
+                    if target_btn:
+                        try:
+                            rect = target_btn.rect
+                            tap_x = int(rect['x'] + rect['width'] // 2)
+                            tap_y = int(rect['y'] + rect['height'] // 2)
+                        except Exception:
+                            pass
 
+                if tap_x is None:
                     self._log("✅ 삭제 완료 (더 이상 삭제할 주소 없음)")
-
                     break
 
+            # ─── ADB tap 으로 삭제 버튼 클릭 ───
+            if tap_x is not None and not (tap_x == 0 and tap_y == 0):
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(tap_x), str(tap_y)],
+                        capture_output=True, timeout=5
+                    )
+                    self._log(f"  ✅ 삭제 버튼 탭 완료 (loop {loop_count + 1}, 좌표: {tap_x},{tap_y})")
+                except Exception as e:
+                    self._log(f"  ⚠ ADB tap 실패: {e}")
 
-
-            # [9.1] 삭제 버튼 클릭
-
-            try:
-
-                target_delete_btn.click()
-
-                self._log(f"  삭제 버튼 클릭 (loop {loop_count + 1})")
-
-            except WebDriverException as e:
-
-                self._log(f"  삭제 버튼 click() 실패 ({e}) → 좌표 탭 시도")
-
-                if not self._click_element_center_coordinates(target_delete_btn):
-
-                    continue
-
-
+            time.sleep(1)
 
             # [9.2] 삭제 확인 팝업에서 OK 버튼 클릭
-
-            if ah.element_exists(self.driver, DELETE_CONFIRM_XPATH, timeout=5):
-
-                ah.wait_and_click(self.driver, DELETE_CONFIRM_XPATH, timeout=5, log_callback=self._log)
-
+            if ah.element_exists(self.driver, DELETE_CONFIRM_XPATH, timeout=4):
+                ah.wait_and_click(self.driver, DELETE_CONFIRM_XPATH, timeout=4, log_callback=self._log)
                 self._log("  삭제 확인 OK 클릭 완료")
-
             else:
+                if ah.element_exists(self.driver, '//android.widget.Button[@text="확인"]', timeout=2):
+                    ah.wait_and_click(self.driver, '//android.widget.Button[@text="확인"]',
+                                      timeout=2, log_callback=self._log)
 
-                # android:id/button1 이 없으면 '확인' 텍스트 버튼 시도
-
-                ah.wait_and_click(self.driver, '//android.widget.Button[@text="확인"]',
-
-                                  timeout=3, log_callback=self._log)
+            deleted_count += 1
 
             # 삭제 완료 후 WebView 재로딩 대기
-
             self._wait_webview_ready(label="삭제 후", timeout=10)
 
-
-
-        self._log("🗑 삭제 루프 종료")
+        self._log(f"🗑 삭제 루프 종료 (총 {deleted_count}건 삭제)")
 
         # 삭제 루프 전체 완료 후 WebView 완전 로딩 대기
-
         self._wait_webview_ready(label="삭제 루프 완료", timeout=15)
+
 
 
 
