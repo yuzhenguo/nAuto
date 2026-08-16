@@ -88,15 +88,24 @@ if not os.path.exists(IMG_ACTIVE):
     IMG_ACTIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naver_address_auto", "활성.PNG")
 
 
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+def _run_cmd(cmd, **kwargs):
+    """Windows GUI/GDI 프로세스 핸들 누수 방지 안전 subprocess 래퍼"""
+    if sys.platform == "win32" and "creationflags" not in kwargs:
+        kwargs["creationflags"] = CREATE_NO_WINDOW
+    import subprocess
+    return subprocess.run(cmd, **kwargs)
+
+
 def _check_image_exists_on_device(device_id: str, template_path: str, threshold: float = 0.65) -> bool:
     """ADB screencap으로 화면을 캡처하여 템플릿 이미지가 존재하는지 확인 (main_order.py의 check_image_exists_on_device와 동일)"""
     if not os.path.exists(template_path):
         return False
     try:
-        import subprocess
         import cv2
         import numpy as np
-        res = subprocess.run(
+        res = _run_cmd(
             ["adb", "-s", device_id, "exec-out", "screencap", "-p"],
             capture_output=True, timeout=8
         )
@@ -1345,7 +1354,7 @@ class NaverOrderWorker:
                             tap_x = rect['x'] + rect['width'] // 2
                             tap_y = rect['y'] + rect['height'] // 2
                         self._log(f"  👉 직접 ADB 탭: ({tap_x}, {tap_y})")
-                        subprocess.run(
+                        _run_cmd(
                             ["adb", "-s", self.device_id, "shell", "input", "tap",
                              str(tap_x), str(tap_y)],
                             capture_output=True, timeout=5
@@ -2230,10 +2239,14 @@ class NaverOrderWorker:
                     self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
                 self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
+                import gc
+                gc.collect()
                 time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 주문 실패 (총 {max_retries + 1}회 시도 모두 실패): {row.search_keyword} → F 기록")
+                import gc
+                gc.collect()
 
         self._log("📋 주문 루프 종료")
 
@@ -2489,8 +2502,7 @@ class NaverOrderWorker:
 
         # 4순위: ADB shell input swipe (WebView 및 예외 발생 시 보장)
         try:
-            import subprocess
-            subprocess.run(
+            _run_cmd(
                 ["adb", "-s", self.device_id, "shell", "input", "swipe",
                  str(w // 2), str(start_y), str(w // 2), str(end_y), "500"],
                 capture_output=True, timeout=5
@@ -2537,8 +2549,7 @@ class NaverOrderWorker:
             pass
 
         try:
-            import subprocess
-            subprocess.run(
+            _run_cmd(
                 ["adb", "-s", self.device_id, "shell", "input", "swipe",
                  str(w // 2), str(start_y), str(w // 2), str(end_y), "500"],
                 capture_output=True, timeout=5
