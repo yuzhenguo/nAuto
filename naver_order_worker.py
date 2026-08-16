@@ -255,7 +255,7 @@ class NaverOrderWorker:
         """[단계 3] 메인 페이지 진입, 7초 대기 및 3.1 웰컴 모달 처리 -> [단계 3.2] 계정 전환 -> [단계 4~6] 스토어/마이쇼핑 진입"""
         self._set_status("메인 페이지 이동 중")
         ah.go_to_main_page(self.driver, self._log)
-        time.sleep(7)
+        time.sleep(5)
 
         # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
         self._check_and_close_welcome_modals(step_label="3.1")
@@ -275,10 +275,10 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
             self._log("📌 네이버 플러스 스토어 탭 감지 → 클릭")
             ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=7, log_callback=self._log)
-            time.sleep(5)
+            time.sleep(3)
         else:
             self._log("⏭ 스토어 탭 없음 (이미 스토어 화면)")
-            time.sleep(3)
+            time.sleep(2)
 
         # [단계 5] 팝업 처리
         self._dismiss_popups()
@@ -288,10 +288,10 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
             self._log("✅ 마이쇼핑 클릭 완료 (10초 대기)")
-            time.sleep(10)
+            time.sleep(7)
         else:
             self._log("⚠ 마이쇼핑 버튼 미발견")
-            time.sleep(3)
+            time.sleep(2)
 
         # 마이쇼핑 진입 후 팝업 및 웰컴 모달 재처리
         self._dismiss_popups()
@@ -326,7 +326,7 @@ class NaverOrderWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 메뉴 버튼 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 menu_clicked = True
                 break
 
@@ -344,7 +344,7 @@ class NaverOrderWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 설정 버튼 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 setting_clicked = True
                 break
 
@@ -364,7 +364,7 @@ class NaverOrderWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 로그인 아이디 관리 링크 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 mgmt_clicked = True
                 break
 
@@ -613,7 +613,7 @@ class NaverOrderWorker:
                 if ah.element_exists(self.driver, xpath, timeout=2):
                     self._log(f"📌 [{step_label}] 웰컴 모달/팝업 버튼 발견 → 클릭 시도: {xpath[:50]}")
                     ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                    time.sleep(1.5)
+                    time.sleep(1.0)
             except Exception as e:
                 self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {e}")
 
@@ -624,11 +624,11 @@ class NaverOrderWorker:
                 label = "하루" if "하루" in xpath else "7일"
                 self._log(f"📌 '{label} 동안 보지 않기' 팝업 감지 → 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
-                time.sleep(2)
+                time.sleep(1.5)
         # 한 번 더 하루 보지 않기 확인 (문서 요구사항)
         if ah.element_exists(self.driver, HIDE_BTN_1DAY, timeout=3):
             ah.wait_and_click(self.driver, HIDE_BTN_1DAY, timeout=5, log_callback=self._log)
-            time.sleep(2)
+            time.sleep(1.5)
 
     # ─── 단계 7: 마이쇼핑 검색 버튼 클릭 ────────────────────────────────────
 
@@ -643,7 +643,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5):
             ah.wait_and_click(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 마이쇼핑 검색 버튼 클릭 완료")
-            time.sleep(2)
+            time.sleep(1.5)
             clicked = True
         else:
             self._log("⚠ 검색 버튼 미발견 → 좌표 탭 시도")
@@ -655,7 +655,7 @@ class NaverOrderWorker:
                 tap_y = int(h * 0.890)
                 ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
                 self._log(f"✅ 검색 버튼 좌표 탭 완료 ({tap_x}, {tap_y})")
-                time.sleep(2)
+                time.sleep(1.5)
                 clicked = True
             except Exception as e:
                 self._log(f"❌ 검색 버튼 클릭 실패: {e}")
@@ -749,7 +749,7 @@ class NaverOrderWorker:
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("  ✅ 검색아이콘 이미지 인식 클릭 완료")
-                time.sleep(5)
+                time.sleep(3)
                 return True
 
         # 2순위: 키보드 엔터 (검색)
@@ -760,7 +760,7 @@ class NaverOrderWorker:
                 capture_output=True, timeout=5
             )
             self._log("  ✅ 엔터 키 전송 완료 (검색)")
-            time.sleep(5)
+            time.sleep(3)
             return True
         except Exception as e:
             self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
@@ -773,7 +773,7 @@ class NaverOrderWorker:
             tap_y = int(h * 0.08)
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
             self._log(f"  ✅ 검색 버튼 좌표 탭 완료 ({tap_x}, {tap_y})")
-            time.sleep(5)
+            time.sleep(3)
             return True
         except Exception as e:
             self._log(f"  ❌ 검색 버튼 클릭 최종 실패: {e}")
@@ -854,7 +854,7 @@ class NaverOrderWorker:
                             if is_full_match:
                                 self._log(f"  📌 상품명 직접 매칭 발견: {dxpath}")
                                 if self._safe_click_element(el):
-                                    time.sleep(5)
+                                    time.sleep(3)
                                     return True
                     except Exception:
                         pass
@@ -904,7 +904,7 @@ class NaverOrderWorker:
                     if best_score >= 2:
                         self._log(f"  📌 상품 완전 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
                         if self._safe_click_element(best_el):
-                            time.sleep(5)
+                            time.sleep(3)
                             return True
                         else:
                             self._log("  ⚠ 좌표 클릭 실패, 계속 탐색...")
@@ -915,7 +915,7 @@ class NaverOrderWorker:
             if scroll_cnt < scroll_max:
                 self._log(f"  ⬇ 스크롤 다운 ({scroll_cnt + 1}/{scroll_max})")
                 self._scroll_down()
-                time.sleep(1.5)
+                time.sleep(1.0)
 
         # 20회 스크롤 완료 후에도 완전 매칭이 없었던 경우 폴백 후보 사용
         if fallback_candidates:
@@ -923,7 +923,7 @@ class NaverOrderWorker:
             best_score, best_kw_cnt, best_el, best_txt = fallback_candidates[0]
             self._log(f"  📌 [폴백] 상품 부분 매칭 선택 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
             if self._safe_click_element(best_el):
-                time.sleep(5)
+                time.sleep(3)
                 return True
 
         self._log(f"  ❌ 상품 매칭 최종 실패: {seller_name} / {product_name}")
@@ -1023,7 +1023,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=5):
             ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 구매하기 버튼 클릭 완료")
-            time.sleep(5)
+            time.sleep(3)
             return True
         self._log("⚠ 구매하기 버튼 미발견 → 계속 진행")
         return True  # 없어도 계속 진행
@@ -1047,7 +1047,7 @@ class NaverOrderWorker:
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 체크박스 이미지 인식 클릭 완료")
-                time.sleep(2)
+                time.sleep(1.5)
                 return True
 
         # XPath 폴백
@@ -1065,7 +1065,7 @@ class NaverOrderWorker:
                         if cy >= min_y_check:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 체크박스 XPath 클릭 (y={cy}): {xpath}")
-                            time.sleep(2)
+                            time.sleep(1.5)
                             return True
                 except Exception:
                     pass
@@ -1092,7 +1092,7 @@ class NaverOrderWorker:
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 바로구매 이미지 인식 클릭 완료")
-                time.sleep(8)
+                time.sleep(5)
                 return True
 
         # XPath 폴백
@@ -1112,7 +1112,7 @@ class NaverOrderWorker:
                         if cy >= min_y_buynow:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 바로구매 XPath 클릭 (y={cy}): {xpath}")
-                            time.sleep(8)
+                            time.sleep(5)
                             return True
                 except Exception:
                     pass
@@ -1128,7 +1128,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, CHANGE_BTN_XPATH, timeout=5):
             ah.wait_and_click(self.driver, CHANGE_BTN_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 변경 버튼 클릭 완료")
-            time.sleep(3)
+            time.sleep(2)
             return True
         self._log("⚠ 변경 버튼 미발견 → 계속 진행")
         return True
@@ -1463,7 +1463,7 @@ class NaverOrderWorker:
                                     # 같은 View에 전화번호도 있으면 바로 클릭
                                     self._log(f"  🎯 배송지 발견 (이름+전화 동일 View): '{nv_text[:50]}'")
                                     if self._click_element_or_parent(nv):
-                                        time.sleep(5)
+                                        time.sleep(3)
                                         return True
                                 else:
                                     # 같은 View에 없으면 부모 영역 탐색
@@ -1486,7 +1486,7 @@ class NaverOrderWorker:
 
                             self._log(f"  🎯 배송지 발견: '{nv_text[:50]}'")
                             if self._click_element_or_parent(nv):
-                                time.sleep(5)
+                                time.sleep(3)
                                 return True
                         except Exception:
                             continue
@@ -1517,7 +1517,7 @@ class NaverOrderWorker:
                         continue
                     self._log(f"  🎯 RadioButton '선택' 클릭 - 수취인 '{recipient_name}' 매칭")
                     rb.click()
-                    time.sleep(5)
+                    time.sleep(3)
                     return True
                 except Exception:
                     continue
@@ -1543,7 +1543,7 @@ class NaverOrderWorker:
         scroll_max = 8  # 스크롤 횟수 증가 (5 → 8)
 
         # ── 화면 안정화 대기 (변경 버튼 클릭 후 팝업/페이지 로딩) ──
-        time.sleep(2)
+        time.sleep(1.5)
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
         self._log("  📋 현재 화면에서 수취인 탐색 중 (스크롤 없음)...")
@@ -1575,7 +1575,7 @@ class NaverOrderWorker:
         for scroll_cnt in range(1, scroll_max + 1):
             self._log(f"  ⬇ 배송지 목록 스크롤 ({scroll_cnt}/{scroll_max})")
             self._scroll_down()
-            time.sleep(1.5)
+            time.sleep(1.0)
 
             self._log(f"  📋 스크롤 후 수취인 재탐색...")
             if self._find_recipient_on_screen(recipient_name, phone_digits):
@@ -1612,7 +1612,7 @@ class NaverOrderWorker:
                     self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, cx, cy, self._log)
                     self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
-                    time.sleep(3)
+                    time.sleep(2)
                     return True
 
             # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
@@ -1636,7 +1636,7 @@ class NaverOrderWorker:
                                 self._log(f"  🎯 전액사용 XPath 발견: {xpath} (y={cy}) -> 클릭 시도")
                                 if self._safe_click_element(el):
                                     self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
-                                    time.sleep(3)
+                                    time.sleep(2)
                                     return True
                 except Exception:
                     continue
@@ -1644,7 +1644,7 @@ class NaverOrderWorker:
             # 3. 미발견 시 부드럽게 미세 스크롤 다운
             self._log(f"  ⬇ [단계 17] 전액사용 미발견 또는 Y범위 밖 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.18)
-            time.sleep(1.2)
+            time.sleep(0.8)
 
         self._log("  ❌ 전액사용 버튼 탐색 실패 (최대 스크롤 초과)")
         return False
@@ -1659,7 +1659,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
             ah.wait_and_click(self.driver, PAY_BTN_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 결제하기 버튼 클릭 완료")
-            time.sleep(5)
+            time.sleep(3)
             return True
 
         # 폴백: 좌표
@@ -1670,7 +1670,7 @@ class NaverOrderWorker:
             tap_y = int(h * 0.92)
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
             self._log(f"  ✅ 결제하기 좌표 탭 ({tap_x}, {tap_y})")
-            time.sleep(5)
+            time.sleep(3)
             return True
         except Exception as e:
             self._log(f"  ❌ 결제하기 클릭 실패: {e}")
@@ -1769,12 +1769,12 @@ class NaverOrderWorker:
 
                     self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(3)
+                    time.sleep(2)
                     return True
 
             self._log(f"  ⬇ {name} 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
-            time.sleep(1.2)
+            time.sleep(0.8)
         self._log(f"  ❌ {name} 버튼 탐색 실패")
         return False
 
@@ -1787,7 +1787,7 @@ class NaverOrderWorker:
                 if coords:
                     self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(3)
+                    time.sleep(2)
                     return True
             time.sleep(1)
         self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
@@ -1796,14 +1796,13 @@ class NaverOrderWorker:
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 5) -> bool:
         """
         [무통장입금 클릭 후 판단]
-        '은행을.png' 또는 '은행선택.png' 탐색 (최대 5회 스크롤)
-        '은행선택.png', '은행을.png' 이미지 또는 '은행' 관련 XPath 인식 시 화면 중앙 조절 후 탭 클릭.
+        '은행을.png' 탐색 (최대 5회 스크롤)
+        '은행을.png' 이미지 인식 시 화면 중앙 조절 후 탭 클릭.
         """
         self._set_status("은행 선택 탐색 및 판단 중")
-        self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행선택.png' / '은행을.png', 최대 {max_scroll_attempts}회 시도)")
+        self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행을.png', 최대 {max_scroll_attempts}회 시도)")
 
         bank_images = [
-            (IMG_BANK_SELECT, "은행선택"),
             (IMG_SELECT_BANK, "은행을"),
         ]
         bank_xpaths = [
@@ -1844,7 +1843,7 @@ class NaverOrderWorker:
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        time.sleep(3)
+                        time.sleep(2)
                         return True
 
             # 2. XPath 매칭 폴백
@@ -1854,16 +1853,16 @@ class NaverOrderWorker:
                         self._log(f"  🎯 은행 선택 XPath 발견: {xpath} -> 클릭 및 존재 확인 성공")
                         el = self.driver.find_element(By.XPATH, xpath)
                         if self._safe_click_element(el):
-                            time.sleep(3)
+                            time.sleep(2)
                             return True
                 except Exception:
                     continue
 
-            self._log(f"  ⬇ '은행을'/'은행선택' 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._log(f"  ⬇ '은행을' 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
-            time.sleep(1.2)
+            time.sleep(0.8)
 
-        self._log(f"  ❌ [실패] 무통장입금 클릭 후 '은행을' / '은행선택' 미발견 (최대 {max_scroll_attempts}회 시도 초과 -> 작업 중단)")
+        self._log(f"  ❌ [실패] 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과 -> 작업 중단)")
         return False
 
     def _process_bank_transfer(self) -> bool:
@@ -1879,7 +1878,7 @@ class NaverOrderWorker:
             return False
 
         # 무통장입금 클릭 후 2초 대기하여 화면 전환 보장
-        time.sleep(2.0)
+        time.sleep(1.5)
 
         # 무통장입금 클릭 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
         if not self._click_bank_select_with_scroll(max_scroll_attempts=5):
