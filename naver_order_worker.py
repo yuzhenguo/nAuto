@@ -1730,53 +1730,103 @@ class NaverOrderWorker:
             self._log("  ❌ 비밀번호 입력 실패 (일부 숫자 인식 불가)")
             return False
 
-    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
-        """지정된 이미지를 미세 스크롤하며 찾고, 화면 중앙 영역에 정렬하여 클릭"""
-        self._set_status(f"{name} 탐색 중")
-        self._log(f"🔍 {name} 버튼 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
+    def _capture_and_log_bank_transfer(self, row: OrderRow) -> bool:
+        """무통장 결제 완료 후 스크린샷 캡쳐 및 주문번호/계좌번호 로그 저장.
+        주문번호가 확인되면 True, 미확인 시 False 반환."""
+        self._log("📸 무통장입금 완료 화면 캡쳐 및 정보 추출 대기 중...")
 
-        w_h = 2400
+        import re
+        order_num_xpath = '//android.widget.Button[contains(@text, "복사하기")]'
+        bank_xpath = '//android.widget.Button[contains(@text, "은행")]'
+
+        loaded = False
+        for _ in range(10):
+            if ah.element_exists(self.driver, order_num_xpath, timeout=1) or ah.element_exists(self.driver, bank_xpath, timeout=1):
+                loaded = True
+                break
+            time.sleep(1)
+
+        if not loaded:
+            self._log("⚠ 무통장 결제 완료 화면 요소 확인 지연. 스크린샷 캡쳐를 진행합니다.")
+
+        time.sleep(2)
+
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "캡쳐", "무통장")
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_keyword = re.sub(r'[\\/*?"<>|]', "", row.search_keyword)
+        screenshot_filename = f"무통장_{timestamp}_{safe_keyword}.png"
+        screenshot_path = os.path.join(save_dir, screenshot_filename)
+
         try:
-            w_h = self.driver.get_window_size()['height']
-        except Exception:
-            pass
+            screenshot_data = self._get_screenshot()
+            with open(screenshot_path, "wb") as f:
+                f.write(screenshot_data)
+            self._log(f"✅ 무통장 스크린샷 저장 완료: {screenshot_path}")
+        except Exception as e:
+            self._log(f"❌ 스크린샷 캡쳐 실패: {e}")
 
-        # 화면 중앙 범위 정의 (화면 높이 35% ~ 65%)
-        mid_top = int(w_h * 0.35)
-        mid_bottom = int(w_h * 0.65)
+        order_number_text = ""
+        bank_info_text = "알수없음"
 
-        for attempt in range(1, max_scroll_attempts + 1):
-            if os.path.exists(img_path):
-                coords = self._find_image_coords(img_path, threshold=threshold)
-                if coords:
-                    # 상단으로 너무 치우쳐 있는 경우 -> 미세 스크롤 업으로 중앙 조절
-                    if coords[1] < mid_top:
-                        self._log(f"  📌 {name} 버튼 상단 치우침(y={coords[1]}) -> 화면 중앙 조절용 미세 스크롤 업")
-                        self._scroll_up(distance_ratio=0.18)
-                        time.sleep(1.0)
-                        adj_coords = self._find_image_coords(img_path, threshold=threshold)
-                        if adj_coords:
-                            coords = adj_coords
+        # ── 주문번호 추출 (복사하기 버튼 옆 텍스트) ──
+        try:
+            els = self.driver.find_elements(By.XPATH, order_num_xpath)
+            if els:
+                text = els[0].text or ""
+                extracted = text.replace("복사하기", "").strip()
+                if extracted:
+                    order_number_text = extracted
+        except Exception as e:
+            self._log(f"⚠ 주문번호 추출 실패: {e}")
 
-                    # 하단으로 너무 치우쳐 있는 경우 -> 미세 스크롤 다운으로 중앙 조절
-                    elif coords[1] > mid_bottom:
-                        self._log(f"  📌 {name} 버튼 하단 치우침(y={coords[1]}) -> 화면 중앙 조절용 미세 스크롤 다운")
-                        self._scroll_down(distance_ratio=0.18)
-                        time.sleep(1.0)
-                        adj_coords = self._find_image_coords(img_path, threshold=threshold)
-                        if adj_coords:
-                            coords = adj_coords
+        # ── 주문번호 미추출 시 전체 화면 텍스트에서 패턴 탐색 ──
+        if not order_number_text:
+            try:
+                all_els = self.driver.find_elements(By.XPATH, '//*[@text]')
+                for el in all_els:
+                    t = (el.get_attribute("text") or "").strip()
+                    # 주문번호 패턴: 숫자로만 구성된 10자리 이상
+                    if re.fullmatch(r'\d{10,}', t):
+                        order_number_text = t
+                        self._log(f"  🔍 주문번호 패턴 추출: {order_number_text}")
+                        break
+            except Exception as e:
+                self._log(f"⚠ 주문번호 패턴 탐색 실패: {e}")
 
-                    self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(2)
-                    return True
+        # ── 계좌정보 추출 ──
+        try:
+            els = self.driver.find_elements(By.XPATH, bank_xpath)
+            for el in els:
+                text = el.text or ""
+                if any(char.isdigit() for char in text) and len(text) > 5:
+                    bank_info_text = text.strip()
+                    break
+        except Exception as e:
+            self._log(f"⚠ 계좌번호 추출 실패: {e}")
 
-            self._log(f"  ⬇ {name} 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.8)
-        self._log(f"  ❌ {name} 버튼 탐색 실패")
-        return False
+        # ── 로그 파일 기록 ──
+        order_display = order_number_text if order_number_text else "알수없음"
+        log_filename = "무통장로그.txt"
+        log_path = os.path.join(save_dir, log_filename)
+        log_content = f"[{timestamp}] 키워드: {row.search_keyword} | 주문번호: {order_display} | 계좌정보: {bank_info_text}\n"
+
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(log_content)
+            self._log(f"✅ 무통장 정보 로그 기록 완료 (주문번호: {order_display}, 계좌정보: {bank_info_text})")
+        except Exception as e:
+            self._log(f"❌ 무통장 로그 기록 실패: {e}")
+
+        # ── 주문번호 확인 여부로 성공/실패 반환 ──
+        if order_number_text:
+            self._log(f"✅ [무통장 성공 확인] 주문번호: {order_number_text}")
+            return True
+        else:
+            self._log("❌ [무통장 실패] 주문번호 미확인 → 성공으로 처리하지 않음")
+            return False
+
 
     def _click_image_basic(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
         """지정된 이미지를 스크롤 없이 한 번만 찾아서 클릭 (또는 짧게 대기하며 재시도)"""
@@ -1979,14 +2029,26 @@ class NaverOrderWorker:
                 raise
 
             if success:
-                self.order_manager.mark_success(row.row_index)
-                self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
-                
                 if row.payment_method == "무통장":
+                    # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
-                        self._capture_and_log_bank_transfer(row)
+                        order_confirmed = self._capture_and_log_bank_transfer(row)
                     except Exception as e:
                         self._log(f"❌ 무통장 스크린샷/로그 처리 중 예외 발생: {e}")
+                        order_confirmed = False
+
+                    if order_confirmed:
+                        self.order_manager.mark_success(row.row_index)
+                        self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
+                    else:
+                        self.order_manager.mark_failed(row.row_index)
+                        self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
+                        self._log("⏳ [무통장 실패] 30초 대기 중...")
+                        time.sleep(30)
+                        continue
+                else:
+                    self.order_manager.mark_success(row.row_index)
+                    self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
                 self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
                 time.sleep(30)

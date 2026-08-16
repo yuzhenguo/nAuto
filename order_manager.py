@@ -169,8 +169,11 @@ class OrderManager:
                     status_val = ws.cell(row_idx, cm["status"]).value
                     status_str = self._str(status_val)
 
-                    if status_str != "":  # 완료여부 공백인 행만 처리
-                        continue
+                    # 완료여부가 공백/None인 행만 처리 (Y, F, 기타 값은 모두 건너뜀)
+                    if status_val is None or status_str.upper() in ("NONE", ""):
+                        pass  # 미처리 행 → 작업 대상
+                    else:
+                        continue  # 이미 처리된 행(Y/F/기타) → 건너뜀
 
                     # 폰ID 필터링: 엑셀 폰ID가 현재 기기ID와 정확히 일치해야만 처리
                     row_device_id = ""
