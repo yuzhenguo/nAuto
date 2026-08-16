@@ -2079,22 +2079,27 @@ class NaverOrderWorker:
             self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
             return False
             
-        # ── 미신청 탐색 전: 결제혜택 팝업 닫기 ──
+        # ── 미신청 탐색 전: 팝업/닫기 버튼 점검 ──
         self._dismiss_payment_benefit_popup()
 
         if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청", max_scroll_attempts=4):
             self._log("⚠ '미신청' 미발견 -> '미신청2' 탐색 시도")
             self._scroll_up(distance_ratio=0.6)
             time.sleep(1)
+            # 미신청2 전에도 팝업 점검
+            self._dismiss_payment_benefit_popup()
             if not self._click_image_with_scroll(IMG_NOT_APPLY2, "미신청2", max_scroll_attempts=4):
                 self._log("❌ '미신청' 및 '미신청2' 버튼 미발견 -> 무통장 결제 실패")
                 return False
-                
+
+        # ── 결재하기 탐색 전: 팝업/닫기 버튼 점검 ──
+        self._dismiss_payment_benefit_popup()
+
         if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"):
             self._log("❌ '결재하기' 버튼 미발견 -> 무통장 결제 실패")
             return False
 
-        # ── 주문하기 탐색 전: 결제혜택 팝업 닫기 ──
+        # ── 주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
         self._dismiss_payment_benefit_popup()
 
         if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"):
@@ -2104,55 +2109,48 @@ class NaverOrderWorker:
 
     def _dismiss_payment_benefit_popup(self) -> None:
         """
-        결제혜택.png 팝업이 화면에 존재하면 닫기.png 버튼을 찾아 클릭합니다.
+        화면에 '닫기.png' 또는 '결제혜택.png' 팝업이 존재하는지 확인하고, 존재하면 '닫기.png' (또는 닫기 버튼)를 눌러 팝업을 닫습니다.
         팝업이 없거나 닫기 버튼을 찾지 못해도 오류 없이 통과합니다.
         """
-        self._log("🔍 [결제혜택 팝업] 존재 여부 확인 중...")
+        self._log("🔍 [팝업 닫기 점검] 닫기.png / 결제혜택.png 감지 시도...")
         try:
-            if not os.path.exists(IMG_PAY_BENEFIT):
-                self._log("  ℹ 결제혜택.png 파일 없음 → 팝업 확인 건너뜀")
-                return
-
-            coords = self._find_image_coords(IMG_PAY_BENEFIT, threshold=0.65)
-            if not coords:
-                self._log("  ℹ [결제혜택 팝업] 미감지 → 계속 진행")
-                return
-
-            self._log(f"  🎯 [결제혜택 팝업] 감지! 좌표 ({coords[0]}, {coords[1]}) → 닫기 버튼 탐색")
-
-            # 1순위: 닫기.png 이미지 인식으로 닫기
+            # 1순위: 화면에 닫기.png 가 존재하는지 직접 탐색하여 클릭
             if os.path.exists(IMG_CLOSE_POPUP):
                 close_coords = self._find_image_coords(IMG_CLOSE_POPUP, threshold=0.65)
                 if close_coords:
-                    self._log(f"  ✅ [닫기.png] 발견! 좌표 ({close_coords[0]}, {close_coords[1]}) → 클릭")
+                    self._log(f"  🎯 [닫기.png] 발견! 좌표 ({close_coords[0]}, {close_coords[1]}) → 클릭 닫기")
                     import naver_appium as _ah
                     _ah.tap_by_coords(self.driver, close_coords[0], close_coords[1], self._log)
                     time.sleep(1.0)
-                    self._log("  ✅ [결제혜택 팝업] 닫기 완료")
+                    self._log("  ✅ [닫기.png] 팝업 닫기 완료")
                     return
 
-            # 2순위: XPath로 닫기/X 버튼 탐색
-            close_xpaths = [
-                '//*[@content-desc="닫기"]',
-                '//*[@text="닫기"]',
-                '//android.widget.Button[@text="닫기"]',
-                '//*[@content-desc="close"]',
-                '//*[@content-desc="Close"]',
-            ]
-            for xpath in close_xpaths:
-                try:
-                    if ah.element_exists(self.driver, xpath, timeout=1):
-                        el = self.driver.find_element(By.XPATH, xpath)
-                        self._safe_click_element(el)
-                        self._log(f"  ✅ [결제혜택 팝업] XPath 닫기 클릭 완료: {xpath}")
-                        time.sleep(1.0)
-                        return
-                except Exception:
-                    continue
+            # 2순위: 결제혜택.png 가 존재하는지 탐색
+            if os.path.exists(IMG_PAY_BENEFIT):
+                coords = self._find_image_coords(IMG_PAY_BENEFIT, threshold=0.65)
+                if coords:
+                    self._log(f"  🎯 [결제혜택 팝업] 감지! 좌표 ({coords[0]}, {coords[1]}) → 닫기 버튼 탐색")
+                    close_xpaths = [
+                        '//*[@content-desc="닫기"]',
+                        '//*[@text="닫기"]',
+                        '//android.widget.Button[@text="닫기"]',
+                        '//*[@content-desc="close"]',
+                        '//*[@content-desc="Close"]',
+                    ]
+                    for xpath in close_xpaths:
+                        try:
+                            if ah.element_exists(self.driver, xpath, timeout=1):
+                                el = self.driver.find_element(By.XPATH, xpath)
+                                self._safe_click_element(el)
+                                self._log(f"  ✅ [결제혜택 팝업] XPath 닫기 클릭 완료: {xpath}")
+                                time.sleep(1.0)
+                                return
+                        except Exception:
+                            continue
 
-            self._log("  ⚠ [결제혜택 팝업] 닫기 버튼을 찾지 못함 → 그대로 진행")
+            self._log("  ℹ [팝업 닫기 점검] 팝업 미감지 또는 닫기 처리 불필요 → 계속 진행")
         except Exception as e:
-            self._log(f"  ⚠ [결제혜택 팝업] 처리 중 오류: {e} → 그대로 진행")
+            self._log(f"  ⚠ [팝업 닫기 점검] 처리 중 예외 발생: {e} → 계속 진행")
 
     def _process_money_payment(self, password: str) -> bool:
         self._log("💸 [머니 결제] 프로세스 시작")
