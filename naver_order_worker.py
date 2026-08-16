@@ -989,8 +989,41 @@ class NaverOrderWorker:
             except Exception:
                 pass
 
-            # 화면 영역 내부인지 검사
+            # 화면 영역 내부인지 검사 후, 중앙이 아닐 경우 스크롤로 중앙 정렬
             if 150 <= y <= w_h - 200 and 0 < x < w_w:
+                # 화면 중앙(target_y)과 현재 y 차이를 스크롤로 보정
+                target_y = w_h // 2
+                offset = y - target_y
+                if abs(offset) > int(w_h * 0.15):  # 화면 높이 15% 이상 차이날 때만 보정
+                    import subprocess as _sp
+                    self._log(f"  📐 상품을 화면 중앙으로 이동 (y={y} → 목표={target_y}, offset={offset})")
+                    # swipe: 아래로 치우친 경우 위로 스크롤, 위로 치우친 경우 아래로 스크롤
+                    swipe_start_y = int(w_h * 0.5)
+                    swipe_end_y   = swipe_start_y - offset  # offset 만큼 반대로 스와이프
+                    swipe_end_y   = max(50, min(w_h - 50, swipe_end_y))
+                    swipe_x       = w_w // 2
+                    _sp.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                         str(swipe_x), str(swipe_start_y),
+                         str(swipe_x), str(swipe_end_y), "400"],
+                        capture_output=True, timeout=5
+                    )
+                    time.sleep(0.8)
+                    # 스크롤 후 좌표 갱신
+                    try:
+                        bounds_str3 = el.get_attribute("bounds")
+                        import re as _re2
+                        m3 = _re2.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str3 or "")
+                        if m3:
+                            x1, y1, x2, y2 = map(int, m3.groups())
+                            x, y = (x1 + x2) // 2, (y1 + y2) // 2
+                        else:
+                            rect = el.rect
+                            x = rect['x'] + rect['width'] // 2
+                            y = rect['y'] + rect['height'] // 2
+                    except Exception:
+                        pass
+
                 self._log(f"  👉 ADB 좌표 탭: ({x}, {y})")
                 subprocess.run(
                     ["adb", "-s", self.device_id, "shell", "input", "tap",
@@ -2249,20 +2282,29 @@ class NaverOrderWorker:
                     self._log("❌ '일반결재' 버튼 미발견 -> 무통장 결제 실패")
                     return False
                     
-        # 3. 무통장입금 탐색 (이미 체크되어 있으면 스킵)
+        # 3. 무통장입금 탐색 (이미 체크되어 있으면 한 번 클릭 후 은행 선택으로 진행)
         is_bank_transfer_checked = False
         if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-            self._log("✅ '무통장체크' 상태 감지됨! 무통장입금 클릭 건너뜀.")
+            self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
+            coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+            if coords:
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+            time.sleep(1.5)
             is_bank_transfer_checked = True
             
         if not is_bank_transfer_checked:
             if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"):
                 if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-                    self._log("✅ '무통장체크' 상태 감지됨! 성공으로 간주하고 진행합니다.")
+                    self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
+                    coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+                    if coords:
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(1.5)
                 else:
                     self._log("❌ '무통장입금' 버튼 미발견 -> 무통장 결제 실패")
                     return False
-            time.sleep(1.5)
+            else:
+                time.sleep(1.5)
 
         # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
         if not self._click_bank_select_with_scroll(max_scroll_attempts=5):
@@ -2318,14 +2360,13 @@ class NaverOrderWorker:
                 self._log("❌ '미신청' 및 '미신청2' 버튼 미발견 -> 무통장 결제 실패")
                 return False
 
-        # ── 결제/주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
+        # ── 주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
         self._dismiss_payment_benefit_popup()
 
-        if not self._click_any_image_with_scroll([
-            (IMG_DO_PAY, "결재하기"),
-            (IMG_DO_ORDER, "주문하기")
-        ]):
-            self._log("❌ '결재하기' 또는 '주문하기' 버튼 미발견 -> 무통장 결제 실패")
+        # 무통장은 무조건 '주문하기' 이미지 인식으로 클릭 (화면에 보일 때만 클릭, 스크롤 없음)
+        self._log("🔍 [무통장] '주문하기' 버튼 이미지 인식 탐색 시작 (화면에 보일 때만 클릭)")
+        if not self._click_image_basic(IMG_DO_ORDER, "주문하기", threshold=0.80):
+            self._log("❌ '주문하기' 버튼 미발견 (화면에 없음) -> 무통장 결제 실패")
             return False
         return True
 
