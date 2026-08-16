@@ -700,8 +700,13 @@ class NaverWorker:
                     pass
 
                 target_account_xpaths = [
+                    # 1순위: clickable=true인 부모 컨테이너 직접 탐색
+                    f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "간편로그인")]/ancestor-or-self::android.view.View[@clickable="true"]',
+                    f'//android.view.View[contains(@content-desc, "{actual_login_id}") and not(contains(@content-desc, "더보기"))]/ancestor-or-self::android.view.View[@clickable="true"]',
+                    # 2순위: content-desc 정확히 매칭
                     f'//android.view.View[@content-desc="{actual_login_id} , 간편로그인"]',
                     f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "간편로그인")]',
+                    # 3순위: 더보기 제외한 일반 탐색
                     f'//android.view.View[contains(@content-desc, "{actual_login_id}") and not(contains(@content-desc, "더보기"))]',
                     f'//*[contains(@content-desc, "{actual_login_id}") and not(contains(@content-desc, "더보기"))]',
                     f'//*[contains(@text, "{actual_login_id}") and not(contains(@text, "더보기"))]',
@@ -748,31 +753,34 @@ class NaverWorker:
             for attempt in range(1, 3):
                 self._log(f"  👉 [단계 3.2] 로그인 아이디 [{actual_login_id}] 클릭 시도 ({attempt}/2)")
                 
-                # 1. UiAutomator direct click 시도
-                try:
-                    target_el.click()
-                    self._log("  ✅ direct click 전송 완료")
-                    click_triggered = True
-                except Exception as e:
-                    err_str = str(e)
-                    if any(kw in err_str for kw in ["StaleElement", "StaleObject", "not linked", "does not exist"]):
-                        self._log("  ✅ direct click 성공으로 화면 전환됨 (StaleElement 감지)")
-                        click_triggered = True
-                        break
-                    else:
-                        self._log(f"  ⚠ direct click 예외: {e}")
-
-                # 2. direct click이 실패했고 좌표가 있다면 ADB input tap 전송 (폴백)
-                if not click_triggered and tap_x and tap_y:
+                # 클릭: clickable 여부와 무관하게 항상 ADB 좌표 탭 사용 (clickable=false 요소 대응)
+                import subprocess
+                if tap_x and tap_y:
                     try:
-                        self._log(f"  👉 ADB input tap 전송: ({tap_x}, {tap_y})")
+                        self._log(f"  👉 ADB input tap: ({tap_x}, {tap_y})")
                         subprocess.run(
                             ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
                             capture_output=True, timeout=5
                         )
                         click_triggered = True
+                        self._log("  ✅ ADB tap 전송 완료")
                     except Exception as e:
                         self._log(f"  ⚠ ADB input tap 예외: {e}")
+
+                # ADB tap 실패 시에만 direct click 폴백
+                if not click_triggered:
+                    try:
+                        target_el.click()
+                        self._log("  ✅ direct click 전송 완료 (폴백)")
+                        click_triggered = True
+                    except Exception as e:
+                        err_str = str(e)
+                        if any(kw in err_str for kw in ["StaleElement", "StaleObject", "not linked", "does not exist"]):
+                            self._log("  ✅ direct click 성공으로 화면 전환됨 (StaleElement 감지)")
+                            click_triggered = True
+                            break
+                        else:
+                            self._log(f"  ⚠ direct click 예외: {e}")
 
                 time.sleep(1.5)
 
