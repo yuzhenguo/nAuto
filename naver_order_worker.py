@@ -552,6 +552,13 @@ class NaverOrderWorker:
 
                 time.sleep(3)
 
+                # 클릭 후 확인 팝업(button1) 존재 시 클릭 (계정 전환 확인 다이얼로그)
+                CONFIRM_BTN_XPATH = '//android.widget.Button[@resource-id="android:id/button1"]'
+                if ah.element_exists(self.driver, CONFIRM_BTN_XPATH, timeout=2):
+                    self._log("  📌 계정 전환 확인 팝업(button1) 감지 → 클릭")
+                    ah.wait_and_click(self.driver, CONFIRM_BTN_XPATH, timeout=2, log_callback=self._log)
+                    time.sleep(2)
+
                 # 클릭 후 '로그인 중' 상태 최종 검증
                 verified = False
                 for xpath in verify_xpaths:
@@ -755,20 +762,11 @@ class NaverOrderWorker:
 
     def _click_search_button(self) -> bool:
         """
-        [단계 9] 검색아이콘.png 이미지 인식 클릭, 5초 대기
+        [단계 9] 검색 실행 (키보드 엔터 우선), 5초 대기
         """
         self._set_status("검색 실행")
 
-        # 1순위: 이미지 매칭
-        if os.path.exists(IMG_SEARCH_ICON):
-            coords = self._find_image_coords(IMG_SEARCH_ICON, threshold=0.7)
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log("  ✅ 검색아이콘 이미지 인식 클릭 완료")
-                time.sleep(3)
-                return True
-
-        # 2순위: 키보드 엔터 (검색)
+        # 1순위: 키보드 엔터 (검색)
         try:
             import subprocess
             subprocess.run(
@@ -776,10 +774,19 @@ class NaverOrderWorker:
                 capture_output=True, timeout=5
             )
             self._log("  ✅ 엔터 키 전송 완료 (검색)")
-            time.sleep(3)
+            time.sleep(4)
             return True
         except Exception as e:
             self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
+
+        # 2순위: 이미지 매칭 (검색아이콘.png 폴백)
+        if os.path.exists(IMG_SEARCH_ICON):
+            coords = self._find_image_coords(IMG_SEARCH_ICON, threshold=0.7)
+            if coords:
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                self._log("  ✅ 검색아이콘 이미지 인식 클릭 완료 (폴백)")
+                time.sleep(3)
+                return True
 
         # 3순위: 좌표 탭
         try:
@@ -1060,35 +1067,57 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_check = int(w_h * 0.40)  # 화면 하단 40% 이하 영역
-        max_y_check = int(w_h * 0.90)  # y=2160 이하, 최하단 네비게이션 바(y>0.93) 제외
-        max_x_check = int(w_w * 0.40)  # 체크박스는 화면 좌측에 위치하므로 X축 제한
+        min_y_check = int(w_h * 0.40)   # 기본: 화면 하단 40%
+        max_y_check = int(w_h * 0.92)   # 최하단 네비 바 제외
+        max_x_check = int(w_w * 0.45)   # 체크박스는 화면 좌측에 위치 (약간 여유 확대)
 
-        # 0순위: 옵션 선택(위) ~ 배송정보(아래) 사이로 Y축 제한 탐색 (사용자 요청 사항)
-        if os.path.exists(IMG_OPTION_SELECT) and os.path.exists(IMG_DELIVERY_INFO):
+        # ─── 0순위: 옵션선택.png ~ 배송정보.png 사이로 Y축 동적 설정 ─────────────
+        opt_y = None
+        del_y = None
+        if os.path.exists(IMG_OPTION_SELECT):
             opt_coords = self._find_image_coords(IMG_OPTION_SELECT, threshold=0.70)
+            if opt_coords:
+                opt_y = opt_coords[1]
+        if os.path.exists(IMG_DELIVERY_INFO):
             del_coords = self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.70)
-            
-            if opt_coords and del_coords and opt_coords[1] < del_coords[1]:
-                min_y_check = opt_coords[1]
-                max_y_check = del_coords[1]
-                self._log(f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션~배송정보): {min_y_check} ~ {max_y_check}")
+            if del_coords:
+                del_y = del_coords[1]
 
-        # 1순위: 템플릿 이미지 매칭 (threshold 0.65 로 설정하여 0.7518 점수 수용)
+        if opt_y and del_y and opt_y < del_y:
+            min_y_check = opt_y
+            max_y_check = del_y
+            self._log(f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션~배송정보): {min_y_check} ~ {max_y_check}")
+        elif opt_y:
+            min_y_check = opt_y
+            self._log(f"  📌 체크박스 탐색 Y영역: 옵션선택 하단({opt_y}) ~ 기본 하단({max_y_check})")
+
+        # ─── 1순위: 체크박스.png 이미지 매칭 ────────────────────────────────────
         if os.path.exists(IMG_CHECKBOX):
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.65, min_x=0, max_x=max_x_check, min_y=min_y_check, max_y=max_y_check)
+            # threshold 단계별 시도 (0.65 → 0.55)
+            for thr in [0.65, 0.55]:
+                coords = self._find_image_coords(IMG_CHECKBOX, threshold=thr,
+                                                 min_x=0, max_x=max_x_check,
+                                                 min_y=min_y_check, max_y=max_y_check)
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"✅ 체크박스 이미지 인식 클릭 완료 (threshold={thr})")
+                    time.sleep(1.5)
+                    return True
+            # X축 제한 없이 재시도 (체크박스가 중앙에 있을 경우 대비)
+            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.55,
+                                             min_y=min_y_check, max_y=max_y_check)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log("✅ 체크박스 이미지 인식 클릭 완료")
+                self._log("✅ 체크박스 이미지 인식 클릭 완료 (X축 제한 해제)")
                 time.sleep(1.5)
                 return True
 
-        # 2순위: 상품명 키워드 기반 옵션 텍스트 XPath 탐색 (예: "유기농 올리브", "2박스", "레드비트샷" 등)
+        # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선, X축 제한 완화) ──
         if product_name:
             import re
             clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
             keywords = [k.strip() for k in clean_prod.split() if len(k.strip()) >= 2]
-            for kw in keywords[:3]:
+            for kw in keywords[:5]:
                 safe_kw = kw.replace('"', '').replace("'", "")
                 option_xpaths = [
                     f'//android.view.View[contains(@text, "{safe_kw}")]',
@@ -1099,11 +1128,12 @@ class NaverOrderWorker:
                     if ah.element_exists(self.driver, xpath, timeout=1):
                         try:
                             els = self.driver.find_elements(By.XPATH, xpath)
+                            # Y 범위 내 우선 탐색
                             for el in els:
                                 rect = el.rect
                                 cx = rect['x'] + rect['width'] // 2
                                 cy = rect['y'] + rect['height'] // 2
-                                if min_y_check <= cy <= max_y_check and cx <= max_x_check:
+                                if min_y_check <= cy <= max_y_check:
                                     self._safe_click_element(el)
                                     self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
                                     time.sleep(1.5)
@@ -1111,7 +1141,7 @@ class NaverOrderWorker:
                         except Exception:
                             pass
 
-        # 3순위: 기본 CheckBox / checkable / 옵션 키워드 XPath 폴백
+        # ─── 3순위: CheckBox / checkable / 옵션 키워드 XPath 폴백 (Y 범위 내) ─────
         checkbox_xpaths = [
             '//android.widget.CheckBox',
             '//*[@checkable="true"]',
@@ -1120,6 +1150,7 @@ class NaverOrderWorker:
             '//*[contains(@text, "개")]',
             '//*[contains(@text, "동의")]',
             '//*[contains(@text, "구매조건")]',
+            '//*[contains(@text, "확인")]',
         ]
         for xpath in checkbox_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=1):
@@ -1129,13 +1160,30 @@ class NaverOrderWorker:
                         rect = el.rect
                         cx = rect['x'] + rect['width'] // 2
                         cy = rect['y'] + rect['height'] // 2
-                        if min_y_check <= cy <= max_y_check and cx <= max_x_check:
+                        if min_y_check <= cy <= max_y_check:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
                             time.sleep(1.5)
                             return True
                 except Exception:
                     pass
+
+        # ─── 4순위: 좌표 고정 ADB 탭 폴백 ────────────────────────────────────────
+        # min_y_check ~ max_y_check 사이 좌측 15% 위치를 탭 (체크박스 위치 추정)
+        fallback_x = int(w_w * 0.12)
+        fallback_y = int((min_y_check + max_y_check) / 2)
+        self._log(f"  ⚠ 이미지/XPath 체크박스 미발견 → 좌표 추정 탭 시도 ({fallback_x}, {fallback_y})")
+        try:
+            import subprocess
+            subprocess.run(
+                ["adb", "-s", self.device_id, "shell", "input", "tap",
+                 str(fallback_x), str(fallback_y)],
+                capture_output=True, timeout=5
+            )
+            self._log(f"  ✅ 좌표 추정 탭 완료 ({fallback_x}, {fallback_y})")
+            time.sleep(1.5)
+        except Exception as e:
+            self._log(f"  ⚠ 좌표 탭 실패: {e}")
 
         self._log("  ⚠ 체크박스 미발견 → 계속 진행")
         return True
