@@ -1,4 +1,4 @@
-﻿"""
+"""
 
 naver_worker.py
 
@@ -1386,20 +1386,27 @@ class NaverWorker:
 
 
             try:
-                success = self._process_row_with_timeout(row)
-                # 1차 실패 시 1회 재시도 수행
-                if not success and not self._stop_event.is_set():
-                    self._log(f"  🔄 [1차 실패] {row.name} (row={row.row_index}) 1회 재시도 진행...")
-                    try:
-                        ah.go_to_main_page(self.driver, self._log)
-                        time.sleep(2)
-                        self._dismiss_hide_popup(max_count=2)
-                    except Exception:
-                        pass
-                    self.is_initialized = False
+                success = False
+                max_retries = 3
+                for attempt in range(max_retries + 1):
+                    if self._stop_event.is_set():
+                        break
+
+                    if attempt > 0:
+                        self._log(f"  🔄 [{attempt}차 실패 재시도] {row.name} (row={row.row_index}) {attempt}회 재시도 진행...")
+                        try:
+                            ah.go_to_main_page(self.driver, self._log)
+                            time.sleep(2)
+                            self._dismiss_hide_popup(max_count=2)
+                        except Exception:
+                            pass
+                        self.is_initialized = False
+
                     success = self._process_row_with_timeout(row)
                     if success:
-                        self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) 재시도 결과 성공 -> Y 기록 진행")
+                        if attempt > 0:
+                            self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
+                        break
 
             except Exception as fatal_err:
                 # 치명적 세션/서버 에러 → 현재 행을 F 처리 후 루프 밖으로 전파
@@ -1413,7 +1420,7 @@ class NaverWorker:
                 self._log(f"✅ 성공: {row.name} → Y 기록")
             else:
                 self.address_manager.mark_failed(row.row_index)
-                self._log(f"❌ 실패/타임아웃 (2회 시도 모두 실패): {row.name} → F 기록")
+                self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
 
 
 

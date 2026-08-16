@@ -1600,20 +1600,20 @@ class NaverOrderWorker:
             pass
 
         min_y_full_use = int(w_h * 0.25)  # 상단 헤더/툴바 오탐지 방지 (Y >= 25% 영역)
+        max_y_full_use = int(w_h * 0.65)  # 하단 고정 결제버튼(플로팅 바) 가림 방지 (Y <= 65% 영역)
         max_scroll_attempts = 15
 
         for attempt in range(1, max_scroll_attempts + 1):
             # 1. 전액사용.png 이미지 매칭
             if os.path.exists(IMG_FULL_USE):
-                coords = self._find_image_coords(IMG_FULL_USE, threshold=0.80, min_y=min_y_full_use)
+                coords = self._find_image_coords(IMG_FULL_USE, threshold=0.80, min_y=min_y_full_use, max_y=max_y_full_use)
                 if coords:
                     cx, cy = coords
-                    if 200 <= cy <= w_h - 200:
-                        self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
-                        ah.tap_by_coords(self.driver, cx, cy, self._log)
-                        self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
-                        time.sleep(3)
-                        return True
+                    self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
+                    time.sleep(3)
+                    return True
 
             # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
             full_use_xpaths = [
@@ -1632,7 +1632,7 @@ class NaverOrderWorker:
                         for el in els:
                             rect = el.rect
                             cy = rect['y'] + rect['height'] // 2
-                            if cy >= min_y_full_use:
+                            if min_y_full_use <= cy <= max_y_full_use:
                                 self._log(f"  🎯 전액사용 XPath 발견: {xpath} (y={cy}) -> 클릭 시도")
                                 if self._safe_click_element(el):
                                     self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
@@ -1642,7 +1642,7 @@ class NaverOrderWorker:
                     continue
 
             # 3. 미발견 시 부드럽게 미세 스크롤 다운
-            self._log(f"  ⬇ [단계 17] 전액사용 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._log(f"  ⬇ [단계 17] 전액사용 미발견 또는 Y범위 밖 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.18)
             time.sleep(1.2)
 
@@ -1955,17 +1955,25 @@ class NaverOrderWorker:
             self._set_status(f"주문 중: {row.search_keyword}")
 
             try:
-                success = self._process_order_with_timeout(row)
-                if not success and not self._stop_event.is_set():
-                    self._log(f"  🔄 [1차 실패] {row.search_keyword} (row={row.row_index}) 1회 재시도 진행...")
-                    try:
-                        ah.go_to_main_page(self.driver, self._log)
-                        time.sleep(2)
-                    except Exception:
-                        pass
+                success = False
+                max_retries = 3
+                for attempt in range(max_retries + 1):
+                    if self._stop_event.is_set():
+                        break
+                    
+                    if attempt > 0:
+                        self._log(f"  🔄 [{attempt}차 실패 재시도] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 진행...")
+                        try:
+                            ah.go_to_main_page(self.driver, self._log)
+                            time.sleep(2)
+                        except Exception:
+                            pass
+
                     success = self._process_order_with_timeout(row)
                     if success:
-                        self._log(f"  ✅ [재시도 성공!] {row.search_keyword} (row={row.row_index}) 재시도 성공 -> Y 기록 진행")
+                        if attempt > 0:
+                            self._log(f"  ✅ [재시도 성공!] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
+                        break
             except Exception as fatal_err:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 치명적 오류: {fatal_err}")
@@ -1985,7 +1993,7 @@ class NaverOrderWorker:
                 time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패 (2회 시도 모두 실패): {row.search_keyword} → F 기록")
+                self._log(f"❌ 주문 실패 (총 {max_retries + 1}회 시도 모두 실패): {row.search_keyword} → F 기록")
 
         self._log("📋 주문 루프 종료")
 
@@ -2197,6 +2205,12 @@ class NaverOrderWorker:
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             screen_h, screen_w = screen_gray.shape
 
+            # min_y, max_y 제약이 있다면 탐색 영역 밖을 검정색으로 지워서 오탐 방지
+            if min_y is not None and min_y > 0:
+                screen_gray[:min_y, :] = 0
+            if max_y is not None and max_y < screen_h:
+                screen_gray[max_y:, :] = 0
+
             if not os.path.exists(template_path):
                 self._log(f"  [이미지 매칭] 템플릿 없음: {template_path}")
                 return None
@@ -2237,12 +2251,6 @@ class NaverOrderWorker:
             if best_score >= threshold and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2
                 cy = best_loc[1] + best_th // 2
-                if min_y is not None and cy < min_y:
-                    self._log(f"  ⚠ [이미지 매칭] 매칭 좌표({cx}, {cy})가 min_y({min_y}) 미만이므로 거부 (점수: {best_score:.4f})")
-                    return None
-                if max_y is not None and cy > max_y:
-                    self._log(f"  ⚠ [이미지 매칭] 매칭 좌표({cx}, {cy})가 max_y({max_y}) 초과이므로 거부 (점수: {best_score:.4f})")
-                    return None
                 self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy}), 점수: {best_score:.4f}")
                 return cx, cy
             else:
