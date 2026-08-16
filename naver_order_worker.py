@@ -1179,17 +1179,22 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # ── 방법 2: '배송지명{이름}' 패턴 탐색 (주문/결제 페이지 인라인 형태 또는 팝업 폴백) ──
-        # 팝업에서 '선택' 버튼을 못 찾았거나, 인라인 블록일 경우에만 사용합니다.
+        # ── 방법 2: 수취인 이름 기반 탐색 (팝업 폴백, '배송지명' 인라인 텍스트 제외) ──
+        # 팝업에서 '선택' 버튼을 못 찾았을 경우, 이름 텍스트 뷰 자체를 클릭합니다.
         try:
-            all_views = self.driver.find_elements(By.XPATH, '//*')
-            for view in all_views:
+            search_xpath = f'//*[contains(@text, "{recipient_name}")]'
+            views = self.driver.find_elements(By.XPATH, search_xpath)
+            for view in views:
                 try:
                     text = view.get_attribute("text") or ""
-                    if not ("배송지명" in text and recipient_name in text):
+                    # 사용자 요청: '배송지명'이 포함된 인라인 배경 텍스트는 오작동 유발하므로 무조건 제외
+                    if "배송지명" in text:
+                        continue
+                    
+                    if recipient_name not in text:
                         continue
 
-                    self._log(f"  🔎 '배송지명' 패턴 View 발견: '{text[:60]}'")
+                    self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
 
                     if last4:
                         phone_ok = False
@@ -1227,21 +1232,38 @@ class NaverOrderWorker:
                             self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 미매칭 → 스킵")
                             continue
 
-                    self._log(f"  🎯 배송지명 패턴 매칭 성공: '{text[:60]}'")
-                    # bounds 를 직접 파싱해 정확한 중심 좌표로 ADB tap
+                    self._log(f"  🎯 이름 패턴 매칭 성공: '{text[:60]}'")
+                    
+                    # ── 사용자 요청: 연락처(전화번호) View를 찾아 클릭 ──
+                    target_view = view
+                    if last4:
+                        try:
+                            parent = view.find_element(By.XPATH, "..")
+                            grand_parent = parent.find_element(By.XPATH, "..")
+                            search_xpath = f'.//*[contains(@text, "{formatted_phone}") or contains(@text, "{last4}")]'
+                            phone_views = grand_parent.find_elements(By.XPATH, search_xpath)
+                            for pv in phone_views:
+                                ptext = pv.get_attribute("text") or ""
+                                if "연락처" in ptext or formatted_phone in ptext or last4 in ptext:
+                                    target_view = pv
+                                    self._log(f"  👉 연락처 View로 클릭 대상 변경: {ptext[:30]}")
+                                    break
+                        except Exception:
+                            pass
+
                     import re as _re, subprocess
                     try:
-                        bounds_str = view.get_attribute("bounds") or ""
+                        bounds_str = target_view.get_attribute("bounds") or ""
                         m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
                         if m:
                             x1, y1, x2, y2 = map(int, m.groups())
                             tap_x = (x1 + x2) // 2
                             tap_y = (y1 + y2) // 2
                         else:
-                            rect = view.rect
+                            rect = target_view.rect
                             tap_x = rect['x'] + rect['width'] // 2
                             tap_y = rect['y'] + rect['height'] // 2
-                        self._log(f"  👉 배송지명 직접 ADB 탭: ({tap_x}, {tap_y})")
+                        self._log(f"  👉 직접 ADB 탭: ({tap_x}, {tap_y})")
                         subprocess.run(
                             ["adb", "-s", self.device_id, "shell", "input", "tap",
                              str(tap_x), str(tap_y)],
@@ -1250,8 +1272,8 @@ class NaverOrderWorker:
                         time.sleep(3)
                         return True
                     except Exception as e:
-                        self._log(f"  ⚠ 배송지명 좌표 클릭 실패: {e}")
-                        if self._safe_click_element(view):
+                        self._log(f"  ⚠ 좌표 클릭 실패: {e}")
+                        if self._safe_click_element(target_view):
                             time.sleep(3)
                             return True
                 except Exception:
