@@ -63,6 +63,7 @@ IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 
 # 추가된 결제방식 이미지
 IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
+IMG_NORMAL_PAY3   = os.path.join(_IMG_DIR, "일반결재3.png")
 IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
 IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
 IMG_BANK_TRANSFER_CHECK = os.path.join(_IMG_DIR, "무통장체크.png")
@@ -2177,10 +2178,10 @@ class NaverOrderWorker:
         self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
         return False
 
-    def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 5) -> bool:
+    def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 8) -> bool:
         """
         [무통장입금 클릭 후 판단]
-        '은행을.png' 탐색 (최대 5회 스크롤)
+        '은행을.png' 탐색 (최대 8회 스크롤)
         '은행을.png' 이미지 인식 시 화면 중앙 조절 후 탭 클릭.
         """
         self._set_status("은행 선택 탐색 및 판단 중")
@@ -2253,10 +2254,19 @@ class NaverOrderWorker:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
         # 1. 다른결재 탐색 및 클릭 시도
-        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7):
-            self._log("⚠ '다른결재' 버튼 미발견 -> '일반결재' 탐색 및 클릭 시도")
-            if self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재", max_scroll_attempts=5):
-                self._log("✅ '다른결재' 미발견 되었으나 '일반결재' 클릭 성공! 계속 진행합니다.")
+        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=8):
+            self._log("⚠ '다른결재' 버튼 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
+            # 다른결재 탐색 중 내려간 스크롤을 상단으로 복구
+            for _ in range(5):
+                self._scroll_up(distance_ratio=0.5)
+                time.sleep(0.4)
+
+            normal_pay_images = [
+                (IMG_NORMAL_PAY, "일반결재"),
+                (IMG_NORMAL_PAY3, "일반결재3"),
+            ]
+            if self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
+                self._log("✅ '다른결재' 미발견 되었으나 '일반결재/일반결재3' 클릭 성공! 계속 진행합니다.")
             elif os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
                 self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
             elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
@@ -2275,13 +2285,17 @@ class NaverOrderWorker:
             is_already_checked = True
             
         if not is_already_checked:
-            if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"):
+            normal_pay_images = [
+                (IMG_NORMAL_PAY, "일반결재"),
+                (IMG_NORMAL_PAY3, "일반결재3"),
+            ]
+            if not self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
                 if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
                     self._log("✅ '일반결재체크' 발견! 성공으로 간주하고 진행합니다.")
                 elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
                     self._log("✅ '무통장체크' 발견! 성공으로 간주하고 진행합니다.")
                 else:
-                    self._log("❌ '일반결재' 버튼 미발견 -> 무통장 결제 실패")
+                    self._log("❌ '일반결재/일반결재3' 버튼 미발견 -> 무통장 결제 실패")
                     return False
                     
         # 3. 무통장입금 탐색 (이미 체크되어 있으면 한 번 클릭 후 은행 선택으로 진행)
@@ -2295,7 +2309,7 @@ class NaverOrderWorker:
             is_bank_transfer_checked = True
             
         if not is_bank_transfer_checked:
-            if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"):
+            if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금", max_scroll_attempts=8):
                 if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
                     self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
                     coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
@@ -2309,7 +2323,7 @@ class NaverOrderWorker:
                 time.sleep(1.5)
 
         # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
-        if not self._click_bank_select_with_scroll(max_scroll_attempts=5):
+        if not self._click_bank_select_with_scroll(max_scroll_attempts=8):
             self._log("❌ 무통장입금 클릭 후 '은행을' / '은행선택' 존재하지 않음 -> 무통장 결제 중단 및 실패 처리")
             return False
 
@@ -2335,7 +2349,7 @@ class NaverOrderWorker:
                 
             # 2. 스크롤 없이 못 찾았을 경우 미세 스크롤 탐색 시작
             self._log(f"🔄 {bank_name} 제자리 미발견 -> 스크롤 탐색 시작")
-            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=4):
+            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=8):
                 self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 탐색 발견)")
                 bank_selected = True
                 break
@@ -2349,27 +2363,63 @@ class NaverOrderWorker:
             self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
             return False
             
-        # ── 미신청 탐색 전: 팝업/닫기 버튼 점검 ──
+        # ── 미신청 탐색 전: 팝업 점검 및 위에서부터 탐색 ──
         self._dismiss_payment_benefit_popup()
 
-        if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청", max_scroll_attempts=4):
-            self._log("⚠ '미신청' 미발견 -> '미신청2' 탐색 시도")
-            self._scroll_up(distance_ratio=0.6)
-            time.sleep(1)
-            # 미신청2 전에도 팝업 점검
+        # 위에서부터 살짝 밑으로 내리며 탐색하기 위해 스크롤을 살짝 위로 올림
+        for _ in range(2):
+            self._scroll_up(distance_ratio=0.4)
+            time.sleep(0.3)
+
+        not_apply_images = [
+            (IMG_NOT_APPLY, "미신청"),
+            (IMG_NOT_APPLY2, "미신청2"),
+        ]
+
+        if not self._click_any_image_with_scroll(not_apply_images, threshold=0.60, max_scroll_attempts=10):
+            self._log("⚠ '미신청' 이미지 미발견 -> XPath 텍스트 탐색 시도")
+            for _ in range(3):
+                self._scroll_up(distance_ratio=0.5)
+                time.sleep(0.3)
             self._dismiss_payment_benefit_popup()
-            if not self._click_image_with_scroll(IMG_NOT_APPLY2, "미신청2", max_scroll_attempts=4):
-                self._log("❌ '미신청' 및 '미신청2' 버튼 미발견 -> 무통장 결제 실패")
+            
+            not_apply_xpaths = [
+                '//*[contains(@text, "미신청")]',
+                '//*[contains(@content-desc, "미신청")]',
+                '//android.widget.RadioButton[contains(@text, "신청안함")]',
+                '//*[contains(@text, "신청 안 함")]',
+            ]
+            found_xpath = False
+            for xp in not_apply_xpaths:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=1):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        self._safe_click_element(el)
+                        self._log(f"✅ '미신청' XPath 발견 및 클릭 성공: {xp}")
+                        found_xpath = True
+                        time.sleep(1.0)
+                        break
+                except Exception:
+                    continue
+
+            if not found_xpath:
+                self._log("❌ '미신청' 및 '미신청2' 버튼 이미지/XPath 모두 미발견 -> 무통장 결제 실패")
                 return False
 
-        # ── 주문하기 탐색 전: 팝업/닫기 버튼 점검 ──
+        # ── 주문하기 탐색 전: 팝업 점검 및 위에서부터 탐색 ──
         self._dismiss_payment_benefit_popup()
 
-        # 무통장은 무조건 '주문하기' 이미지 인식으로 클릭 (화면에 보일 때만 클릭, 스크롤 없음)
-        self._log("🔍 [무통장] '주문하기' 버튼 이미지 인식 탐색 시작 (화면에 보일 때만 클릭)")
-        if not self._click_image_basic(IMG_DO_ORDER, "주문하기", threshold=0.80):
-            self._log("❌ '주문하기' 버튼 미발견 (화면에 없음) -> 무통장 결제 실패")
-            return False
+        # 위에서부터 살짝 밑으로 내리면서 탐색하기 위해 스크롤을 살짝 위로 복구
+        self._log("🔍 [무통장] 스크롤 위로 복구 후 '주문하기' 버튼 위에서부터 밑으로 탐색 시작")
+        for _ in range(3):
+            self._scroll_up(distance_ratio=0.4)
+            time.sleep(0.3)
+
+        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기", threshold=0.75, max_scroll_attempts=8):
+            # 혹시 화면에 바로 있는데 미세 스크롤 오차가 발생할 경우를 대비한 기본 클릭 보조
+            if not self._click_image_basic(IMG_DO_ORDER, "주문하기", threshold=0.75):
+                self._log("❌ '주문하기' 버튼 미발견 -> 무통장 결제 실패")
+                return False
         return True
 
     def _dismiss_payment_benefit_popup(self) -> None:
