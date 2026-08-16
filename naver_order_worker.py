@@ -74,6 +74,8 @@ IMG_NOT_APPLY2    = os.path.join(_IMG_DIR, "미신청2.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
+IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
+IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
 
 # 비밀번호 숫자 이미지 (단계 19): p0.png ~ p9.png
 IMG_NUMS = {
@@ -1678,10 +1680,99 @@ class NaverOrderWorker:
 
     # ─── 단계 19: 비밀번호 입력 ──────────────────────────────────────────────
 
+    def _find_digit_coords(self, img_path: str, min_y: int) -> Optional[tuple]:
+        """
+        숫자 키패드 이미지 인식 - 다중 전략으로 인식률 극대화.
+        1차: 멀티스케일 TM_CCOEFF_NORMED (threshold 단계적 완화)
+        2차: 그레이스케일 이진화(Otsu) + TM_CCORR_NORMED
+        3차: CLAHE 대비 강화 후 재매칭
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return None
+
+        try:
+            screenshot_png = self._get_screenshot()
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_h, screen_w = screen_gray.shape
+
+            # 키패드 영역 외 차단
+            masked = screen_gray.copy()
+            if min_y > 0:
+                masked[:min_y, :] = 0
+
+            template_bgr = cv2.imdecode(
+                np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+            if template_bgr is None:
+                return None
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            t_h, t_w = template_gray.shape
+
+            def _multiscale_match(src, tmpl, method, thresholds):
+                """멀티스케일 템플릿 매칭, thresholds 순서로 시도"""
+                tw, th = tmpl.shape[1], tmpl.shape[0]
+                best_score, best_loc, best_tw, best_th = -1, None, tw, th
+                for scale in np.linspace(0.4, 3.0, 80):
+                    nw = int(tw * scale)
+                    nh = int(th * scale)
+                    if nw >= src.shape[1] or nh >= src.shape[0]:
+                        continue
+                    if nw < 8 or nh < 4:
+                        continue
+                    resized = cv2.resize(tmpl, (nw, nh), interpolation=cv2.INTER_AREA)
+                    result = cv2.matchTemplate(src, resized, method)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if max_val > best_score:
+                        best_score, best_loc, best_tw, best_th = max_val, max_loc, nw, nh
+                for thr in thresholds:
+                    if best_score >= thr and best_loc is not None:
+                        cx = best_loc[0] + best_tw // 2
+                        cy = best_loc[1] + best_th // 2
+                        return cx, cy, best_score
+                return None
+
+            # ── 1차: TM_CCOEFF_NORMED, threshold 0.50 ──
+            r = _multiscale_match(masked, template_gray, cv2.TM_CCOEFF_NORMED, [0.50])
+            if r:
+                self._log(f"    🎯 [숫자인식 1차] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
+                return r[0], r[1]
+
+            # ── 2차: Otsu 이진화 후 TM_CCORR_NORMED ──
+            _, tmpl_bin = cv2.threshold(template_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, src_bin  = cv2.threshold(masked, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            r = _multiscale_match(src_bin, tmpl_bin, cv2.TM_CCORR_NORMED, [0.92])
+            if r:
+                self._log(f"    🎯 [숫자인식 2차-이진화] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
+                return r[0], r[1]
+
+            # ── 3차: CLAHE 대비 강화 후 TM_CCOEFF_NORMED ──
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            src_clahe  = clahe.apply(masked)
+            tmpl_clahe = clahe.apply(template_gray)
+            r = _multiscale_match(src_clahe, tmpl_clahe, cv2.TM_CCOEFF_NORMED, [0.45])
+            if r:
+                self._log(f"    🎯 [숫자인식 3차-CLAHE] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
+                return r[0], r[1]
+
+            return None
+        except Exception as e:
+            self._log(f"    [숫자인식 오류] {e}")
+            return None
+
     def _input_password(self, password: str) -> bool:
         """
         [단계 19] 비밀번호 입력
-        숫자 폴더의 p0~p9.png 이미지로 각 자리 숫자 버튼의 위치를 인식하여 순서대로 클릭 (화면 하단 키패드 영역 지정)
+        숫자 폴더의 p0~p9.png 이미지로 각 자리 숫자 버튼의 위치를 인식하여 순서대로 클릭.
+        - 입력 전 3초 대기 (키패드 완전 표시 보장)
+        - 각 숫자: 최대 5회 재시도 (0.8초 간격, 재시도마다 새 스크린샷)
+        - 3단계 인식 전략 (TM_CCOEFF_NORMED → Otsu 이진화 → CLAHE 대비강화)
         """
         self._set_status("비밀번호 입력")
         pwd_digits = ''.join(filter(str.isdigit, password))
@@ -1698,10 +1789,14 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_keypad = int(w_h * 0.45)  # 비밀번호 키패드는 화면 하단에만 존재 (상단 오탐지 차단)
+        min_y_keypad = int(w_h * 0.45)  # 비밀번호 키패드는 화면 하단에만 존재
 
-        # 비밀번호 입력 화면 대기 (1~2초)
-        time.sleep(1.2)
+        # ── 비밀번호 키패드 완전 표시 대기 (3초) ──
+        self._log("  ⏳ 키패드 완전 표시 대기 (3초)...")
+        time.sleep(3.0)
+
+        MAX_DIGIT_RETRY = 5   # 숫자 1개당 최대 재시도 횟수
+        RETRY_INTERVAL  = 0.8 # 재시도 간격 (초)
 
         all_success = True
         for idx, digit in enumerate(pwd_digits):
@@ -1711,15 +1806,22 @@ class NaverOrderWorker:
                 all_success = False
                 break
 
-            self._log(f"  🔢 {idx+1}번째 자리 '{digit}' 클릭 시도")
-            coords = self._find_image_coords(img_path, threshold=0.55, min_y=min_y_keypad)
+            self._log(f"  🔢 {idx+1}번째 자리 '{digit}' 클릭 시도 (최대 {MAX_DIGIT_RETRY}회)")
+            digit_ok = False
+            for retry in range(1, MAX_DIGIT_RETRY + 1):
+                coords = self._find_digit_coords(img_path, min_y_keypad)
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"    ✅ '{digit}' 클릭 완료 ({coords}) [시도 {retry}회]")
+                    digit_ok = True
+                    time.sleep(0.6)
+                    break
+                else:
+                    self._log(f"    ↩ '{digit}' 인식 실패 ({retry}/{MAX_DIGIT_RETRY}) → {RETRY_INTERVAL}초 후 재시도")
+                    time.sleep(RETRY_INTERVAL)
 
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log(f"    ✅ '{digit}' 클릭 완료 ({coords})")
-                time.sleep(0.6)
-            else:
-                self._log(f"    ❌ '{digit}' 이미지 인식 실패 (하단 키패드 영역)")
+            if not digit_ok:
+                self._log(f"    ❌ '{digit}' 최종 인식 실패 (하단 키패드 영역, {MAX_DIGIT_RETRY}회 모두 실패)")
                 all_success = False
                 break
 
@@ -1999,6 +2101,9 @@ class NaverOrderWorker:
             self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
             return False
             
+        # ── 미신청 탐색 전: 결제혜택 팝업 닫기 ──
+        self._dismiss_payment_benefit_popup()
+
         if not self._click_image_with_scroll(IMG_NOT_APPLY, "미신청", max_scroll_attempts=4):
             self._log("⚠ '미신청' 미발견 -> '미신청2' 탐색 시도")
             self._scroll_up(distance_ratio=0.6)
@@ -2010,10 +2115,66 @@ class NaverOrderWorker:
         if not self._click_image_with_scroll(IMG_DO_PAY, "결재하기"):
             self._log("❌ '결재하기' 버튼 미발견 -> 무통장 결제 실패")
             return False
+
+        # ── 주문하기 탐색 전: 결제혜택 팝업 닫기 ──
+        self._dismiss_payment_benefit_popup()
+
         if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기"):
             self._log("❌ '주문하기' 버튼 미발견 -> 무통장 결제 실패")
             return False
         return True
+
+    def _dismiss_payment_benefit_popup(self) -> None:
+        """
+        결제혜택.png 팝업이 화면에 존재하면 닫기.png 버튼을 찾아 클릭합니다.
+        팝업이 없거나 닫기 버튼을 찾지 못해도 오류 없이 통과합니다.
+        """
+        self._log("🔍 [결제혜택 팝업] 존재 여부 확인 중...")
+        try:
+            if not os.path.exists(IMG_PAY_BENEFIT):
+                self._log("  ℹ 결제혜택.png 파일 없음 → 팝업 확인 건너뜀")
+                return
+
+            coords = self._find_image_coords(IMG_PAY_BENEFIT, threshold=0.65)
+            if not coords:
+                self._log("  ℹ [결제혜택 팝업] 미감지 → 계속 진행")
+                return
+
+            self._log(f"  🎯 [결제혜택 팝업] 감지! 좌표 ({coords[0]}, {coords[1]}) → 닫기 버튼 탐색")
+
+            # 1순위: 닫기.png 이미지 인식으로 닫기
+            if os.path.exists(IMG_CLOSE_POPUP):
+                close_coords = self._find_image_coords(IMG_CLOSE_POPUP, threshold=0.65)
+                if close_coords:
+                    self._log(f"  ✅ [닫기.png] 발견! 좌표 ({close_coords[0]}, {close_coords[1]}) → 클릭")
+                    import naver_appium as _ah
+                    _ah.tap_by_coords(self.driver, close_coords[0], close_coords[1], self._log)
+                    time.sleep(1.0)
+                    self._log("  ✅ [결제혜택 팝업] 닫기 완료")
+                    return
+
+            # 2순위: XPath로 닫기/X 버튼 탐색
+            close_xpaths = [
+                '//*[@content-desc="닫기"]',
+                '//*[@text="닫기"]',
+                '//android.widget.Button[@text="닫기"]',
+                '//*[@content-desc="close"]',
+                '//*[@content-desc="Close"]',
+            ]
+            for xpath in close_xpaths:
+                try:
+                    if ah.element_exists(self.driver, xpath, timeout=1):
+                        el = self.driver.find_element(By.XPATH, xpath)
+                        self._safe_click_element(el)
+                        self._log(f"  ✅ [결제혜택 팝업] XPath 닫기 클릭 완료: {xpath}")
+                        time.sleep(1.0)
+                        return
+                except Exception:
+                    continue
+
+            self._log("  ⚠ [결제혜택 팝업] 닫기 버튼을 찾지 못함 → 그대로 진행")
+        except Exception as e:
+            self._log(f"  ⚠ [결제혜택 팝업] 처리 중 오류: {e} → 그대로 진행")
 
     def _process_money_payment(self, password: str) -> bool:
         self._log("💸 [머니 결제] 프로세스 시작")
