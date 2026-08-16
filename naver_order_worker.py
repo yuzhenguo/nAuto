@@ -785,8 +785,8 @@ class NaverOrderWorker:
         """
         [단계 10] 상품 리스트에서 판매자명 + 상품명 매칭 클릭
         - 판매자명 TextView/View + 상품명 View/TextView 조합 매칭
-        - 특수문자 대응 및 부분 키워드 매칭 지원
-        - 요소 중심 좌표 tap_by_coords 기반 클릭으로 100% 동작 보장
+        - 수량/숫자 단위(예: 2박스 vs 5박스) 불일치 시 매칭 배제
+        - 스크롤 탐색 중에는 완전 매칭(score >= 2)만 즉시 클릭하며, 부분 매칭은 스크롤 완료 후 폴백
         """
         self._set_status(f"상품 선택: {product_name[:15]}")
         self._log(f"🔍 상품 매칭 시도: 판매자='{seller_name}', 상품='{product_name}'")
@@ -799,7 +799,36 @@ class NaverOrderWorker:
         safe_keyword = main_keyword.replace('"', '').replace("'", "")
         clean_full_name = product_name.replace('"', '').replace("'", "")
 
+        # 타겟 상품명에서 숫자+단위 패턴 추출 (예: '2박스', '14포', '1박스', '5박스', '10개' 등)
+        target_num_units = re.findall(r'\d+\s*(?:박스|포|개|입|g|ml|kg|L|세트|EA|ea|가지|회)?', product_name, re.IGNORECASE)
+        target_num_units = [nu.replace(" ", "").lower() for nu in target_num_units if nu.strip()]
+
+        def check_num_conflict(cand_txt: str) -> bool:
+            """타겟에 포함된 숫자/수량 단위가 후보 텍스트와 다르게 들어있는지 검사"""
+            cand_txt_clean = cand_txt.replace(" ", "").lower()
+            for t_nu in target_num_units:
+                # 숫자 파싱
+                m_num = re.search(r'\d+', t_nu)
+                if not m_num:
+                    continue
+                num_str = m_num.group(0)
+                # 만약 t_nu가 '2박스'라면, cand_txt에 '5박스', '1박스', '3박스' 등이 있으면 충돌
+                unit_m = re.search(r'(박스|포|개|입|g|ml|kg|L|세트|EA|ea)', t_nu, re.IGNORECASE)
+                if unit_m:
+                    unit_str = unit_m.group(0)
+                    # cand_txt에서 같은 단위를 사용하는 숫자패턴 찾기
+                    cand_matches = re.findall(r'(\d+)\s*' + re.escape(unit_str), cand_txt_clean)
+                    if cand_matches and num_str not in cand_matches:
+                        return True  # 충돌 발견!
+                else:
+                    # 단위 없이 단순 숫자 (예: 2 vs 5)
+                    # target에는 '2'가 있는데 cand에는 '5'만 있고 '2'가 없다면 충돌 우려
+                    pass
+            return False
+
+        fallback_candidates = []
         scroll_max = 20
+
         for scroll_cnt in range(scroll_max + 1):
             try:
                 # 방법 0: 직접 XPath 텍스트 매칭 시도 (우선)
@@ -815,10 +844,13 @@ class NaverOrderWorker:
                             text = el.text or ''
                             desc = el.get_attribute('content-desc') or ''
                             full_txt = f"{text} {desc}"
-                            
+
+                            if check_num_conflict(full_txt):
+                                continue
+
                             matched_kws = [kw for kw in keywords if kw in full_txt]
                             is_full_match = (len(matched_kws) == len(keywords)) or (clean_full_name.replace(" ", "") in full_txt.replace(" ", ""))
-                            
+
                             if is_full_match:
                                 self._log(f"  📌 상품명 직접 매칭 발견: {dxpath}")
                                 if self._safe_click_element(el):
@@ -844,6 +876,10 @@ class NaverOrderWorker:
                         if not full_txt.strip():
                             continue
 
+                        # 수량/숫자 충돌 검사
+                        if check_num_conflict(full_txt):
+                            continue
+
                         matched_kws = [kw for kw in keywords if kw in full_txt]
                         is_full_match = (len(matched_kws) == len(keywords)) or (clean_full_name.replace(" ", "") in full_txt.replace(" ", ""))
 
@@ -853,9 +889,9 @@ class NaverOrderWorker:
                         # 2. 상품명 전체 일치
                         elif is_full_match:
                             candidate_elements.append((2, len(matched_kws), el, full_txt))
-                        # 3. 상품명 키워드 대부분(길이-1) 일치 (폴백)
+                        # 3. 상품명 키워드 대부분(길이-1) 일치 (폴백 후보로 저장은 하되 스크롤 완료 후 선택)
                         elif len(keywords) > 2 and len(matched_kws) >= len(keywords) - 1:
-                            candidate_elements.append((1, len(matched_kws), el, full_txt))
+                            fallback_candidates.append((1, len(matched_kws), el, full_txt))
                     except Exception:
                         continue
 
@@ -864,13 +900,14 @@ class NaverOrderWorker:
 
                 if candidate_elements:
                     best_score, best_kw_cnt, best_el, best_txt = candidate_elements[0]
-                    self._log(f"  📌 상품 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
-
-                    if self._safe_click_element(best_el):
-                        time.sleep(5)
-                        return True
-                    else:
-                        self._log("  ⚠ 좌표 클릭 실패, 계속 탐색...")
+                    # 완전 매칭(score >= 2)인 경우에만 스크롤 진행 도중 즉시 클릭!
+                    if best_score >= 2:
+                        self._log(f"  📌 상품 완전 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
+                        if self._safe_click_element(best_el):
+                            time.sleep(5)
+                            return True
+                        else:
+                            self._log("  ⚠ 좌표 클릭 실패, 계속 탐색...")
 
             except Exception as e:
                 self._log(f"  ⚠ 상품 탐색 중 오류: {e}")
@@ -879,6 +916,15 @@ class NaverOrderWorker:
                 self._log(f"  ⬇ 스크롤 다운 ({scroll_cnt + 1}/{scroll_max})")
                 self._scroll_down()
                 time.sleep(1.5)
+
+        # 20회 스크롤 완료 후에도 완전 매칭이 없었던 경우 폴백 후보 사용
+        if fallback_candidates:
+            fallback_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            best_score, best_kw_cnt, best_el, best_txt = fallback_candidates[0]
+            self._log(f"  📌 [폴백] 상품 부분 매칭 선택 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
+            if self._safe_click_element(best_el):
+                time.sleep(5)
+                return True
 
         self._log(f"  ❌ 상품 매칭 최종 실패: {seller_name} / {product_name}")
         return False
@@ -985,11 +1031,19 @@ class NaverOrderWorker:
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
     def _click_checkbox(self) -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 클릭, 2초 대기"""
+        """[단계 12] 체크박스.png 이미지 인식 클릭, 2초 대기 (threshold 0.75, min_y 1000)"""
         self._set_status("체크박스 클릭")
 
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        min_y_check = int(w_h * 0.45)  # 화면 하단 절반 영역에서만 체크박스 탐색
+
         if os.path.exists(IMG_CHECKBOX):
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.6)
+            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.75, min_y=min_y_check)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 체크박스 이미지 인식 클릭 완료")
@@ -1003,10 +1057,18 @@ class NaverOrderWorker:
         ]
         for xpath in checkbox_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=3):
-                ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                self._log(f"  ✅ 체크박스 XPath 클릭: {xpath}")
-                time.sleep(2)
-                return True
+                try:
+                    els = self.driver.find_elements(By.XPATH, xpath)
+                    for el in els:
+                        rect = el.rect
+                        cy = rect['y'] + rect['height'] // 2
+                        if cy >= min_y_check:
+                            self._safe_click_element(el)
+                            self._log(f"  ✅ 체크박스 XPath 클릭 (y={cy}): {xpath}")
+                            time.sleep(2)
+                            return True
+                except Exception:
+                    pass
 
         self._log("  ⚠ 체크박스 미발견 → 계속 진행")
         return True
@@ -1014,11 +1076,19 @@ class NaverOrderWorker:
     # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
 
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기"""
+        """[단계 13] 바로구매.png 이미지 인식 클릭, 8초 대기 (threshold 0.78, min_y 1200)"""
         self._set_status("바로구매 클릭")
 
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        min_y_buynow = int(w_h * 0.55)  # 바로구매 버튼은 화면 하단 55% 이하 영역만 유효
+
         if os.path.exists(IMG_BUY_NOW):
-            coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.65)
+            coords = self._find_image_coords(IMG_BUY_NOW, threshold=0.78, min_y=min_y_buynow)
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log("✅ 바로구매 이미지 인식 클릭 완료")
@@ -1028,15 +1098,24 @@ class NaverOrderWorker:
         # XPath 폴백
         buy_now_xpaths = [
             '//android.widget.Button[@text="바로구매"]',
+            '//android.widget.Button[contains(@text,"바로구매")]',
             '//android.widget.Button[contains(@text,"구매")]',
             '//*[@text="바로구매"]',
         ]
         for xpath in buy_now_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=3):
-                ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
-                self._log(f"  ✅ 바로구매 XPath 클릭: {xpath}")
-                time.sleep(8)
-                return True
+                try:
+                    els = self.driver.find_elements(By.XPATH, xpath)
+                    for el in els:
+                        rect = el.rect
+                        cy = rect['y'] + rect['height'] // 2
+                        if cy >= min_y_buynow:
+                            self._safe_click_element(el)
+                            self._log(f"  ✅ 바로구매 XPath 클릭 (y={cy}): {xpath}")
+                            time.sleep(8)
+                            return True
+                except Exception:
+                    pass
 
         self._log("  ❌ 바로구매 버튼 미발견")
         return False
@@ -1509,40 +1588,32 @@ class NaverOrderWorker:
 
     def _click_full_use(self) -> bool:
         """
-        [단계 17] 전액사용.png 인식될 때까지 아래로 스크롤하며 대기 -> 인식 후 클릭 -> 3초 대기
+        [단계 17] 전액사용.png 인식될 때까지 아래로 부드럽게 미세 스크롤하며 대기 -> 인식 후 클릭 -> 3초 대기
         """
         self._set_status("전액사용 탐색 중")
-        self._log("🔍 [단계 17] 전액사용 버튼 탐색 시작 (인식될 때까지 스크롤)")
+        self._log("🔍 [단계 17] 전액사용 버튼 탐색 시작 (부드러운 미세 스크롤 탐색)")
 
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+
+        min_y_full_use = int(w_h * 0.25)  # 상단 헤더/툴바 오탐지 방지 (Y >= 25% 영역)
         max_scroll_attempts = 15
-        for attempt in range(1, max_scroll_attempts + 1):
-            # 1. 전액사용.png 이미지 매칭 (threshold 0.82로 상향하여 오탐 방지)
-            if os.path.exists(IMG_FULL_USE):
-                coords = self._find_image_coords(IMG_FULL_USE, threshold=0.82)
-                if coords:
-                    # 상단 바에 가려져 탭 클릭이 씹히는 문제 방지 (Y 좌표가 낮을 경우)
-                    if coords[1] < 750:
-                        self._log(f"  ⚠ 이미지 상단(Y={coords[1]}) 발견. 중앙 정렬을 위해 스크롤을 내립니다(터치방식).")
-                        self._scroll_up(distance_ratio=0.35)
-                        time.sleep(1.5)
-                        coords = self._find_image_coords(IMG_FULL_USE, threshold=0.82)
-                        if not coords:
-                            continue
-                            
-                    # 하단 바에 가려지거나 끝에 걸치는 문제 방지 (Y 좌표가 너무 높을 경우 중간으로 올림)
-                    elif coords[1] > 1600:
-                        self._log(f"  ⚠ 이미지 하단(Y={coords[1]}) 발견. 중앙 정렬을 위해 터치로 위로 올립니다(화면 아래로).")
-                        self._scroll_down(distance_ratio=0.35)
-                        time.sleep(1.5)
-                        coords = self._find_image_coords(IMG_FULL_USE, threshold=0.82)
-                        if not coords:
-                            continue
 
-                    self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
-                    time.sleep(3)
-                    return True
+        for attempt in range(1, max_scroll_attempts + 1):
+            # 1. 전액사용.png 이미지 매칭
+            if os.path.exists(IMG_FULL_USE):
+                coords = self._find_image_coords(IMG_FULL_USE, threshold=0.80, min_y=min_y_full_use)
+                if coords:
+                    cx, cy = coords
+                    if 200 <= cy <= w_h - 200:
+                        self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
+                        ah.tap_by_coords(self.driver, cx, cy, self._log)
+                        self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
+                        time.sleep(3)
+                        return True
 
             # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
             full_use_xpaths = [
@@ -1557,32 +1628,22 @@ class NaverOrderWorker:
             for xpath in full_use_xpaths:
                 try:
                     if ah.element_exists(self.driver, xpath, timeout=1):
-                        self._log(f"  🎯 전액사용 XPath 발견: {xpath} -> 클릭 시도")
-                        el = self.driver.find_element(By.XPATH, xpath)
-                        
-                        rect = el.rect
-                        y = rect['y'] + rect['height'] // 2
-                        if y > 1600:
-                            self._log(f"  ⚠ 요소 하단(Y={y}) 발견. 중앙 정렬을 위해 터치로 위로 올립니다.")
-                            self._scroll_down(distance_ratio=0.35)
-                            time.sleep(1.5)
-                            el = self.driver.find_element(By.XPATH, xpath)
-                        elif y < 750:
-                            self._log(f"  ⚠ 요소 상단(Y={y}) 발견. 중앙 정렬을 위해 스크롤을 내립니다.")
-                            self._scroll_up(distance_ratio=0.35)
-                            time.sleep(1.5)
-                            el = self.driver.find_element(By.XPATH, xpath)
-
-                        if self._safe_click_element(el):
-                            self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
-                            time.sleep(3)
-                            return True
+                        els = self.driver.find_elements(By.XPATH, xpath)
+                        for el in els:
+                            rect = el.rect
+                            cy = rect['y'] + rect['height'] // 2
+                            if cy >= min_y_full_use:
+                                self._log(f"  🎯 전액사용 XPath 발견: {xpath} (y={cy}) -> 클릭 시도")
+                                if self._safe_click_element(el):
+                                    self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
+                                    time.sleep(3)
+                                    return True
                 except Exception:
                     continue
 
-            # 3. 미발견 시 아래로 스크롤 후 재탐색
-            self._log(f"  ⬇ [단계 17] 전액사용 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.45)
+            # 3. 미발견 시 부드럽게 미세 스크롤 다운
+            self._log(f"  ⬇ [단계 17] 전액사용 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.18)
             time.sleep(1.2)
 
         self._log("  ❌ 전액사용 버튼 탐색 실패 (최대 스크롤 초과)")
@@ -1620,7 +1681,7 @@ class NaverOrderWorker:
     def _input_password(self, password: str) -> bool:
         """
         [단계 19] 비밀번호 입력
-        숫자 폴더의 p0~p9.png 이미지로 각 자리 숫자 버튼의 위치를 인식하여 순서대로 클릭
+        숫자 폴더의 p0~p9.png 이미지로 각 자리 숫자 버튼의 위치를 인식하여 순서대로 클릭 (화면 하단 키패드 영역 지정)
         """
         self._set_status("비밀번호 입력")
         pwd_digits = ''.join(filter(str.isdigit, password))
@@ -1631,28 +1692,43 @@ class NaverOrderWorker:
 
         self._log(f"  🔐 비밀번호 입력: {'*' * len(pwd_digits)}자리")
 
-        # 비밀번호 입력 화면 대기 (1~2초)
-        time.sleep(1.0)
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
 
+        min_y_keypad = int(w_h * 0.45)  # 비밀번호 키패드는 화면 하단에만 존재 (상단 오탐지 차단)
+
+        # 비밀번호 입력 화면 대기 (1~2초)
+        time.sleep(1.2)
+
+        all_success = True
         for idx, digit in enumerate(pwd_digits):
             img_path = IMG_NUMS.get(digit)
             if not img_path or not os.path.exists(img_path):
-                self._log(f"  ⚠ 숫자 이미지 없음: p{digit}.png → 건너뜀")
-                continue
+                self._log(f"  ⚠ 숫자 이미지 없음: p{digit}.png → 실패")
+                all_success = False
+                break
 
             self._log(f"  🔢 {idx+1}번째 자리 '{digit}' 클릭 시도")
-            coords = self._find_image_coords(img_path, threshold=0.60)
+            coords = self._find_image_coords(img_path, threshold=0.55, min_y=min_y_keypad)
 
             if coords:
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                 self._log(f"    ✅ '{digit}' 클릭 완료 ({coords})")
-                time.sleep(0.5)
+                time.sleep(0.6)
             else:
-                self._log(f"    ❌ '{digit}' 이미지 인식 실패")
-                # 실패 시에도 계속 진행
+                self._log(f"    ❌ '{digit}' 이미지 인식 실패 (하단 키패드 영역)")
+                all_success = False
+                break
 
-        self._log("  ✅ 비밀번호 입력 완료")
-        return True
+        if all_success:
+            self._log("  ✅ 비밀번호 입력 완료")
+            return True
+        else:
+            self._log("  ❌ 비밀번호 입력 실패 (일부 숫자 인식 불가)")
+            return False
 
     def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
         """지정된 이미지를 미세 스크롤하며 찾고, 화면 중앙 영역에 정렬하여 클릭"""
@@ -1856,7 +1932,9 @@ class NaverOrderWorker:
             self._log("❌ 결제하기 클릭 실패")
             return False
         if password:
-            self._input_password(password)
+            if not self._input_password(password):
+                self._log("❌ 머니 결제 비밀번호 입력 실패")
+                return False
         else:
             self._log("  ℹ 비밀번호 없음 → 건너뜀")
         return True
@@ -2077,14 +2155,18 @@ class NaverOrderWorker:
                 return False
         else:
             # 포인트 또는 기본 결제
-            self._click_full_use()
+            if not self._click_full_use():
+                self._log("❌ 전액사용 버튼 클릭 실패")
+                return False
             # [단계 18] 결제하기 버튼
             if not self._click_pay_button():
                 self._log("❌ 결제하기 클릭 실패")
                 return False
             # [단계 19] 비밀번호 입력
             if row.password:
-                self._input_password(row.password)
+                if not self._input_password(row.password):
+                    self._log("❌ 비밀번호 입력 실패")
+                    return False
             else:
                 self._log("  ℹ 비밀번호 없음 → 건너뜀")
 
@@ -2094,7 +2176,9 @@ class NaverOrderWorker:
     # ─── 이미지 인식 (naver_worker.py 동일 로직 재구현) ─────────────────────
 
     def _find_image_coords(self, template_path: str,
-                           threshold: float = 0.75) -> Optional[tuple]:
+                           threshold: float = 0.75,
+                           min_y: Optional[int] = None,
+                           max_y: Optional[int] = None) -> Optional[tuple]:
         """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색"""
         try:
             import cv2
@@ -2153,6 +2237,12 @@ class NaverOrderWorker:
             if best_score >= threshold and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2
                 cy = best_loc[1] + best_th // 2
+                if min_y is not None and cy < min_y:
+                    self._log(f"  ⚠ [이미지 매칭] 매칭 좌표({cx}, {cy})가 min_y({min_y}) 미만이므로 거부 (점수: {best_score:.4f})")
+                    return None
+                if max_y is not None and cy > max_y:
+                    self._log(f"  ⚠ [이미지 매칭] 매칭 좌표({cx}, {cy})가 max_y({max_y}) 초과이므로 거부 (점수: {best_score:.4f})")
+                    return None
                 self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy}), 점수: {best_score:.4f}")
                 return cx, cy
             else:
