@@ -63,7 +63,9 @@ IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 
 # 추가된 결제방식 이미지
 IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
+IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
 IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
+IMG_BANK_TRANSFER_CHECK = os.path.join(_IMG_DIR, "무통장체크.png")
 IMG_SELECT_BANK   = os.path.join(_IMG_DIR, "은행을.png")
 IMG_BANK_SELECT   = os.path.join(_IMG_DIR, "은행선택.png")
 IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
@@ -2124,20 +2126,53 @@ class NaverOrderWorker:
 
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
+        
+        # 1. 다른결재 무조건 탐색 및 클릭 시도
         if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7):
-            self._log("❌ '다른결재' 버튼 미발견 -> 무통장 결제 실패")
-            return False
-        if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"):
-            self._log("❌ '일반결재' 버튼 미발견 -> 무통장 결제 실패")
-            return False
-        if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"):
-            self._log("❌ '무통장입금' 버튼 미발견 -> 무통장 결제 실패")
-            return False
+            self._log("⚠ '다른결재' 버튼 미발견")
+            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
+            elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+                self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
+            else:
+                self._log("❌ '다른결재' 및 체크 상태 미발견 -> 무통장 결제 실패")
+                return False
+        
+        # 2. 일반결재 탐색 및 클릭 (이미 체크되어 있으면 스킵)
+        is_already_checked = False
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ '일반결재체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
+            is_already_checked = True
+        elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+            self._log("✅ '무통장체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
+            is_already_checked = True
+            
+        if not is_already_checked:
+            if not self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재"):
+                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                    self._log("✅ '일반결재체크' 발견! 성공으로 간주하고 진행합니다.")
+                elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+                    self._log("✅ '무통장체크' 발견! 성공으로 간주하고 진행합니다.")
+                else:
+                    self._log("❌ '일반결재' 버튼 미발견 -> 무통장 결제 실패")
+                    return False
+                    
+        # 3. 무통장입금 탐색 (이미 체크되어 있으면 스킵)
+        is_bank_transfer_checked = False
+        if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+            self._log("✅ '무통장체크' 상태 감지됨! 무통장입금 클릭 건너뜀.")
+            is_bank_transfer_checked = True
+            
+        if not is_bank_transfer_checked:
+            if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금"):
+                if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+                    self._log("✅ '무통장체크' 상태 감지됨! 성공으로 간주하고 진행합니다.")
+                else:
+                    self._log("❌ '무통장입금' 버튼 미발견 -> 무통장 결제 실패")
+                    return False
+            time.sleep(1.5)
 
-        # 무통장입금 클릭 후 2초 대기하여 화면 전환 보장
-        time.sleep(1.5)
-
-        # 무통장입금 클릭 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
+        # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
         if not self._click_bank_select_with_scroll(max_scroll_attempts=5):
             self._log("❌ 무통장입금 클릭 후 '은행을' / '은행선택' 존재하지 않음 -> 무통장 결제 중단 및 실패 처리")
             return False
@@ -2159,6 +2194,11 @@ class NaverOrderWorker:
                 self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료")
                 bank_selected = True
                 break
+            else:
+                self._log(f"🔄 {bank_name} 미발견 -> 다음 은행 탐색을 위해 스크롤을 맨 위로 올립니다.")
+                for _ in range(4):
+                    self._scroll_up(distance_ratio=0.5)
+                    time.sleep(0.5)
 
         if not bank_selected:
             self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
