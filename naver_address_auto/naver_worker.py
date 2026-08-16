@@ -854,7 +854,7 @@ class NaverWorker:
 
 
     def _dismiss_hide_popup(self, max_count: int = 2):
-        """'하루 동안 보지 않기' / '7일간 보지 않기' 팝업 반복 처리 (XPath 및 7일간.png 이미지 인식)"""
+        """'하루 동안 보지 않기' / '7일간 보지 않기' / '동일한 주소 존재' 팝업 반복 처리"""
         popup_xpaths = [
             '//android.widget.Button[@text="7일간 보지 않기"]',
             '//android.widget.Button[@text="하루 동안 보지 않기"]',
@@ -864,8 +864,33 @@ class NaverWorker:
             '//*[contains(@text, "7일 동안 보지 않기")]',
             '//*[contains(@text, "하루 동안 보지 않기")]',
         ]
+
+        duplicate_pop_xpaths = [
+            '//*[contains(@text, "동일한 주소가 존재")]',
+            '//*[contains(@text, "입력/수정할 수 없습니다")]',
+            '//*[contains(@text, "shopping.naver.com")]',
+        ]
+
         for i in range(max_count):
             dismissed = False
+
+            # 1. 중복 배송지 알림 (페이지 내용: 회원의 배송지 목록에 동일한 주소가 존재...) 감지 및 확인 클릭
+            for dup_xpath in duplicate_pop_xpaths:
+                if ah.element_exists(self.driver, dup_xpath, timeout=1):
+                    self._log("📌 중복 배송지 알림 팝업 감지 (동일한 주소 존재) → '확인' 버튼 클릭")
+                    confirm_btn_xpaths = [
+                        '//android.widget.Button[@text="확인"]',
+                        '//android.widget.Button[@resource-id="android:id/button1"]',
+                        '//*[@text="확인"]',
+                    ]
+                    for c_xpath in confirm_btn_xpaths:
+                        if ah.element_exists(self.driver, c_xpath, timeout=2):
+                            ah.wait_and_click(self.driver, c_xpath, timeout=3, log_callback=self._log)
+                            time.sleep(1.5)
+                            dismissed = True
+                            break
+
+            # 2. 일반 팝업 감지
             for xpath in popup_xpaths:
                 if ah.element_exists(self.driver, xpath, timeout=2):
                     self._log(f"📌 팝업 감지 ({xpath[:30]}) → 클릭 (회차 {i+1})")
@@ -1277,30 +1302,34 @@ class NaverWorker:
 
 
             try:
-
                 success = self._process_row_with_timeout(row)
+                # 1차 실패 시 1회 재시도 수행
+                if not success and not self._stop_event.is_set():
+                    self._log(f"  🔄 [1차 실패] {row.name} (row={row.row_index}) 1회 재시도 진행...")
+                    try:
+                        ah.go_to_main_page(self.driver, self._log)
+                        time.sleep(2)
+                        self._dismiss_hide_popup(max_count=2)
+                    except Exception:
+                        pass
+                    self.is_initialized = False
+                    success = self._process_row_with_timeout(row)
+                    if success:
+                        self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) 재시도 결과 성공 -> Y 기록 진행")
 
             except Exception as fatal_err:
-
                 # 치명적 세션/서버 에러 → 현재 행을 F 처리 후 루프 밖으로 전파
                 self.address_manager.mark_failed(row.row_index)
                 self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
                 self._log(f"🔴 [등록 루프] 치명적 오류로 루프 중단 → run() 재연결 유도")
                 raise  # run()의 except Exception as e 로 전파
 
-
-
             if success:
-
                 self.address_manager.mark_success(row.row_index)
-
                 self._log(f"✅ 성공: {row.name} → Y 기록")
-
             else:
-
                 self.address_manager.mark_failed(row.row_index)
-
-                self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
+                self._log(f"❌ 실패/타임아웃 (2회 시도 모두 실패): {row.name} → F 기록")
 
 
 
@@ -1817,27 +1846,49 @@ class NaverWorker:
 
 
         # [단계 21] 등록 버튼 클릭
-
         time.sleep(2)
-
         self._set_status("등록 버튼 클릭")
-
         if not ah.wait_and_click(self.driver, REGISTER_BTN_XPATH, timeout=10, log_callback=self._log):
-
             self._log("❌ 등록 버튼 클릭 실패")
-
             return False
 
+        time.sleep(2.5)
 
+        # 중복 배송지 팝업 ("회원의 배송지 목록에 동일한 주소가 존재해서...") 감지 시 확인 버튼 처리
+        duplicate_pop_xpaths = [
+            '//*[contains(@text, "동일한 주소가 존재")]',
+            '//*[contains(@text, "입력/수정할 수 없습니다")]',
+            '//*[contains(@text, "shopping.naver.com")]',
+        ]
+        confirm_btn_xpaths = [
+            '//android.widget.Button[@text="확인"]',
+            '//android.widget.Button[@resource-id="android:id/button1"]',
+            '//*[@text="확인"]',
+        ]
+        has_duplicate = False
+        for dup_xpath in duplicate_pop_xpaths:
+            if ah.element_exists(self.driver, dup_xpath, timeout=2):
+                has_duplicate = True
+                self._log("  ⚠ [중복 배송지 팝업 감지] '동일한 주소가 존재해서 입력/수정할 수 없습니다.' 팝업 발견 -> '확인' 버튼 클릭")
+                for c_xpath in confirm_btn_xpaths:
+                    if ah.element_exists(self.driver, c_xpath, timeout=3):
+                        ah.wait_and_click(self.driver, c_xpath, timeout=3, log_callback=self._log)
+                        self._log("  ✅ 중복 팝업 '확인' 클릭 완료")
+                        time.sleep(2)
+                        break
+                break
+
+        if has_duplicate:
+            self._log(f"  ℹ {row.name} 이미 동일한 배송지가 존재함 -> 팝업 닫고 정상 처리 완료로 간주 진행")
+            try:
+                ah.go_back(self.driver, self._log)
+                time.sleep(2)
+            except Exception:
+                pass
+            return True
 
         self._log(f"✅ {row.name} 배송지 등록 완료")
-
         time.sleep(2)
-
-
-
-        # [단계 22] 6열 Y 기록은 호출부(_register_address_loop)에서 처리
-
         return True
 
 

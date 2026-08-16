@@ -1668,6 +1668,16 @@ class NaverOrderWorker:
 
             try:
                 success = self._process_order_with_timeout(row)
+                if not success and not self._stop_event.is_set():
+                    self._log(f"  🔄 [1차 실패] {row.search_keyword} (row={row.row_index}) 1회 재시도 진행...")
+                    try:
+                        ah.go_to_main_page(self.driver, self._log)
+                        time.sleep(2)
+                    except Exception:
+                        pass
+                    success = self._process_order_with_timeout(row)
+                    if success:
+                        self._log(f"  ✅ [재시도 성공!] {row.search_keyword} (row={row.row_index}) 재시도 성공 -> Y 기록 진행")
             except Exception as fatal_err:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 치명적 오류: {fatal_err}")
@@ -1687,7 +1697,7 @@ class NaverOrderWorker:
                 time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                self._log(f"❌ 주문 실패 (2회 시도 모두 실패): {row.search_keyword} → F 기록")
 
         self._log("📋 주문 루프 종료")
 
