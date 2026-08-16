@@ -1680,12 +1680,12 @@ class NaverOrderWorker:
 
     # ─── 단계 19: 비밀번호 입력 ──────────────────────────────────────────────
 
-    def _find_digit_coords(self, img_path: str, min_y: int) -> Optional[tuple]:
+    def _find_digit_coords(self, img_path: str, min_y: int,
+                           screenshot_png: Optional[bytes] = None) -> Optional[tuple]:
         """
-        숫자 키패드 이미지 인식 - 다중 전략으로 인식률 극대화.
-        1차: 멀티스케일 TM_CCOEFF_NORMED (threshold 단계적 완화)
-        2차: 그레이스케일 이진화(Otsu) + TM_CCORR_NORMED
-        3차: CLAHE 대비 강화 후 재매칭
+        숫자 키패드 이미지 인식 (경량화 버전).
+        - 스케일 20단계 (0.6~1.8), UI 과부하 방지
+        - screenshot_png를 외부에서 주입하면 재캡처 생략 (재시도 성능 개선)
         """
         try:
             import cv2
@@ -1696,7 +1696,8 @@ class NaverOrderWorker:
             return None
 
         try:
-            screenshot_png = self._get_screenshot()
+            if screenshot_png is None:
+                screenshot_png = self._get_screenshot()
             screenshot_pil = Image.open(io.BytesIO(screenshot_png))
             screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
@@ -1715,52 +1716,26 @@ class NaverOrderWorker:
             template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
             t_h, t_w = template_gray.shape
 
-            def _multiscale_match(src, tmpl, method, thresholds):
-                """멀티스케일 템플릿 매칭, thresholds 순서로 시도"""
-                tw, th = tmpl.shape[1], tmpl.shape[0]
-                best_score, best_loc, best_tw, best_th = -1, None, tw, th
-                for scale in np.linspace(0.4, 3.0, 80):
-                    nw = int(tw * scale)
-                    nh = int(th * scale)
-                    if nw >= src.shape[1] or nh >= src.shape[0]:
-                        continue
-                    if nw < 8 or nh < 4:
-                        continue
-                    resized = cv2.resize(tmpl, (nw, nh), interpolation=cv2.INTER_AREA)
-                    result = cv2.matchTemplate(src, resized, method)
-                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                    if max_val > best_score:
-                        best_score, best_loc, best_tw, best_th = max_val, max_loc, nw, nh
-                for thr in thresholds:
-                    if best_score >= thr and best_loc is not None:
-                        cx = best_loc[0] + best_tw // 2
-                        cy = best_loc[1] + best_th // 2
-                        return cx, cy, best_score
-                return None
+            best_score, best_loc, best_tw, best_th = -1, None, t_w, t_h
+            # 키패드 버튼은 크기 편차가 작으므로 0.6~1.8 범위, 20단계만 탐색
+            for scale in np.linspace(0.6, 1.8, 20):
+                nw = int(t_w * scale)
+                nh = int(t_h * scale)
+                if nw >= screen_w or nh >= screen_h or nw < 8 or nh < 4:
+                    continue
+                resized = cv2.resize(template_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                result = cv2.matchTemplate(masked, resized, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                if max_val > best_score:
+                    best_score, best_loc, best_tw, best_th = max_val, max_loc, nw, nh
 
-            # ── 1차: TM_CCOEFF_NORMED, threshold 0.50 ──
-            r = _multiscale_match(masked, template_gray, cv2.TM_CCOEFF_NORMED, [0.50])
-            if r:
-                self._log(f"    🎯 [숫자인식 1차] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
-                return r[0], r[1]
+            if best_score >= 0.50 and best_loc is not None:
+                cx = best_loc[0] + best_tw // 2
+                cy = best_loc[1] + best_th // 2
+                self._log(f"    🎯 [숫자인식] 점수: {best_score:.4f} → 좌표 ({cx}, {cy})")
+                return cx, cy
 
-            # ── 2차: Otsu 이진화 후 TM_CCORR_NORMED ──
-            _, tmpl_bin = cv2.threshold(template_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            _, src_bin  = cv2.threshold(masked, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            r = _multiscale_match(src_bin, tmpl_bin, cv2.TM_CCORR_NORMED, [0.92])
-            if r:
-                self._log(f"    🎯 [숫자인식 2차-이진화] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
-                return r[0], r[1]
-
-            # ── 3차: CLAHE 대비 강화 후 TM_CCOEFF_NORMED ──
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            src_clahe  = clahe.apply(masked)
-            tmpl_clahe = clahe.apply(template_gray)
-            r = _multiscale_match(src_clahe, tmpl_clahe, cv2.TM_CCOEFF_NORMED, [0.45])
-            if r:
-                self._log(f"    🎯 [숫자인식 3차-CLAHE] 점수: {r[2]:.4f} → 좌표 ({r[0]}, {r[1]})")
-                return r[0], r[1]
-
+            self._log(f"    ↩ [숫자인식] 미발견 (점수 {best_score:.4f} < 0.50)")
             return None
         except Exception as e:
             self._log(f"    [숫자인식 오류] {e}")
@@ -1771,8 +1746,8 @@ class NaverOrderWorker:
         [단계 19] 비밀번호 입력
         숫자 폴더의 p0~p9.png 이미지로 각 자리 숫자 버튼의 위치를 인식하여 순서대로 클릭.
         - 입력 전 3초 대기 (키패드 완전 표시 보장)
-        - 각 숫자: 최대 5회 재시도 (0.8초 간격, 재시도마다 새 스크린샷)
-        - 3단계 인식 전략 (TM_CCOEFF_NORMED → Otsu 이진화 → CLAHE 대비강화)
+        - 각 숫자: 최대 3회 재시도, 첫 시도 실패 시 새 스크린샷으로 재시도
+        - 경량화된 20스케일 매칭 (UI 과부하 방지)
         """
         self._set_status("비밀번호 입력")
         pwd_digits = ''.join(filter(str.isdigit, password))
@@ -1795,7 +1770,7 @@ class NaverOrderWorker:
         self._log("  ⏳ 키패드 완전 표시 대기 (3초)...")
         time.sleep(3.0)
 
-        MAX_DIGIT_RETRY = 5   # 숫자 1개당 최대 재시도 횟수
+        MAX_DIGIT_RETRY = 3   # 숫자 1개당 최대 재시도 횟수 (UI 과부하 방지)
         RETRY_INTERVAL  = 0.8 # 재시도 간격 (초)
 
         all_success = True
@@ -1808,8 +1783,10 @@ class NaverOrderWorker:
 
             self._log(f"  🔢 {idx+1}번째 자리 '{digit}' 클릭 시도 (최대 {MAX_DIGIT_RETRY}회)")
             digit_ok = False
+            current_screenshot = None  # 첫 시도: None → _find_digit_coords 내부에서 캡처
             for retry in range(1, MAX_DIGIT_RETRY + 1):
-                coords = self._find_digit_coords(img_path, min_y_keypad)
+                coords = self._find_digit_coords(img_path, min_y_keypad,
+                                                  screenshot_png=current_screenshot)
                 if coords:
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     self._log(f"    ✅ '{digit}' 클릭 완료 ({coords}) [시도 {retry}회]")
@@ -1819,6 +1796,7 @@ class NaverOrderWorker:
                 else:
                     self._log(f"    ↩ '{digit}' 인식 실패 ({retry}/{MAX_DIGIT_RETRY}) → {RETRY_INTERVAL}초 후 재시도")
                     time.sleep(RETRY_INTERVAL)
+                    current_screenshot = None  # 재시도 시 새 스크린샷 캡처
 
             if not digit_ok:
                 self._log(f"    ❌ '{digit}' 최종 인식 실패 (하단 키패드 영역, {MAX_DIGIT_RETRY}회 모두 실패)")
@@ -2428,7 +2406,7 @@ class NaverOrderWorker:
             best_tw    = t_w
             best_th    = t_h
 
-            scales = np.linspace(0.4, 3.0, 60)
+            scales = np.linspace(0.5, 2.0, 20)  # 경량화: 60→20단계, UI 과부하 방지
             for scale in scales:
                 new_w = int(t_w * scale)
                 new_h = int(t_h * scale)
