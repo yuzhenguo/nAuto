@@ -1,0 +1,11 @@
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: Wi-Fi, class: android.widget.Switch, res_id: android:id/switch_widget, checked: true
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: 블루투스, class: android.widget.Switch, res_id: android:id/switch_widget, checked: true
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: NFC 및 비접촉 결제, class: android.widget.Switch, res_id: android:id/switch_widget, checked: true
+text: , desc: , class: android.widget.Switch, res_id: android:id/switch_widget, checked: true
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: 비행기 탑승 모드, class: android.widget.Switch, res_id: android:id/switch_widget, checked: false
+text: 모바일 네트워크, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false
+text: 모바일 핫스팟 및 테더링, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false

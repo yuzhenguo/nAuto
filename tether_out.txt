@@ -1,0 +1,11 @@
+text: 모바일 핫스팟 및 테더링, desc: , class: android.widget.TextView, res_id: , checked: false
+text: 모바일 핫스팟, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: 모바일 핫스팟, class: android.widget.Switch, res_id: android:id/switch_widget, checked: false
+text: 블루투스 테더링, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false
+text: , desc: , class: android.view.View, res_id: com.android.settings:id/switch_divider_normal, checked: false
+text: , desc: 블루투스 테더링, class: android.widget.Switch, res_id: android:id/switch_widget, checked: false
+text: USB 테더링, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false
+text: , desc: , class: android.widget.Switch, res_id: android:id/switch_widget, checked: false
+text: 이더넷 테더링, desc: , class: android.widget.TextView, res_id: android:id/title, checked: false
+text: , desc: , class: android.widget.Switch, res_id: android:id/switch_widget, checked: false
