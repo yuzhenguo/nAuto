@@ -2252,15 +2252,17 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
-        # 1. 다른결재 무조건 탐색 및 클릭 시도
+        # 1. 다른결재 탐색 및 클릭 시도
         if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=7):
-            self._log("⚠ '다른결재' 버튼 미발견")
-            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("⚠ '다른결재' 버튼 미발견 -> '일반결재' 탐색 및 클릭 시도")
+            if self._click_image_with_scroll(IMG_NORMAL_PAY, "일반결재", max_scroll_attempts=5):
+                self._log("✅ '다른결재' 미발견 되었으나 '일반결재' 클릭 성공! 계속 진행합니다.")
+            elif os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
                 self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
             elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
                 self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
             else:
-                self._log("❌ '다른결재' 및 체크 상태 미발견 -> 무통장 결제 실패")
+                self._log("❌ '다른결재', '일반결재' 및 체크 상태 미발견 -> 무통장 결제 실패")
                 return False
         
         # 2. 일반결재 탐색 및 클릭 (이미 체크되어 있으면 스킵)

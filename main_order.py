@@ -177,9 +177,6 @@ def check_image_exists_on_device(did: str, template_path: str, threshold: float 
         import cv2
         import numpy as np
 
-        # OpenCV 경고 억제 (한글 경로 imread 실패 경고가 콘솔을 가득 채우는 것 방지)
-        os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
-
         res = subprocess.run(["adb", "-s", did, "exec-out", "screencap", "-p"], capture_output=True, timeout=8)
         if not res.stdout or len(res.stdout) < 100:
             return False
@@ -189,12 +186,10 @@ def check_image_exists_on_device(did: str, template_path: str, threshold: float 
         if screen_img is None:
             return False
 
-        # 한글 경로 인코딩 대응: np.fromfile 로만 로드 (cv2.imread 폴백 제거)
-        try:
-            template_arr = np.fromfile(template_path, dtype=np.uint8)
-            template_img = cv2.imdecode(template_arr, cv2.IMREAD_COLOR)
-        except Exception:
-            template_img = None
+        # 한글 경로 인코딩 대응 np.fromfile 로드
+        template_img = cv2.imdecode(np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if template_img is None:
+            template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
         if template_img is None:
             return False
 
@@ -851,40 +846,35 @@ class MainApp(tk.Tk):
     def _flush_log_queue(self):
         """50ms마다 로그/상태 큐를 배치로 비워 UI에 반영.
         개별 after(0) 남발 대신 한 번의 after 호출로 다수 메시지 처리 → UI 응답성 유지."""
+        # ── 로그 배치: 최대 30개씩 처리 (한 번에 너무 많으면 또 멈춤) ──
+        processed = 0
         try:
-            # ── 로그 배치: 최대 30개씩 처리 (한 번에 너무 많으면 또 멈춤) ──
-            processed = 0
-            try:
-                while processed < 30:
-                    device_id, message = self._log_queue.get_nowait()
-                    if device_id in self.device_panels:
-                        self.device_panels[device_id].append_log(message)
-                    processed += 1
-            except queue.Empty:
-                pass
+            while processed < 30:
+                device_id, message = self._log_queue.get_nowait()
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].append_log(message)
+                processed += 1
+        except queue.Empty:
+            pass
 
-            # ── 상태 배치: 최대 10개씩 처리 ──
-            need_summary = False
-            processed_s = 0
-            try:
-                while processed_s < 10:
-                    device_id, status = self._status_queue.get_nowait()
-                    if device_id in self.device_panels:
-                        self.device_panels[device_id].set_status(status)
-                    need_summary = True
-                    processed_s += 1
-            except queue.Empty:
-                pass
+        # ── 상태 배치: 최대 10개씩 처리 ──
+        need_summary = False
+        processed_s = 0
+        try:
+            while processed_s < 10:
+                device_id, status = self._status_queue.get_nowait()
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].set_status(status)
+                need_summary = True
+                processed_s += 1
+        except queue.Empty:
+            pass
 
-            if need_summary:
-                self._refresh_summary()
+        if need_summary:
+            self._refresh_summary()
 
-        except Exception as e:
-            # 내부 예외가 발생해도 재예약은 반드시 실행 (플리쉬 루프 좌절 방지)
-            print(f"[flush_log_queue] 예외 발생 (UI 루프 유지): {e}")
-        finally:
-            # 프로그램이 살아있는 한 별예외 없이 항상 50ms 후 재호출
-            self.after(50, self._flush_log_queue)
+        # 50ms 후 재호출 (프로그램이 살아있는 한 계속 반복)
+        self.after(50, self._flush_log_queue)
 
     def _on_worker_log(self, device_id: str, message: str):
         """워커 스레드에서 호출 → 큐에 적재 (thread-safe)"""
