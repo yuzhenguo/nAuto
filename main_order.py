@@ -858,20 +858,20 @@ class MainApp(tk.Tk):
             pass
 
         # ── 상태 배치: 최대 10개씩 처리 ──
-        need_summary = False
+        # need_summary = False
         processed_s = 0
         try:
             while processed_s < 10:
                 device_id, status = self._status_queue.get_nowait()
                 if device_id in self.device_panels:
                     self.device_panels[device_id].set_status(status)
-                need_summary = True
+                # need_summary = True
                 processed_s += 1
         except queue.Empty:
             pass
 
-        if need_summary:
-            self._refresh_summary()
+        # if need_summary:
+        #     self._refresh_summary()  # 빈번한 엑셀 읽기 방지 (5초 주기 갱신에 의존)
 
         # 50ms 후 재호출 (프로그램이 살아있는 한 계속 반복)
         self.after(50, self._flush_log_queue)
@@ -1227,8 +1227,14 @@ class MainApp(tk.Tk):
     # ─── 현황 요약 갱신 ──────────────────────────────────────────────────────
 
     def _refresh_summary(self):
+        if hasattr(self, "_summary_timer") and self._summary_timer:
+            self.after_cancel(self._summary_timer)
+            self._summary_timer = None
+
         if not os.path.exists(self._xlsx_path):
+            self._summary_timer = self.after(5000, self._refresh_summary)
             return
+
         try:
             if not self.order_manager or self.order_manager.xlsx_path != self._xlsx_path:
                 self.order_manager = OrderManager(self._xlsx_path)
@@ -1237,8 +1243,9 @@ class MainApp(tk.Tk):
                 lbl.config(text=str(summary.get(key, 0)))
         except Exception:
             pass
+
         # 5초마다 자동 갱신
-        self.after(5000, self._refresh_summary)
+        self._summary_timer = self.after(5000, self._refresh_summary)
 
     def _log_status(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")

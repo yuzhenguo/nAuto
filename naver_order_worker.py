@@ -77,6 +77,8 @@ IMG_KB_BANK       = os.path.join(_IMG_DIR, "국민은행.png")
 IMG_IBK_BANK      = os.path.join(_IMG_DIR, "기업은행.png")
 IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
 IMG_NOT_APPLY2    = os.path.join(_IMG_DIR, "미신청2.png")
+IMG_NOT_APPLY3    = os.path.join(_IMG_DIR, "미신청3.png")
+IMG_NOT_APPLY4    = os.path.join(_IMG_DIR, "미신청4.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
@@ -2005,7 +2007,7 @@ class NaverOrderWorker:
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_keyword = re.sub(r'[\\/*?"<>|]', "", row.search_keyword)
-        screenshot_filename = f"무통장_{timestamp}_{safe_keyword}.png"
+        screenshot_filename = f"무통장_{row.row_index}행_{timestamp}_{safe_keyword}.png"
         screenshot_path = os.path.join(save_dir, screenshot_filename)
 
         try:
@@ -2059,7 +2061,7 @@ class NaverOrderWorker:
         order_display = order_number_text if order_number_text else "알수없음"
         log_filename = "무통장로그.txt"
         log_path = os.path.join(save_dir, log_filename)
-        log_content = f"[{timestamp}] 키워드: {row.search_keyword} | 주문번호: {order_display} | 계좌정보: {bank_info_text}\n"
+        log_content = f"[{timestamp}] [순번: {row.row_index}행] 키워드: {row.search_keyword} | 주문번호: {order_display} | 계좌정보: {bank_info_text}\n"
 
         try:
             with open(log_path, "a", encoding="utf-8") as f:
@@ -2077,7 +2079,9 @@ class NaverOrderWorker:
             return False
 
 
-    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
+    def _click_image_with_scroll(self, img_path: str, name: str, threshold: float = 0.82, max_scroll_attempts: int = 15,
+                                 min_x: Optional[int] = None, max_x: Optional[int] = None,
+                                 min_y: Optional[int] = None, max_y: Optional[int] = None) -> bool:
         """지정된 이미지를 미세 스크롤하며 찾고, 화면 중앙 영역에 정렬하여 클릭"""
         self._set_status(f"{name} 탐색 중")
         self._log(f"🔍 {name} 버튼 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
@@ -2093,22 +2097,22 @@ class NaverOrderWorker:
 
         for attempt in range(1, max_scroll_attempts + 1):
             if os.path.exists(img_path):
-                coords = self._find_image_coords(img_path, threshold=threshold)
+                coords = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                 if coords:
                     if coords[1] < mid_top:
                         self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
                         self._scroll_up(distance_ratio=0.18)
                         time.sleep(1.0)
-                        adj = self._find_image_coords(img_path, threshold=threshold)
+                        adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                         if adj: coords = adj
                     elif coords[1] > mid_bottom:
                         self._log(f"  📌 {name} 하단 치우침(y={coords[1]}) -> 미세 스크롤 다운")
                         self._scroll_down(distance_ratio=0.18)
                         time.sleep(1.0)
-                        adj = self._find_image_coords(img_path, threshold=threshold)
+                        adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                         if adj: coords = adj
 
-                    self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     time.sleep(2)
                     return True
@@ -2119,7 +2123,9 @@ class NaverOrderWorker:
         self._log(f"  ❌ {name} 버튼 탐색 실패")
         return False
         
-    def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15) -> bool:
+    def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15,
+                                     min_x: Optional[int] = None, max_x: Optional[int] = None,
+                                     min_y: Optional[int] = None, max_y: Optional[int] = None) -> bool:
         """여러 이미지 중 하나라도 발견되면 미세 스크롤 조정 후 클릭"""
         names_str = " / ".join(n for _, n in images)
         self._set_status(f"{names_str} 탐색 중")
@@ -2137,22 +2143,22 @@ class NaverOrderWorker:
         for attempt in range(1, max_scroll_attempts + 1):
             for img_path, name in images:
                 if os.path.exists(img_path):
-                    coords = self._find_image_coords(img_path, threshold=threshold)
+                    coords = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                     if coords:
                         if coords[1] < mid_top:
                             self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
                             self._scroll_up(distance_ratio=0.18)
                             time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=threshold)
+                            adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                             if adj: coords = adj
                         elif coords[1] > mid_bottom:
                             self._log(f"  📌 {name} 하단 치우침(y={coords[1]}) -> 미세 스크롤 다운")
                             self._scroll_down(distance_ratio=0.18)
                             time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=threshold)
+                            adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                             if adj: coords = adj
 
-                        self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                        self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                         time.sleep(2)
                         return True
@@ -2374,9 +2380,19 @@ class NaverOrderWorker:
         not_apply_images = [
             (IMG_NOT_APPLY, "미신청"),
             (IMG_NOT_APPLY2, "미신청2"),
+            (IMG_NOT_APPLY3, "미신청3"),
+            (IMG_NOT_APPLY4, "미신청4"),
         ]
 
-        if not self._click_any_image_with_scroll(not_apply_images, threshold=0.60, max_scroll_attempts=10):
+        # 미신청 라디오 버튼은 화면 우측 25% 이내(x >= 75%) 영역에 위치하므로 min_x 제약을 지정
+        w_w = 1080
+        try:
+            w_w = self.driver.get_window_size()['width']
+        except Exception:
+            pass
+        min_x_right = int(w_w * 0.75)
+
+        if not self._click_any_image_with_scroll(not_apply_images, threshold=0.65, max_scroll_attempts=10, min_x=min_x_right):
             self._log("⚠ '미신청' 이미지 미발견 -> XPath 텍스트 탐색 시도")
             for _ in range(3):
                 self._scroll_up(distance_ratio=0.5)
