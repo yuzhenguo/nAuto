@@ -377,6 +377,8 @@ class NaverOrderWorker:
 
         if not already_logged_in:
             target_account_xpaths = [
+                f'//android.view.View[@content-desc="{actual_login_id} , 간편로그인"]',
+                f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "간편로그인")]',
                 f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
                 f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
                 f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
@@ -1721,7 +1723,7 @@ class NaverOrderWorker:
             
         time.sleep(2)
         
-        save_dir = os.path.join(_IMG_DIR, "무통장")
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots", "무통장")
         os.makedirs(save_dir, exist_ok=True)
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -2076,10 +2078,9 @@ class NaverOrderWorker:
         # 로그 파일 기록
         try:
             import datetime
-            log_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                f"naver_order_{self.device_id}.log"
-            )
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f"naver_order_{self.device_id}.log")
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"[{now}] {full_msg}\n")

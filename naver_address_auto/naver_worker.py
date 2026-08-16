@@ -696,6 +696,8 @@ class NaverWorker:
                     pass
 
                 target_account_xpaths = [
+                    f'//android.view.View[@content-desc="{actual_login_id} , 간편로그인"]',
+                    f'//android.view.View[contains(@content-desc, "{actual_login_id}") and contains(@content-desc, "간편로그인")]',
                     f'//android.view.View[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
                     f'//*[contains(@content-desc, "{actual_login_id}")]/ancestor-or-self::*[@clickable="true"]',
                     f'//android.view.View[contains(@content-desc, "{actual_login_id}")]',
@@ -2928,7 +2930,9 @@ class NaverWorker:
         # 로그 파일로도 함께 기록 저장
         try:
             import datetime
-            log_file_path = os.path.join(os.path.dirname(__file__), f"naver_worker_{self.device_id}.log")
+            log_dir = os.path.join(os.path.dirname(__file__), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_file_path = os.path.join(log_dir, f"naver_worker_{self.device_id}.log")
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_file_path, "a", encoding="utf-8") as f_log:
                 f_log.write(f"[{now_str}] {full_msg}\n")
@@ -3017,7 +3021,9 @@ class NaverWorker:
 
             # 원본 캡처 이미지 무조건 저장 (Unicode 경로 대응)
 
-            screenshot_path = os.path.join(os.path.dirname(template_path), f"debug_screenshot_{self.device_id}.png")
+            ss_dir = os.path.join(os.path.dirname(template_path), "screenshots")
+            os.makedirs(ss_dir, exist_ok=True)
+            screenshot_path = os.path.join(ss_dir, f"debug_screenshot_{self.device_id}.png")
 
             try:
 
@@ -3305,7 +3311,9 @@ class NaverWorker:
 
             # 디버그 캡처 저장
 
-            debug_zip_path = os.path.join(os.path.dirname(__file__), f"debug_zipcode_screenshot_{self.device_id}.png")
+            ss_dir = os.path.join(os.path.dirname(__file__), "screenshots")
+            os.makedirs(ss_dir, exist_ok=True)
+            debug_zip_path = os.path.join(ss_dir, f"debug_zipcode_screenshot_{self.device_id}.png")
 
             _, enc_zip = cv2.imencode('.png', img)
 
