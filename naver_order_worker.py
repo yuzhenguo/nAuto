@@ -80,6 +80,37 @@ IMG_NUMS = {
     str(d): os.path.join(_NUM_DIR, f"p{d}.png") for d in range(10)
 }
 
+# 핫스팟 활성 상태 이미지 (재부팅 후 핫스팟 켜기 감지)
+IMG_ACTIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "활성.PNG")
+if not os.path.exists(IMG_ACTIVE):
+    IMG_ACTIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naver_address_auto", "활성.PNG")
+
+
+def _check_image_exists_on_device(device_id: str, template_path: str, threshold: float = 0.65) -> bool:
+    """ADB screencap으로 화면을 캡처하여 템플릿 이미지가 존재하는지 확인 (main_order.py의 check_image_exists_on_device와 동일)"""
+    if not os.path.exists(template_path):
+        return False
+    try:
+        import subprocess
+        import cv2
+        import numpy as np
+        res = subprocess.run(
+            ["adb", "-s", device_id, "exec-out", "screencap", "-p"],
+            capture_output=True, timeout=8
+        )
+        if not res.stdout or len(res.stdout) < 100:
+            return False
+        img_arr = np.frombuffer(res.stdout, np.uint8)
+        screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+        if screen is None or template is None:
+            return False
+        result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(result)
+        return max_val >= threshold
+    except Exception:
+        return False
+
 # ─── XPath 상수 ─────────────────────────────────────────────────────────────
 
 # 메인화면 - 네이버 플러스 스토어 탭 (단계 4)
@@ -153,6 +184,15 @@ class NaverOrderWorker:
     def run(self) -> bool:
         """워커 메인 실행 (별도 스레드에서 호출)"""
         self._log("🚀 자동 주문 워커 시작")
+
+        # ── 재부팅 후 핫스팟 활성 여부 사전 확인 (활성.PNG 이미지 인식) ──
+        if os.path.exists(IMG_ACTIVE):
+            self._log(f"🔍 [활성.PNG] 핫스팟 활성 상태 사전 확인 중...")
+            if _check_image_exists_on_device(self.device_id, IMG_ACTIVE, threshold=0.65):
+                self._log("✅ [활성.PNG] 인식 성공 → 핫스팟 활성 확인, 다음 작업으로 진행")
+            else:
+                self._log("ℹ️ [활성.PNG] 미감지 → 핫스팟 미활성 또는 이미지 없음, 계속 진행")
+
         max_restarts = 10
 
         for attempt in range(1, max_restarts + 1):
@@ -1080,56 +1120,95 @@ class NaverOrderWorker:
     def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
         """
         현재 화면(스크롤 없이)에서 수취인을 탐색하여 클릭. 찾으면 True 반환.
-
-        [XML 구조 참고]
-        ■ 주문/결제 페이지 인라인 (배송지 목록2.xml):
-          - text="배송지명김종국(친구)" 형태 (배송지명 prefix)
-          - 전화번호는 별개 View: text="연락처010-1654-2987"
-
-        ■ 별도 배송지 목록 팝업 (naver_address_auto/배송지목록.xml):
-          - text="정하늘" 처럼 수취인명만 있는 View
-          - ⚠ 전화번호가 text="010-1***-9***" 로 마스킹 → last4 검증 불가!
-          → '***' 감지 시 이름만으로 매칭 후 클릭
         """
         last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
+        formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}" if len(phone_digits) >= 8 else ""
 
-        # ── 방법 A: '배송지명{이름}' 패턴 탐색 (주문/결제 페이지 인라인 형태) ──
-        # XML: <android.view.View text="배송지명김종국(친구)" .../>
-        # 전화번호는 인접한 다른 View에 있으므로 이름만으로 매칭 후,
-        # 같은 부모 컨테이너 내에서 전화번호 확인
+        # ── 방법 1: 배송지 목록 팝업 ('선택' 또는 '선택됨' 버튼 우선 탐색) ──
+        # 팝업 리스트에서는 "선택", "선택됨" 텍스트를 가진 버튼을 찾는 것이 좌표 오차를 없애는 가장 확실한 방법입니다.
+        try:
+            sel_views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "선택")]')
+            for sv in sel_views:
+                try:
+                    sv_text = (sv.get_attribute("text") or "").strip()
+                    if sv_text not in ["선택", "선택됨"]:
+                        continue
+
+                    node = sv
+                    found_name = False
+                    # 조상 노드를 5단계까지 올라가며 동일 블록 안에 수취인명과 전화번호가 있는지 확인
+                    for _ in range(5):
+                        try:
+                            node = node.find_element(By.XPATH, "..")
+                            els = node.find_elements(By.XPATH, ".//*")
+                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
+
+                            if recipient_name in area_text:
+                                # 전화번호 검증 (팝업은 마스킹 안됨, 하지만 혹시 모르니 확인)
+                                if (formatted_phone in area_text) or (last4 in area_text) or ("***" in area_text):
+                                    found_name = True
+                                    break
+                                elif not last4:
+                                    found_name = True
+                                    break
+                        except Exception:
+                            break
+                    
+                    if found_name:
+                        bounds_str = sv.get_attribute("bounds") or ""
+                        self._log(f"  🎯 팝업 매칭! '{recipient_name}' 그룹의 '{sv_text}' 버튼 클릭 시도")
+                        
+                        import re as _re, subprocess
+                        m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                        if m:
+                            x1, y1, x2, y2 = map(int, m.groups())
+                            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                            self._log(f"  👉 '{sv_text}' 직접 ADB 탭: ({cx}, {cy})")
+                            subprocess.run(
+                                ["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)],
+                                capture_output=True, timeout=5
+                            )
+                        else:
+                            self._log("  ⚠ 좌표 파싱 실패 -> 기본 클릭")
+                            self._safe_click_element(sv)
+                        
+                        time.sleep(3)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 방법 2: '배송지명{이름}' 패턴 탐색 (주문/결제 페이지 인라인 형태 또는 팝업 폴백) ──
+        # 팝업에서 '선택' 버튼을 못 찾았거나, 인라인 블록일 경우에만 사용합니다.
         try:
             all_views = self.driver.find_elements(By.XPATH, '//*')
             for view in all_views:
                 try:
                     text = view.get_attribute("text") or ""
-                    # '배송지명{이름}' 패턴 확인
                     if not ("배송지명" in text and recipient_name in text):
                         continue
 
                     self._log(f"  🔎 '배송지명' 패턴 View 발견: '{text[:60]}'")
 
-                    # 전화번호 검증: 같은 부모 영역 내에서 '연락처{전화}' View를 찾음
                     if last4:
                         phone_ok = False
                         try:
-                            # 같은 부모 레벨에서 형제 노드들을 탐색
                             parent = view.find_element(By.XPATH, "..")
                             sibling_texts = []
                             try:
-                                # 형제 및 부모 영역의 모든 텍스트 수집
                                 grand_parent = parent.find_element(By.XPATH, "..")
                                 area_views = grand_parent.find_elements(By.XPATH, ".//*")
                                 for av in area_views:
                                     try:
                                         at = av.get_attribute("text") or ""
-                                        if at:
-                                            sibling_texts.append(at)
+                                        if at: sibling_texts.append(at)
                                     except Exception:
                                         pass
                             except Exception:
                                 pass
+
                             area_text = " ".join(sibling_texts)
-                            # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
                             if "***" in area_text:
                                 phone_ok = True
                                 self._log("  ℹ 전화번호 마스킹 감지 → 이름만으로 매칭")
@@ -1142,7 +1221,7 @@ class NaverOrderWorker:
                                         break
                         except Exception:
                             phone_ok = True
-                            self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 클릭 시도")
+                            self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 매칭 시도")
 
                         if not phone_ok:
                             self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 미매칭 → 스킵")
