@@ -246,7 +246,7 @@ class MainApp(tk.Tk):
         self.device_panels: dict = {}
         self.running_ports = set()
         self.running = False
-        self.worker_semaphore = threading.Semaphore(10)  # CPU 부하 감소를 위해 동시 실행 최대 10대 제한
+        self.worker_semaphore = threading.Semaphore(8)  # CPU 부하 감소를 위해 동시 실행 최대 8대 제한
 
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
@@ -729,7 +729,7 @@ class MainApp(tk.Tk):
         success = False
         tried_ports: list = []
 
-        self._on_worker_log(did, "⏳ CPU 부하 방지: 실행 대기 중 (최대 10대 동시 실행 제한)")
+        self._on_worker_log(did, "⏳ CPU 부하 방지: 실행 대기 중 (최대 8대 동시 실행 제한)")
         with self.worker_semaphore:
             for attempt in range(1, max_retries + 1):
                 if worker._stop_event.is_set():
