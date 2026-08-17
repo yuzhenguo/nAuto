@@ -1718,9 +1718,43 @@ class NaverOrderWorker:
         # ── 화면 안정화 대기 (변경 버튼 클릭 후 팝업/페이지 로딩) ──
         time.sleep(1.5)
 
+        def _try_and_verify() -> bool:
+            if self._find_recipient_on_screen(recipient_name, phone_digits):
+                self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
+                time.sleep(3.0)
+                is_success = False
+                
+                img_dest = os.path.join(_IMG_DIR, "배송지.png")
+                if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
+                    is_success = True
+                elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
+                    is_success = True
+                else:
+                    try:
+                        if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                            is_success = True
+                    except Exception:
+                        pass
+                
+                if is_success:
+                    self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
+                    return True
+                else:
+                    self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (잘려서 터치 무시됨 의심)")
+                    self._log("  👉 부드럽게 스크롤을 2번 더 내린 후 재탐색/클릭을 시도합니다.")
+                    for _ in range(2):
+                        self._scroll_down(distance_ratio=0.15)
+                        time.sleep(1.0)
+                    
+                    self._log("  📋 스크롤 후 수취인 재탐색...")
+                    if self._find_recipient_on_screen(recipient_name, phone_digits):
+                        time.sleep(3.0)
+                        return True
+            return False
+
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
         self._log("  📋 현재 화면에서 수취인 탐색 중 (스크롤 없음)...")
-        if self._find_recipient_on_screen(recipient_name, phone_digits):
+        if _try_and_verify():
             return True
 
         # ── 디버그: 현재 화면의 배송지명 View 목록 출력 ──
@@ -1751,7 +1785,7 @@ class NaverOrderWorker:
             time.sleep(1.0)
 
             self._log(f"  📋 스크롤 후 수취인 재탐색...")
-            if self._find_recipient_on_screen(recipient_name, phone_digits):
+            if _try_and_verify():
                 return True
 
         self._log(f"  ❌ 배송지 '{recipient_name}' 매칭 실패")
@@ -2260,7 +2294,7 @@ class NaverOrderWorker:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
         # 1. 다른결재 탐색 및 클릭 시도
-        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", max_scroll_attempts=8):
+        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", threshold=0.70, max_scroll_attempts=8):
             self._log("⚠ '다른결재' 버튼 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
             # 다른결재 탐색 중 내려간 스크롤을 상단으로 복구
             for _ in range(5):
