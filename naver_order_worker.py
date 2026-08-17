@@ -64,7 +64,9 @@ IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 
 # 추가된 결제방식 이미지
 IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
 IMG_OTHER_PAY2    = os.path.join(_IMG_DIR, "다른결재수단2.png")
+IMG_OTHER_PAY4    = os.path.join(_IMG_DIR, "다른결재4.png")
 IMG_PAY_METHOD    = os.path.join(_IMG_DIR, "결재수단.png")
+IMG_BOGI          = os.path.join(_IMG_DIR, "보기.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
 IMG_NORMAL_PAY3   = os.path.join(_IMG_DIR, "일반결재3.png")
 IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
@@ -192,12 +194,14 @@ class NaverOrderWorker:
                  appium_port: int,
                  order_manager: OrderManager,
                  log_callback: Optional[Callable] = None,
-                 status_callback: Optional[Callable] = None):
+                 status_callback: Optional[Callable] = None,
+                 machine_num: int = 1):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
         self._log_cb        = log_callback
         self._status_cb     = status_callback
+        self.machine_num    = machine_num
         self.driver         = None
         self._stop_event    = threading.Event()
 
@@ -2321,14 +2325,16 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
-        # 1. 다른결재/다른결재수단2/결재수단 탐색 및 클릭 시도
+        # 1. 다른결재/다른결재수단2/결재수단/다른결재4/보기 탐색 및 클릭 시도
         other_pay_images = [
             (IMG_OTHER_PAY, "다른결재"),
             (IMG_OTHER_PAY2, "다른결재수단2"),
             (IMG_PAY_METHOD, "결재수단"),
+            (IMG_OTHER_PAY4, "다른결재4"),
+            (IMG_BOGI, "보기"),
         ]
         if not self._click_any_image_with_scroll(other_pay_images, threshold=0.70, max_scroll_attempts=8):
-            self._log("⚠ '다른결재/다른결재수단2/결재수단' 버튼 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
+            self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
             # 다른결재 탐색 중 내려간 스크롤을 상단으로 복구
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
@@ -2978,7 +2984,7 @@ class NaverOrderWorker:
             import datetime
             log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
             os.makedirs(log_dir, exist_ok=True)
-            log_path = os.path.join(log_dir, f"naver_order_{self.device_id}.log")
+            log_path = os.path.join(log_dir, f"naver_order_기기{self.machine_num}_{self.device_id}.log")
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"[{now}] {full_msg}\n")

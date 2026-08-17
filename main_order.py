@@ -770,6 +770,7 @@ class MainApp(tk.Tk):
                 order_manager  = self.order_manager,
                 log_callback   = self._on_worker_log,
                 status_callback= self._on_worker_status,
+                machine_num    = i + 1
             )
             self.workers[did] = worker
 
