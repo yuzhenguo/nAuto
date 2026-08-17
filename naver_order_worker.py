@@ -54,6 +54,7 @@ _NUM_DIR = os.path.join(_IMG_DIR, "숫자")
 IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력창 (단계 8)
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
+IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
@@ -62,6 +63,8 @@ IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 
 
 # 추가된 결제방식 이미지
 IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
+IMG_OTHER_PAY2    = os.path.join(_IMG_DIR, "다른결재수단2.png")
+IMG_PAY_METHOD    = os.path.join(_IMG_DIR, "결재수단.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
 IMG_NORMAL_PAY3   = os.path.join(_IMG_DIR, "일반결재3.png")
 IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
@@ -1127,26 +1130,50 @@ class NaverOrderWorker:
             min_y_check = opt_y
             self._log(f"  📌 체크박스 탐색 Y영역: 옵션선택 하단({opt_y}) ~ 기본 하단({max_y_check})")
 
-        # ─── 1순위: 체크박스.png 이미지 매칭 ────────────────────────────────────
-        if os.path.exists(IMG_CHECKBOX):
-            # threshold 단계별 시도 (0.65 → 0.55)
-            for thr in [0.65, 0.55]:
-                coords = self._find_image_coords(IMG_CHECKBOX, threshold=thr,
-                                                 min_x=0, max_x=max_x_check,
+        # ─── 체크박스 클릭 후 추가 탭 헬퍼 ───────────────────────────────────────
+        def _post_click_extra_tap():
+            # 옵션선택과 배송정보가 모두 있으면 배송정보 위를 한 번 더 탭 (사용자 화살표 요청)
+            if opt_y and del_y:
+                tap_x = int(w_w * 0.15)
+                tap_y = del_y - 65  # 배송정보 텍스트 바로 위쪽 약 65픽셀 부근
+                self._log(f"  👉 옵션 선택/배송정보 확인됨. 배송정보 바로 위({tap_x}, {tap_y}) 추가 탭 시도")
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
+                        capture_output=True, timeout=5
+                    )
+                    time.sleep(1.0)
+                except Exception:
+                    pass
+            return True
+
+        # ─── 1순위: 체크박스.png / 체크박스4.png 매칭 (인식률 높은 것 우선) ──────────────
+        checkbox_imgs = [img for img in [IMG_CHECKBOX, IMG_CHECKBOX4] if os.path.exists(img)]
+        if checkbox_imgs:
+            # threshold 단계별 시도 (0.75 → 0.60): 두 이미지에 대해 같은 점수대에서 찾으면 더 인식률 높은게 걸림
+            for thr in [0.75, 0.70, 0.65, 0.60]:
+                for img_path in checkbox_imgs:
+                    coords = self._find_image_coords(img_path, threshold=thr,
+                                                     min_x=0, max_x=max_x_check,
+                                                     min_y=min_y_check, max_y=max_y_check)
+                    if coords:
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                        img_name = os.path.basename(img_path)
+                        self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (threshold={thr})")
+                        time.sleep(1.5)
+                        return _post_click_extra_tap()
+
+            # X축 제한 없이 재시도
+            for img_path in checkbox_imgs:
+                coords = self._find_image_coords(img_path, threshold=0.55,
                                                  min_y=min_y_check, max_y=max_y_check)
                 if coords:
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"✅ 체크박스 이미지 인식 클릭 완료 (threshold={thr})")
+                    img_name = os.path.basename(img_path)
+                    self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (X축 제한 해제)")
                     time.sleep(1.5)
-                    return True
-            # X축 제한 없이 재시도 (체크박스가 중앙에 있을 경우 대비)
-            coords = self._find_image_coords(IMG_CHECKBOX, threshold=0.55,
-                                             min_y=min_y_check, max_y=max_y_check)
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log("✅ 체크박스 이미지 인식 클릭 완료 (X축 제한 해제)")
-                time.sleep(1.5)
-                return True
+                    return _post_click_extra_tap()
 
         # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선, X축 제한 완화) ──
         if product_name:
@@ -1173,7 +1200,7 @@ class NaverOrderWorker:
                                     self._safe_click_element(el)
                                     self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
                                     time.sleep(1.5)
-                                    return True
+                                    return _post_click_extra_tap()
                         except Exception:
                             pass
 
@@ -1200,7 +1227,7 @@ class NaverOrderWorker:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
                             time.sleep(1.5)
-                            return True
+                            return _post_click_extra_tap()
                 except Exception:
                     pass
 
@@ -1218,6 +1245,7 @@ class NaverOrderWorker:
             )
             self._log(f"  ✅ 좌표 추정 탭 완료 ({fallback_x}, {fallback_y})")
             time.sleep(1.5)
+            return _post_click_extra_tap()
         except Exception as e:
             self._log(f"  ⚠ 좌표 탭 실패: {e}")
 
@@ -2293,9 +2321,14 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
-        # 1. 다른결재 탐색 및 클릭 시도
-        if not self._click_image_with_scroll(IMG_OTHER_PAY, "다른결재", threshold=0.70, max_scroll_attempts=8):
-            self._log("⚠ '다른결재' 버튼 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
+        # 1. 다른결재/다른결재수단2/결재수단 탐색 및 클릭 시도
+        other_pay_images = [
+            (IMG_OTHER_PAY, "다른결재"),
+            (IMG_OTHER_PAY2, "다른결재수단2"),
+            (IMG_PAY_METHOD, "결재수단"),
+        ]
+        if not self._click_any_image_with_scroll(other_pay_images, threshold=0.70, max_scroll_attempts=8):
+            self._log("⚠ '다른결재/다른결재수단2/결재수단' 버튼 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
             # 다른결재 탐색 중 내려간 스크롤을 상단으로 복구
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
