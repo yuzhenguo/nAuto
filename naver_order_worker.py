@@ -312,12 +312,12 @@ class NaverOrderWorker:
         # [단계 5] 팝업 처리
         self._dismiss_popups()
 
-        # [단계 6] 마이쇼핑 클릭 -> 10초 대기
+        # [단계 6] 마이쇼핑 클릭 -> 5초 대기
         self._set_status("마이쇼핑 클릭")
         if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
-            self._log("✅ 마이쇼핑 클릭 완료 (10초 대기)")
-            time.sleep(7)
+            self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
+            time.sleep(5)
         else:
             self._log("⚠ 마이쇼핑 버튼 미발견")
             time.sleep(2)
@@ -2453,158 +2453,26 @@ class NaverOrderWorker:
             return None
 
         for attempt in range(1, max_scroll_attempts + 1):
+            # ── 이미지 매칭 전용 탐색 (threshold 0.72) ──
             found_and_handled = False
-
-            # ── 0순위: 최우선 XPath 탐색 (아코디언 버튼 & ID 기반) ──
-            try:
-                priority_xpaths = [
-                    '//android.widget.Button[@resource-id="btn_payment_method_accordion"]',
-                    '//*[@resource-id="btn_payment_method_accordion"]',
-                    '//*[contains(@resource-id, "payment_method")]',
-                ]
-                for pxpath in priority_xpaths:
-                    if ah.element_exists(self.driver, pxpath, timeout=0.5):
-                        els = self.driver.find_elements(By.XPATH, pxpath)
-                        for el in els:
-                            rect = el.rect
-                            if rect and rect.get('height', 0) > 10:
-                                cx = rect['x'] + rect['width'] // 2
-                                cy = rect['y'] + rect['height'] // 2
-                                self._log(f"  📝 [XPath 우선] 아코디언/결제버튼 발견! 좌표: ({cx}, {cy})")
-                                res = _tap_coords_and_return(cx, cy, "XPath/아코디언버튼")
-                                if res is True:
-                                    return True
-                                elif res is False:
-                                    found_and_handled = True
-                                    break
-                    if found_and_handled:
-                        break
-            except Exception as xp_e:
-                self._log(f"  ⚠ [XPath 우선] 오류: {xp_e}")
-
-            if found_and_handled:
-                continue
-
-            # ── 1순위: 이미지 매칭 (threshold 0.83 - 밸런스 조정) ──
             for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.83)
+                coords = self._find_image_coords(img_path, threshold=0.72)
                 if coords:
                     res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
                     if res is True:
                         return True
-                    else:
-                        # 탭 클릭 후 하위 메뉴 미노출 시, 동일 화면의 가짜 이미지 연속 클릭을 방지하고 즉시 스크롤 다운 수행
+                    elif res is False:
                         found_and_handled = True
                         break
 
             if found_and_handled:
                 continue
 
-            # ── 2순위: OCR 텍스트 탐색 (pytesseract) ──
-            try:
-                import cv2, numpy as np
-                res = _run_cmd(
-                    ["adb", "-s", self.device_id, "exec-out", "screencap", "-p"],
-                    capture_output=True, timeout=8
-                )
-                if res.stdout and len(res.stdout) > 100:
-                    img_arr = np.frombuffer(res.stdout, np.uint8)
-                    screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                    if screen is not None:
-                        try:
-                            import pytesseract
-                            from PIL import Image as PILImage
-
-                            _tess_paths = [
-                                r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                                r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-                            ]
-                            for _tp in _tess_paths:
-                                if os.path.exists(_tp):
-                                    pytesseract.pytesseract.tesseract_cmd = _tp
-                                    break
-
-                            gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-                            _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                            pil_img = PILImage.fromarray(binarized)
-
-                            ocr_data = pytesseract.image_to_data(
-                                pil_img,
-                                lang="kor+eng",
-                                output_type=pytesseract.Output.DICT,
-                                config="--psm 11"
-                            )
-                            n_boxes = len(ocr_data['level'])
-                            for i in range(n_boxes):
-                                word = (ocr_data['text'][i] or "").strip()
-                                if not word:
-                                    continue
-                                for kw in other_pay_keywords:
-                                    if kw in word or word in kw:
-                                        x = ocr_data['left'][i]
-                                        y = ocr_data['top'][i]
-                                        bw = ocr_data['width'][i]
-                                        bh = ocr_data['height'][i]
-                                        cx = x + bw // 2
-                                        cy = y + bh // 2
-                                        conf = ocr_data['conf'][i]
-                                        self._log(f"  🔤 [OCR] '{word}' (신뢰도:{conf}) 발견!")
-                                        res = _tap_coords_and_return(cx, cy, f"OCR/{kw}")
-                                        if res is True:
-                                            return True
-                                        elif res is False:
-                                            found_and_handled = True
-                                            break
-                                if found_and_handled:
-                                    break
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-            if found_and_handled:
-                continue
-
-            # ── 3순위: XPath 텍스트 탐색 ──
-            try:
-                xpath_patterns = [
-                    '//*[contains(@text,"다른결재수단")]',
-                    '//*[contains(@text,"다른 결재수단")]',
-                    '//*[contains(@text,"다른결재")]',
-                    '//*[contains(@text,"다른결제수단")]',
-                    '//*[contains(@text,"다른 결제수단")]',
-                    '//*[contains(@text,"결재수단보기")]',
-                    '//*[contains(@content-desc,"다른결재")]',
-                ]
-                for xpath in xpath_patterns:
-                    if ah.element_exists(self.driver, xpath, timeout=0.5):
-                        els = self.driver.find_elements(By.XPATH, xpath)
-                        for el in els:
-                            rect = el.rect
-                            if rect and rect.get('height', 0) > 10:
-                                cx = rect['x'] + rect['width'] // 2
-                                cy = rect['y'] + rect['height'] // 2
-                                txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
-                                self._log(f"  📝 [XPath] '{txt}' 발견! 좌표: ({cx}, {cy})")
-                                res = _tap_coords_and_return(cx, cy, f"XPath/{txt}")
-                                if res is True:
-                                    return True
-                                elif res is False:
-                                    found_and_handled = True
-                                    break
-                    if found_and_handled:
-                        break
-            except Exception as xp_e:
-                self._log(f"  ⚠ [XPath] 오류: {xp_e}")
-
-            if found_and_handled:
-                continue
-
-            self._log(f"  ⬇ [다른결재] 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.15)  # 조금씩 스크롤하며 탐색
+            self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
             time.sleep(1.0)
 
-        self._log("  ❌ [다른결재 버튼] 이미지/OCR/XPath 모두 탐색 실패")
+        self._log("  ❌ [다른결재 버튼] 이미지 매칭 탐색 실패")
         return False
 
     # ─── 결제화면 PaddleOCR 텍스트 추출 & 로그 저장 ────────────────────────────
@@ -3241,14 +3109,9 @@ class NaverOrderWorker:
             best_tw    = t_w
             best_th    = t_h
 
-            # CLAHE 전처리: 구역별 대비 향상 (어두운 화면 및 저화질 대비 인식률 개선)
-            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-            screen_enh = clahe.apply(screen_gray)
-            templ_enh  = clahe.apply(template_gray)
-
-            # 멀티스케일 + 멀티메서드 앙상블
-            # CCOEFF: 밝기 편차에 강함 (주력), CCORR: 패턴 강도에 강함 (보조)
-            scales = np.linspace(0.55, 1.95, 15)  # 15단계 스케일
+            # 표준 Grayscale 매칭 (CLAHE 왜곡 없이 템플릿 원본 정밀 비교)
+            # 다양한 모바일 해상도(DPI) 대응을 위한 멀티스케일 (0.55 ~ 1.65x, 12단계)
+            scales = np.linspace(0.55, 1.65, 12)
             for scale in scales:
                 new_w = int(t_w * scale)
                 new_h = int(t_h * scale)
@@ -3257,28 +3120,15 @@ class NaverOrderWorker:
                 if new_w < 10 or new_h < 5:
                     continue
 
-                resized_enh  = cv2.resize(templ_enh,  (new_w, new_h), interpolation=cv2.INTER_AREA)
+                resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-                # 1순위 메서드: TM_CCOEFF_NORMED (가중치 1.0)
+                # 표준 TM_CCOEFF_NORMED 적용 (가장 정밀하고 오탐이 없는 방식)
                 try:
-                    r1 = cv2.matchTemplate(screen_enh, resized_enh, cv2.TM_CCOEFF_NORMED)
-                    _, mv1, _, ml1 = cv2.minMaxLoc(r1)
-                    if mv1 > best_score:
-                        best_score = mv1
-                        best_loc   = ml1
-                        best_tw    = new_w
-                        best_th    = new_h
-                except Exception:
-                    pass
-
-                # 2순위 메서드: TM_CCORR_NORMED (가중치 0.85 - 보조 강화)
-                try:
-                    r2 = cv2.matchTemplate(screen_enh, resized_enh, cv2.TM_CCORR_NORMED)
-                    _, mv2, _, ml2 = cv2.minMaxLoc(r2)
-                    score2 = mv2 * 0.85
-                    if score2 > best_score:
-                        best_score = score2
-                        best_loc   = ml2
+                    r = cv2.matchTemplate(screen_gray, resized_templ, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                    if max_val > best_score:
+                        best_score = max_val
+                        best_loc   = max_loc
                         best_tw    = new_w
                         best_th    = new_h
                 except Exception:

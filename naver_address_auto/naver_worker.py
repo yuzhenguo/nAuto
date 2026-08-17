@@ -489,8 +489,8 @@ class NaverWorker:
                 if ah.element_exists(self.driver, xpath, timeout=4):
                     self._log("📌 마이쇼핑 버튼 발견 → 클릭")
                     ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
-                    self._log("✅ 마이쇼핑 클릭 완료")
-                    time.sleep(4)
+                    self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
+                    time.sleep(5)
                     my_shopping_clicked = True
                     break
             if my_shopping_clicked:
