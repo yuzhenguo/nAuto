@@ -52,6 +52,7 @@ _IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "개발문�
 _NUM_DIR = os.path.join(_IMG_DIR, "숫자")
 
 IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력창 (단계 8)
+IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력창 예비용
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
@@ -705,22 +706,50 @@ class NaverOrderWorker:
 
     def _input_search_keyword(self, keyword: str) -> bool:
         """
-        [단계 8] 검색입력.png 이미지 인식 → 검색 입력창 클릭 → 검색어 입력
+        [단계 8] 검색입력 이미지 / OCR 인식 → 검색 입력창 클릭 → 검색어 입력
         """
         self._set_status(f"검색어 입력: {keyword}")
         self._log(f"🔍 검색어 입력: '{keyword}'")
 
         tap_coords = None
 
-        # 1순위: 이미지 매칭 (검색입력.png)
-        if os.path.exists(IMG_SEARCH_INPUT):
-            self._log("🔍 [이미지 매칭] 검색입력.png 인식 시도")
-            coords = self._find_image_coords(IMG_SEARCH_INPUT, threshold=0.7)
-            if coords:
-                tap_coords = coords
-                self._log(f"  ✅ 검색입력.png 발견 → 좌표: {tap_coords}")
+        # (사용자 요청으로 검색입력.png 등 이미지 매칭 방식은 제외됨)
 
-        # 2순위: EditText XPath
+        # 2순위: OCR 탐색 (상품명, 브랜드, 검색 등)
+        if not tap_coords:
+            self._log("🔍 [OCR] '상품명' 또는 '브랜드' 등 텍스트 검색 시도")
+            try:
+                import cv2, numpy as np
+                from paddleocr import PaddleOCR
+                res = _run_cmd(
+                    ["adb", "-s", self.device_id, "exec-out", "screencap", "-p"],
+                    capture_output=True, timeout=8
+                )
+                if res.stdout and len(res.stdout) > 100:
+                    img_arr = np.frombuffer(res.stdout, np.uint8)
+                    screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                    if screen is not None:
+                        ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean", use_gpu=False)
+                        results = ocr_engine.ocr(screen, cls=True)
+                        if results:
+                            for page in results:
+                                if not page: continue
+                                for item in page:
+                                    box = item[0]
+                                    text_info = item[1]
+                                    text = text_info[0].replace(" ", "")
+                                    conf = float(text_info[1])
+                                    if conf > 0.5 and any(kw in text for kw in ["상품", "브랜드", "쇼핑몰", "검색어", "입력"]):
+                                        cx = int((box[0][0] + box[2][0]) / 2)
+                                        cy = int((box[0][1] + box[2][1]) / 2)
+                                        tap_coords = (cx, cy)
+                                        self._log(f"  ✅ [OCR] '{text}' 발견 → 좌표: {tap_coords}")
+                                        break
+                                if tap_coords: break
+            except Exception as e:
+                self._log(f"  ⚠ [OCR 검색] 오류: {e}")
+
+        # 3순위: EditText XPath
         if not tap_coords:
             search_xpaths = [
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
@@ -729,7 +758,7 @@ class NaverOrderWorker:
                 '//android.widget.EditText',
             ]
             for xpath in search_xpaths:
-                if ah.element_exists(self.driver, xpath, timeout=3):
+                if ah.element_exists(self.driver, xpath, timeout=2):
                     try:
                         el = self.driver.find_element(By.XPATH, xpath)
                         rect = el.rect
@@ -740,34 +769,46 @@ class NaverOrderWorker:
                     except Exception:
                         continue
 
-        if not tap_coords:
-            self._log("  ❌ 검색 입력창 좌표 획득 실패")
-            return False
-
-        # 입력창 클릭
-        ah.tap_by_coords(self.driver, tap_coords[0], tap_coords[1], self._log)
-        time.sleep(0.8)
+        if tap_coords:
+            # 입력창 클릭
+            ah.tap_by_coords(self.driver, tap_coords[0], tap_coords[1], self._log)
+            time.sleep(1.0)
+        else:
+            self._log("  ⚠ 검색 입력창 좌표 획득 실패. (기본 화면 중앙 상단 클릭 폴백 시도)")
+            try:
+                sz = self.driver.get_window_size()
+                ah.tap_by_coords(self.driver, int(sz['width'] * 0.5), int(sz['height'] * 0.15), self._log)
+                time.sleep(1.0)
+            except Exception:
+                pass
 
         # 텍스트 입력
         try:
             focused_xpath = '//android.widget.EditText[@focused="true"]'
-            if ah.element_exists(self.driver, focused_xpath, timeout=3):
+            el = None
+            if ah.element_exists(self.driver, focused_xpath, timeout=2):
                 el = self.driver.find_element(By.XPATH, focused_xpath)
-            else:
+            elif ah.element_exists(self.driver, '//android.widget.EditText', timeout=2):
                 el = self.driver.find_element(By.XPATH, '//android.widget.EditText')
 
-            # 기존 텍스트 지우고 입력
-            el.clear()
-            time.sleep(0.3)
-            try:
-                self.driver.execute_script("mobile: type", {"text": keyword})
-                time.sleep(0.5)
-            except Exception:
-                el.send_keys(keyword)
-                time.sleep(0.5)
+            if el:
+                try:
+                    el.clear()
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+                try:
+                    self.driver.execute_script("mobile: type", {"text": keyword})
+                    time.sleep(0.5)
+                except Exception:
+                    el.send_keys(keyword)
+                    time.sleep(0.5)
+            else:
+                raise Exception("EditText 요소를 찾지 못함")
 
             self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
             return True
+            
         except Exception as e:
             self._log(f"  ❌ 검색어 입력 실패: {e}")
             return False
@@ -1473,15 +1514,20 @@ class NaverOrderWorker:
             for view in views:
                 try:
                     text = view.get_attribute("text") or ""
-                    # 사용자 요청: '배송지명'이 포함된 인라인 배경 텍스트는 오작동 유발하므로 무조건 제외
-                    if "배송지명" in text:
-                        continue
-                    
+                    # 사용자 요청: 수취인 이름이 포함된 요소면 일단 클릭 (전화번호나 '배송지명' 조건 완화)
                     if recipient_name not in text:
                         continue
 
                     self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
 
+                    # 팝업의 배송지 목록에 있는 요소인지 간단히 확인
+                    # 결제창의 단순 현재 배송지(예: 배송지명만 있는 텍스트)를 잘못 누를 위험이 있지만,
+                    # 스크롤 팝업 상태이거나 text 길이가 길면 버튼으로 간주하고 진행
+                    if "배송지명" in text and len(text) < len(recipient_name) + 5:
+                        continue
+
+                    # 연락처(last4) 검증이 엄격해서 매칭을 놓치는 경우가 많으므로,
+                    # 전화번호 뒷자리가 텍스트나 주변 뷰에 없더라도 이름이 확실히 포함되어 있으면 진행
                     if last4:
                         phone_ok = False
                         try:
@@ -1514,9 +1560,9 @@ class NaverOrderWorker:
                             phone_ok = True
                             self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 매칭 시도")
 
+                        # 전화번호 미매칭이라도 에러 로그만 남기고 클릭은 허용 (사용자 요청)
                         if not phone_ok:
-                            self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 미매칭 → 스킵")
-                            continue
+                            self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 주변에 없지만, 이름('{recipient_name}') 포함되어 클릭 시도")
 
                     self._log(f"  🎯 이름 패턴 매칭 성공: '{text[:60]}'")
                     
