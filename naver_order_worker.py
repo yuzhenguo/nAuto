@@ -1520,10 +1520,9 @@ class NaverOrderWorker:
 
                     self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
 
-                    # 팝업의 배송지 목록에 있는 요소인지 간단히 확인
-                    # 결제창의 단순 현재 배송지(예: 배송지명만 있는 텍스트)를 잘못 누를 위험이 있지만,
-                    # 스크롤 팝업 상태이거나 text 길이가 길면 버튼으로 간주하고 진행
-                    if "배송지명" in text and len(text) < len(recipient_name) + 5:
+                    # 배송지 목록 팝업 안의 요소들은 보통 '기본배송지', '주소' 형태이며 '배송지명' 문구가 없음.
+                    # '배송지명송주은...' 같이 '배송지명'이 포함되어 있으면 주문 화면 앞단의 단순 텍스트이므로 클릭하지 않고 건너뜀.
+                    if "배송지명" in text:
                         continue
 
                     # 연락처(last4) 검증이 엄격해서 매칭을 놓치는 경우가 많으므로,
@@ -2798,48 +2797,48 @@ class NaverOrderWorker:
                 self._log("❌ '미신청' 및 '미신청2' 버튼 이미지/XPath 모두 미발견 -> 무통장 결제 실패")
                 return False
 
-        # ── 주문하기 탐색 전: 팝업 점검 및 위에서부터 탐색 ──
+        # ── 주문하기 탐색 전: 팝업 점검 및 화면 제일 밑으로 스크롤 ──
         self._dismiss_payment_benefit_popup()
 
-        # 위에서부터 살짝 밑으로 내리면서 탐색하기 위해 스크롤을 살짝 위로 복구
-        self._log("🔍 [무통장] 스크롤 위로 복구 후 '주문하기' 버튼 위에서부터 밑으로 탐색 시작 (이미지 + XPath 동시 탐색)")
-        for _ in range(3):
-            self._scroll_up(distance_ratio=0.4)
-            time.sleep(0.3)
+        self._log("🔍 [무통장] 화면 제일 밑으로 스크롤 후 '주문하기.png' 이미지 인식 클릭 시도")
+        for _ in range(4):
+            self._scroll_down(distance_ratio=0.6)
+            time.sleep(0.4)
 
-        order_xpath = '//android.widget.Button[@text="주문하기"]'
         found_order = False
-
-        for attempt in range(9):  # 최대 8회 스크롤 (0~8)
-            # 1. 이미지 찾기
-            if os.path.exists(IMG_DO_ORDER):
-                coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.75)
+        if os.path.exists(IMG_DO_ORDER):
+            for attempt in range(5):
+                coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.70)
                 if coords:
-                    self._log(f"✅ '주문하기' 버튼 이미지 발견! 좌표 ({coords[0]}, {coords[1]})")
+                    self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     found_order = True
                     time.sleep(2.0)
                     break
-
-            # 2. XPath 찾기
-            try:
-                if ah.element_exists(self.driver, order_xpath, timeout=1):
-                    el = self.driver.find_element(By.XPATH, order_xpath)
-                    self._log(f"✅ '주문하기' 버튼 XPath 발견!")
-                    if self._safe_click_element(el):
-                        found_order = True
-                        time.sleep(2.0)
-                        break
-            except Exception:
-                pass
-
-            if attempt < 8:
-                self._log(f"  ⬇ '주문하기' 버튼 미발견 -> 미세 스크롤 다운 ({attempt+1}/8)")
-                self._scroll_down(distance_ratio=0.20)
-                time.sleep(0.8)
+                else:
+                    self._log(f"  📌 '주문하기.png' 미발견 -> 미세 스크롤 다운 ({attempt+1}/5)")
+                    self._scroll_down(distance_ratio=0.20)
+                    time.sleep(0.8)
 
         if not found_order:
-            self._log("❌ '주문하기' 버튼 이미지/XPath 모두 미발견 -> 무통장 결제 실패")
+            self._log("⚠ '주문하기' 이미지 미발견 -> 스크롤을 위로 올리며 '결재하기' / '주문결재' 이미지 탐색 시도")
+            for _ in range(5):
+                self._scroll_up(distance_ratio=0.4)
+                time.sleep(0.6)
+                for pay_img, pay_name in [(IMG_DO_PAY, "결재하기"), (IMG_ORDER_PAY, "주문결재")]:
+                    if os.path.exists(pay_img):
+                        coords = self._find_image_coords(pay_img, threshold=0.70)
+                        if coords:
+                            self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                            ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                            found_order = True
+                            time.sleep(2.0)
+                            break
+                if found_order:
+                    break
+
+        if not found_order:
+            self._log("❌ '주문하기' 및 '결재하기' 버튼 이미지 모두 미발견 -> 무통장 결제 실패")
             return False
 
         return True
