@@ -729,7 +729,7 @@ class NaverOrderWorker:
                     img_arr = np.frombuffer(res.stdout, np.uint8)
                     screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
                     if screen is not None:
-                        ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean", use_gpu=False)
+                        ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean")
                         results = ocr_engine.ocr(screen, cls=True)
                         if results:
                             for page in results:
@@ -2409,21 +2409,32 @@ class NaverOrderWorker:
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
+                self._log(f"  📌 [{label}] 상단 치우침 (y={cy}) -> 미세 스크롤 업 (재탐색 필요)")
                 self._scroll_up(distance_ratio=0.18); time.sleep(0.8)
+                return False
             elif cy > mid_bottom:
+                self._log(f"  📌 [{label}] 하단 치우침 (y={cy}) -> 미세 스크롤 다운 (재탐색 필요)")
                 self._scroll_down(distance_ratio=0.18); time.sleep(0.8)
-            self._log(f"  🎯 [{label}] 발견! 좌표 ({cx}, {cy}) -> 탭")
+                return False
+            self._log(f"  🎯 [{label}] 중앙 안착! 좌표 ({cx}, {cy}) -> 탭")
             ah.tap_by_coords(self.driver, cx, cy, self._log)
             time.sleep(2.0)
             return True
 
         for attempt in range(1, max_scroll_attempts + 1):
+            found_and_handled = False
 
             # ── 1순위: 이미지 매칭 ──
             for img_path, name in img_candidates:
                 coords = self._find_image_coords(img_path, threshold=0.65)
                 if coords:
-                    return _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
+                    if _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}"):
+                        return True
+                    found_and_handled = True
+                    break
+
+            if found_and_handled:
+                continue  # 스크롤 보정이 일어났으므로 다시 처음(이미지)부터 탐색
 
             # ── 2순위: OCR 텍스트 탐색 ──
             try:
@@ -2477,13 +2488,21 @@ class NaverOrderWorker:
                                         cy = y + bh // 2
                                         conf = ocr_data['conf'][i]
                                         self._log(f"  🔤 [OCR] '{word}' (신뢰도:{conf}) 발견!")
-                                        return _tap_coords_and_return(cx, cy, f"OCR/{kw}")
+                                        if _tap_coords_and_return(cx, cy, f"OCR/{kw}"):
+                                            return True
+                                        found_and_handled = True
+                                        break
+                                if found_and_handled:
+                                    break
                         except ImportError:
                             self._log("  ℹ [OCR] pytesseract 미설치 - OCR 건너뜀")
                         except Exception as ocr_e:
                             self._log(f"  ⚠ [OCR] 오류: {ocr_e}")
             except Exception as sc_e:
                 self._log(f"  ⚠ [OCR 스크린샷] 오류: {sc_e}")
+
+            if found_and_handled:
+                continue
 
             # ── 3순위: XPath 텍스트 탐색 ──
             try:
@@ -2506,9 +2525,17 @@ class NaverOrderWorker:
                             cy = rect['y'] + rect['height'] // 2
                             txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
                             self._log(f"  📝 [XPath] '{txt}' 발견!")
-                            return _tap_coords_and_return(cx, cy, f"XPath/{txt}")
+                            if _tap_coords_and_return(cx, cy, f"XPath/{txt}"):
+                                return True
+                            found_and_handled = True
+                            break
+                    if found_and_handled:
+                        break
             except Exception as xp_e:
                 self._log(f"  ⚠ [XPath] 오류: {xp_e}")
+                
+            if found_and_handled:
+                continue
 
             self._log(f"  ⬇ [다른결재] 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
