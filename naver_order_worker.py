@@ -2671,47 +2671,38 @@ class NaverOrderWorker:
         if not self._click_bank_select_with_scroll(max_scroll_attempts=8):
             self._log("⚠ 무통장입금 클릭 후 '은행을' / '은행선택' 미발견. 무시하고 계속 진행합니다.")
 
-        # 은행별 이미지 템플릿 후보 목록 (농협2 ~ 부산은행2 포함)
-        random_bank_options = [
-            ([IMG_HANA_BANK, IMG_HANA_BANK2], "하나은행"),
-            ([IMG_NONGHYUP_BANK, IMG_NONGHYUP_BANK2], "농협"),
-            ([IMG_WOORI_BANK, IMG_WOORI_BANK2], "우리은행"),
-            ([IMG_KB_BANK, IMG_KB_BANK2], "국민은행"),
-            ([IMG_IBK_BANK, IMG_IBK_BANK2], "기업은행"),
-            ([IMG_SHINHAN_BANK, IMG_SHINHAN_BANK2], "신한은행"),
-            ([IMG_BUSAN_BANK, IMG_BUSAN_BANK2], "부산은행"),
+        # 모든 은행 템플릿 후보 (1번/2번 포함)
+        all_bank_candidates = [
+            (IMG_HANA_BANK, "하나은행"), (IMG_HANA_BANK2, "하나은행2"),
+            (IMG_NONGHYUP_BANK, "농협"), (IMG_NONGHYUP_BANK2, "농협2"),
+            (IMG_WOORI_BANK, "우리은행"), (IMG_WOORI_BANK2, "우리은행2"),
+            (IMG_KB_BANK, "국민은행"), (IMG_KB_BANK2, "국민은행2"),
+            (IMG_IBK_BANK, "기업은행"), (IMG_IBK_BANK2, "기업은행2"),
+            (IMG_SHINHAN_BANK, "신한은행"), (IMG_SHINHAN_BANK2, "신한은행2"),
+            (IMG_BUSAN_BANK, "부산은행"), (IMG_BUSAN_BANK2, "부산은행2"),
         ]
-        random.shuffle(random_bank_options)
+        valid_bank_candidates = [(p, name) for p, name in all_bank_candidates if os.path.exists(p)]
+        random.shuffle(valid_bank_candidates)
 
         bank_selected = False
-        for bank_imgs, bank_name in random_bank_options:
-            self._log(f"🎲 랜덤 은행 선택 시도: {bank_name}")
-            
-            # 1. 스크롤 없이 먼저 1,2번 이미지 매칭 시도
-            for img in bank_imgs:
-                if os.path.exists(img) and self._click_image_basic(img, bank_name, threshold=0.70):
-                    self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 없이 발견)")
+        self._log("🎲 [은행 선택] 노출된 은행(1번/2번 이미지) 즉시 탐색 및 선택 시작...")
+
+        for attempt in range(1, 8):
+            for bank_img, bank_name in valid_bank_candidates:
+                coords = self._find_image_coords(bank_img, threshold=0.70)
+                if coords:
+                    self._log(f"✅ 은행 [{bank_name}] 발견! 좌표 ({coords[0]}, {coords[1]}) -> 클릭하여 선택 완료")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(2.0)
                     bank_selected = True
                     break
 
             if bank_selected:
                 break
 
-            # 2. 스크롤하며 1,2번 이미지 탐색
-            self._log(f"🔄 {bank_name} 제자리 미발견 -> 스크롤 탐색 시작")
-            for img in bank_imgs:
-                if os.path.exists(img) and self._click_image_with_scroll(img, bank_name, threshold=0.70, max_scroll_attempts=8):
-                    self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 탐색 발견)")
-                    bank_selected = True
-                    break
-
-            if bank_selected:
-                break
-            else:
-                self._log(f"🔄 {bank_name} 미발견 -> 다음 은행 탐색을 위해 스크롤을 맨 위로 올립니다.")
-                for _ in range(4):
-                    self._scroll_up(distance_ratio=0.5)
-                    time.sleep(0.5)
+            self._log(f"  ⬇ [은행 탐색] 현재 화면 미노출 -> 미세 스크롤 다운 ({attempt}/7)")
+            self._scroll_down(distance_ratio=0.25)
+            time.sleep(1.0)
 
         if not bank_selected:
             self._log("⚠ 랜덤 은행 선택 실패! 하지만 중단하지 않고 다음 단계(미신청 및 결제/주문하기)로 계속 진행합니다.")
