@@ -87,6 +87,8 @@ IMG_NOT_APPLY4    = os.path.join(_IMG_DIR, "미신청4.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
+IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
+IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
 
@@ -2325,14 +2327,69 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         
-        # 1. 다른결재/다른결재수단2/결재수단/다른결재4/보기 탐색 및 클릭 시도
+        # ─── 결재수단 열림 확인 및 토글 (최대 3회) ───
+        self._log("🔍 '결재수단' 목록 펼침 상태 확인 (최대 3회 시도)")
+        money_images = [img for img in [IMG_PAY_MONEY_KR, IMG_PAYL_MONEY, IMG_MONEY_PAY] if os.path.exists(img)]
+        
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+        mid_top = int(w_h * 0.30)
+        mid_bottom = int(w_h * 0.70)
+        
+        is_pay_method_opened = False
+        
+        if os.path.exists(IMG_PAY_METHOD):
+            for attempt in range(3):
+                # 1. 결재수단.png 탐색 및 화면 중앙 정렬
+                method_coords = None
+                for _ in range(4):
+                    method_coords = self._find_image_coords(IMG_PAY_METHOD, threshold=0.70)
+                    if method_coords:
+                        if method_coords[1] < mid_top:
+                            self._scroll_up(distance_ratio=0.18)
+                            time.sleep(1)
+                        elif method_coords[1] > mid_bottom:
+                            self._scroll_down(distance_ratio=0.18)
+                            time.sleep(1)
+                        else:
+                            break  # 중앙 안착
+                    else:
+                        self._scroll_down(distance_ratio=0.20)
+                        time.sleep(1)
+                        
+                # 2. pay머니/payl머니 보이는지 확인
+                money_found = False
+                for m_img in money_images:
+                    if self._find_image_coords(m_img, threshold=0.70):
+                        money_found = True
+                        break
+                        
+                if money_found:
+                    self._log("✅ 'pay머니(또는 머니)' 존재 확인됨! (결재수단 목록 열림 상태)")
+                    is_pay_method_opened = True
+                    break
+                else:
+                    self._log(f"⚠ 'pay머니' 미발견 -> '결재수단'을 클릭하여 목록 펼침 시도 ({attempt+1}/3)")
+                    mc = self._find_image_coords(IMG_PAY_METHOD, threshold=0.70)
+                    if mc:
+                        ah.tap_by_coords(self.driver, mc[0], mc[1], self._log)
+                    time.sleep(2.0)
+        
+        # 1. 다른결재/다른결재수단2/다른결재4/보기 탐색 및 클릭 시도
         other_pay_images = [
             (IMG_OTHER_PAY, "다른결재"),
             (IMG_OTHER_PAY2, "다른결재수단2"),
-            (IMG_PAY_METHOD, "결재수단"),
             (IMG_OTHER_PAY4, "다른결재4"),
             (IMG_BOGI, "보기"),
         ]
+        
+        # 결재수단이 안 열려있다고 판단될 때만 '결재수단' 버튼 클릭 탐색 목록에 포함
+        if not is_pay_method_opened:
+            other_pay_images.insert(2, (IMG_PAY_METHOD, "결재수단"))
+            
         if not self._click_any_image_with_scroll(other_pay_images, threshold=0.70, max_scroll_attempts=8):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
