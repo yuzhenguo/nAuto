@@ -74,6 +74,9 @@ IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
 IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
 IMG_BANK_TRANSFER_CHECK = os.path.join(_IMG_DIR, "무통장체크.png")
 IMG_SELECT_BANK   = os.path.join(_IMG_DIR, "은행을.png")
+IMG_SELECT_BANK2  = os.path.join(_IMG_DIR, "은행을2.png")
+IMG_SELECT_BANK3  = os.path.join(_IMG_DIR, "은행을3.png")
+IMG_SELECT_BANK4  = os.path.join(_IMG_DIR, "은행을4.png")
 IMG_BANK_SELECT   = os.path.join(_IMG_DIR, "은행선택.png")
 IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
 IMG_HANA_BANK     = os.path.join(_IMG_DIR, "하나은행.png")
@@ -2307,7 +2310,10 @@ class NaverOrderWorker:
         self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행을.png', 최대 {max_scroll_attempts}회 시도)")
 
         bank_images = [
-            (IMG_SELECT_BANK, "은행을"),
+            (IMG_SELECT_BANK,  "은행을"),
+            (IMG_SELECT_BANK2, "은행을2"),
+            (IMG_SELECT_BANK3, "은행을3"),
+            (IMG_SELECT_BANK4, "은행을4"),
         ]
         bank_xpaths = [
             '//android.widget.Button[contains(@text,"은행")]',
@@ -2440,17 +2446,8 @@ class NaverOrderWorker:
             ah.tap_by_coords(self.driver, cx, cy, self._log)
             time.sleep(2.0)
 
-            # ── 클릭 후 하위 메뉴 노출 검증 (하단 70% 이하의 고정 결제바 무시 & threshold 0.86으로 가짜 노출 차단) ──
-            check_images = [IMG_NORMAL_PAY, IMG_NORMAL_PAY3, IMG_BANK_TRANSFER]
-            for img in check_images:
-                if os.path.exists(img):
-                    coords = self._find_image_coords(img, threshold=0.86)
-                    if coords is not None and coords[1] < int(w_h * 0.70):
-                        self._log(f"  ✅ [{label}] 클릭 후 하위 메뉴(이미지: y={coords[1]}) 노출 확인 성공!")
-                        return True
-
-            self._log(f"  ⚠ [{label}] 클릭했지만 하위 결제수단 미노출 (스크롤하여 재탐색 필요).")
-            return None
+            self._log(f"  ✅ [{label}] 다른결재 버튼 클릭 완료 -> 즉시 다음 결제 단계 진행")
+            return True
 
         for attempt in range(1, max_scroll_attempts + 1):
             # ── 이미지 매칭 전용 탐색 (threshold 0.72) ──
