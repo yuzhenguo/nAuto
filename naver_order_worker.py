@@ -2404,20 +2404,20 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # "반드시 앞단에 있어야 합니다" 요청 반영: 버튼이 화면 하단이 아닌 상단(15%~45%)에 위치하도록 제한
-        mid_top    = int(w_h * 0.15)
-        mid_bottom = int(w_h * 0.45)
+        # 상/하단 20% 이외의 영역(20%~80%)에 위치하면 즉시 클릭
+        mid_top    = int(w_h * 0.20)
+        mid_bottom = int(w_h * 0.80)
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 치우침 (y={cy} < {mid_top}) -> 명확한 스크롤 업 (앞단 재배치)")
-                self._scroll_up(distance_ratio=0.3)
-                time.sleep(1.5)
+                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 스크롤 업")
+                self._scroll_up(distance_ratio=0.12)
+                time.sleep(1.0)
                 return False
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 치우침 (y={cy} > {mid_bottom}) -> 명확한 스크롤 다운 (앞단 재배치)")
-                self._scroll_down(distance_ratio=0.3)
-                time.sleep(1.5)
+                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 스크롤 다운")
+                self._scroll_down(distance_ratio=0.12)
+                time.sleep(1.0)
                 return False
 
             self._log(f"  🎯 [{label}] 앞단 안착! 좌표 ({cx}, {cy}) -> 캡처 후 확실하게 2회 탭")
