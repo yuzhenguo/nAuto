@@ -2845,27 +2845,28 @@ class NaverOrderWorker:
 
     def _dismiss_payment_benefit_popup(self) -> None:
         """
-        화면에 '닫기.png' 또는 '결제혜택.png' 팝업이 존재하는지 확인하고, 존재하면 '닫기.png' (또는 닫기 버튼)를 눌러 팝업을 닫습니다.
-        팝업이 없거나 닫기 버튼을 찾지 못해도 오류 없이 통과합니다.
+        화면에 '결제혜택.png' 팝업이 존재할 때만 '닫기.png' 또는 '닫기' 버튼을 눌러 팝업을 닫습니다.
         """
-        self._log("🔍 [팝업 닫기 점검] 닫기.png / 결제혜택.png 감지 시도...")
+        self._log("🔍 [팝업 닫기 점검] 결제혜택.png 감지 시도...")
         try:
-            # 1순위: 화면에 닫기.png 가 존재하는지 직접 탐색하여 클릭
-            if os.path.exists(IMG_CLOSE_POPUP):
-                close_coords = self._find_image_coords(IMG_CLOSE_POPUP, threshold=0.65)
-                if close_coords:
-                    self._log(f"  🎯 [닫기.png] 발견! 좌표 ({close_coords[0]}, {close_coords[1]}) → 클릭 닫기")
-                    import naver_appium as _ah
-                    _ah.tap_by_coords(self.driver, close_coords[0], close_coords[1], self._log)
-                    time.sleep(1.0)
-                    self._log("  ✅ [닫기.png] 팝업 닫기 완료")
-                    return
-
-            # 2순위: 결제혜택.png 가 존재하는지 탐색
+            # 반드시 '결제혜택.png'가 화면에 인식되어야 팝업 닫기 작동
             if os.path.exists(IMG_PAY_BENEFIT):
                 coords = self._find_image_coords(IMG_PAY_BENEFIT, threshold=0.65)
                 if coords:
                     self._log(f"  🎯 [결제혜택 팝업] 감지! 좌표 ({coords[0]}, {coords[1]}) → 닫기 버튼 탐색")
+                    
+                    # 1순위: 닫기.png 이미지 매칭
+                    if os.path.exists(IMG_CLOSE_POPUP):
+                        close_coords = self._find_image_coords(IMG_CLOSE_POPUP, threshold=0.65)
+                        if close_coords:
+                            self._log(f"  🎯 [닫기.png] 발견! 좌표 ({close_coords[0]}, {close_coords[1]}) → 클릭 닫기")
+                            import naver_appium as _ah
+                            _ah.tap_by_coords(self.driver, close_coords[0], close_coords[1], self._log)
+                            time.sleep(1.0)
+                            self._log("  ✅ [결제혜택 팝업] '닫기.png' 이미지로 팝업 닫기 완료")
+                            return
+
+                    # 2순위: XPath 닫기 버튼
                     close_xpaths = [
                         '//*[@content-desc="닫기"]',
                         '//*[@text="닫기"]',
@@ -2884,7 +2885,7 @@ class NaverOrderWorker:
                         except Exception:
                             continue
 
-            self._log("  ℹ [팝업 닫기 점검] 팝업 미감지 또는 닫기 처리 불필요 → 계속 진행")
+            self._log("  ℹ [팝업 닫기 점검] 결제혜택 팝업 미감지 → 계속 진행")
         except Exception as e:
             self._log(f"  ⚠ [팝업 닫기 점검] 처리 중 예외 발생: {e} → 계속 진행")
 
