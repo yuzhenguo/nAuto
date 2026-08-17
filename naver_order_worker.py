@@ -1215,9 +1215,6 @@ class NaverOrderWorker:
             '//*[contains(@text, "박스")]',
             '//*[contains(@text, "포")]',
             '//*[contains(@text, "개")]',
-            '//*[contains(@text, "동의")]',
-            '//*[contains(@text, "구매조건")]',
-            '//*[contains(@text, "확인")]',
         ]
         for xpath in checkbox_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=1):
@@ -1235,23 +1232,26 @@ class NaverOrderWorker:
                 except Exception:
                     pass
 
-        # ─── 4순위: 좌표 고정 ADB 탭 폴백 ────────────────────────────────────────
-        # min_y_check ~ max_y_check 사이 좌측 15% 위치를 탭 (체크박스 위치 추정)
-        fallback_x = int(w_w * 0.12)
-        fallback_y = int((min_y_check + max_y_check) / 2)
-        self._log(f"  ⚠ 이미지/XPath 체크박스 미발견 → 좌표 추정 탭 시도 ({fallback_x}, {fallback_y})")
-        try:
-            import subprocess
-            subprocess.run(
-                ["adb", "-s", self.device_id, "shell", "input", "tap",
-                 str(fallback_x), str(fallback_y)],
-                capture_output=True, timeout=5
-            )
-            self._log(f"  ✅ 좌표 추정 탭 완료 ({fallback_x}, {fallback_y})")
-            time.sleep(1.5)
-            return _post_click_extra_tap()
-        except Exception as e:
-            self._log(f"  ⚠ 좌표 탭 실패: {e}")
+        # ─── 4순위: 좌표 고정 ADB 탭 폴백 (옵션선택/배송정보 영역이 확실할 때만) ─────────────────
+        if opt_y and del_y and opt_y < del_y:
+            # 옵션선택과 배송정보 사이의 하단(배송정보 바로 위 약 65픽셀)을 타격
+            fallback_x = int(w_w * 0.15)
+            fallback_y = del_y - 65
+            self._log(f"  ⚠ 이미지/XPath 미발견 -> 확실한 영역(배송정보 바로 위) 탭 ({fallback_x}, {fallback_y})")
+            try:
+                import subprocess
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap",
+                     str(fallback_x), str(fallback_y)],
+                    capture_output=True, timeout=5
+                )
+                self._log(f"  ✅ 좌표 고정 탭 완료 ({fallback_x}, {fallback_y})")
+                time.sleep(1.5)
+                return _post_click_extra_tap()
+            except Exception as e:
+                self._log(f"  ⚠ 좌표 탭 실패: {e}")
+        else:
+            self._log("  ⚠ 옵션선택~배송정보 기준점을 찾지 못해 임의 좌표 클릭을 생략합니다. (오작동 방지)")
 
         self._log("  ⚠ 체크박스 미발견 → 계속 진행")
         return True
@@ -2334,24 +2334,55 @@ class NaverOrderWorker:
             (IMG_BOGI, "보기"),
         ]
         if not self._click_any_image_with_scroll(other_pay_images, threshold=0.70, max_scroll_attempts=8):
-            self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 '일반결재/일반결재3' 탐색 및 클릭 시도")
-            # 다른결재 탐색 중 내려간 스크롤을 상단으로 복구
+            self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
                 time.sleep(0.4)
 
-            normal_pay_images = [
-                (IMG_NORMAL_PAY, "일반결재"),
-                (IMG_NORMAL_PAY3, "일반결재3"),
-            ]
-            if self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
-                self._log("✅ '다른결재' 미발견 되었으나 '일반결재/일반결재3' 클릭 성공! 계속 진행합니다.")
-            elif os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-                self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
-            elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-                self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
-            else:
-                self._log("❌ '다른결재', '일반결재' 및 체크 상태 미발견 -> 무통장 결제 실패")
+            self._log("🔍 '미신청2' 또는 '일반결재' 등을 찾아 스크롤 탐색합니다.")
+            found_action = False
+            for attempt in range(8):
+                # 1. 미신청2 가장 먼저 확인 (발견 시 결제수단 설정 스킵하고 바로 return True)
+                if os.path.exists(IMG_NOT_APPLY2) and self._find_image_coords(IMG_NOT_APPLY2, threshold=0.75):
+                    self._log("✅ '미신청2' 이미지 확인! 결제수단 셋팅 생략 후 즉시 다음 단계(주문하기)로 넘어갑니다.")
+                    return True
+                
+                # 2. 체크 상태 확인
+                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                    self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
+                    found_action = True
+                    break
+                elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+                    self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
+                    found_action = True
+                    break
+                
+                # 3. 일반결재 클릭 시도
+                normal_pay_images = [
+                    (IMG_NORMAL_PAY, "일반결재"),
+                    (IMG_NORMAL_PAY3, "일반결재3"),
+                ]
+                clicked_normal = False
+                for img_path, name in normal_pay_images:
+                    if os.path.exists(img_path):
+                        coords = self._find_image_coords(img_path, threshold=0.75)
+                        if coords:
+                            ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                            time.sleep(1.5)
+                            self._log(f"✅ '{name}' 발견 및 클릭 성공! 계속 진행합니다.")
+                            clicked_normal = True
+                            break
+                
+                if clicked_normal:
+                    found_action = True
+                    break
+                    
+                # 미발견 시 미세 스크롤 다운
+                self._scroll_down(distance_ratio=0.20)
+                time.sleep(0.8)
+                
+            if not found_action:
+                self._log("❌ '다른결재', '미신청2', '일반결재' 및 체크 상태 모두 미발견 -> 무통장 결제 실패")
                 return False
         
         # 2. 일반결재 탐색 및 클릭 (이미 체크되어 있으면 스킵)
@@ -2401,10 +2432,9 @@ class NaverOrderWorker:
             else:
                 time.sleep(1.5)
 
-        # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 존재하는지 판단 (없으면 실패 및 작업 중단)
+        # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 탐색
         if not self._click_bank_select_with_scroll(max_scroll_attempts=8):
-            self._log("❌ 무통장입금 클릭 후 '은행을' / '은행선택' 존재하지 않음 -> 무통장 결제 중단 및 실패 처리")
-            return False
+            self._log("⚠ 무통장입금 클릭 후 '은행을' / '은행선택' 미발견. 무시하고 계속 진행합니다.")
 
         # 5개 은행 중 랜덤으로 1개 지정하여 선택 (하나은행, 농협, 우리은행, 국민은행, 기업은행)
         random_bank_options = [
@@ -2439,8 +2469,8 @@ class NaverOrderWorker:
                     time.sleep(0.5)
 
         if not bank_selected:
-            self._log("❌ 랜덤 은행 선택 실패 -> 무통장 결제 실패")
-            return False
+            self._log("⚠ 랜덤 은행 선택 실패! 하지만 중단하지 않고 다음 단계(미신청 및 결제/주문하기)로 계속 진행합니다.")
+            # 실패 시 중단하지 않고 계속 진행 (사용자 요청)
             
         # ── 미신청 탐색 전: 팝업 점검 및 위에서부터 탐색 ──
         self._dismiss_payment_benefit_popup()
