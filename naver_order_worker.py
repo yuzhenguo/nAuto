@@ -2404,22 +2404,37 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        mid_top    = int(w_h * 0.20)
-        mid_bottom = int(w_h * 0.80)
+        # "반드시 앞단에 있어야 합니다" 요청 반영: 버튼이 화면 하단이 아닌 상단(15%~45%)에 위치하도록 제한
+        mid_top    = int(w_h * 0.15)
+        mid_bottom = int(w_h * 0.45)
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 치우침 (y={cy} < {mid_top}) -> 미세 스크롤 업 (중앙 재배치)")
-                self._scroll_up(distance_ratio=0.18)
-                time.sleep(0.8)
+                self._log(f"  📌 [{label}] 상단 치우침 (y={cy} < {mid_top}) -> 명확한 스크롤 업 (앞단 재배치)")
+                self._scroll_up(distance_ratio=0.3)
+                time.sleep(1.5)
                 return False
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 치우침 (y={cy} > {mid_bottom}) -> 미세 스크롤 다운 (중앙 재배치)")
-                self._scroll_down(distance_ratio=0.18)
-                time.sleep(0.8)
+                self._log(f"  📌 [{label}] 하단 치우침 (y={cy} > {mid_bottom}) -> 명확한 스크롤 다운 (앞단 재배치)")
+                self._scroll_down(distance_ratio=0.3)
+                time.sleep(1.5)
                 return False
 
-            self._log(f"  🎯 [{label}] 중앙 안착! 좌표 ({cx}, {cy}) -> 확실하게 2회 탭")
+            self._log(f"  🎯 [{label}] 앞단 안착! 좌표 ({cx}, {cy}) -> 캡처 후 확실하게 2회 탭")
+            
+            # 사용자 요청: 클릭 직전 화면 캡처
+            try:
+                ss_data = self._get_screenshot()
+                if ss_data:
+                    ss_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_screenshots")
+                    os.makedirs(ss_dir, exist_ok=True)
+                    ss_path = os.path.join(ss_dir, f"다른결재_탭전_{self.device_id}_{int(time.time())}.png")
+                    with open(ss_path, "wb") as f:
+                        f.write(ss_data)
+                    self._log(f"  📸 화면 캡처 완료: {os.path.basename(ss_path)}")
+            except Exception as e:
+                self._log(f"  ⚠ 화면 캡처 실패: {e}")
+
             ah.tap_by_coords(self.driver, cx, cy, self._log)
             time.sleep(0.5)
             ah.tap_by_coords(self.driver, cx, cy, self._log)
@@ -2470,9 +2485,9 @@ class NaverOrderWorker:
             if found_and_handled:
                 continue
 
-            # ── 1순위: 이미지 매칭 (threshold 0.80) ──
+            # ── 1순위: 이미지 매칭 (threshold 0.83 - 밸런스 조정) ──
             for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.80)
+                coords = self._find_image_coords(img_path, threshold=0.83)
                 if coords:
                     res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
                     if res is True:
@@ -2560,7 +2575,6 @@ class NaverOrderWorker:
                     '//*[contains(@text,"다른 결제수단")]',
                     '//*[contains(@text,"결재수단보기")]',
                     '//*[contains(@content-desc,"다른결재")]',
-                    '//*[contains(@content-desc,"결제수단")]',
                 ]
                 for xpath in xpath_patterns:
                     if ah.element_exists(self.driver, xpath, timeout=0.5):
