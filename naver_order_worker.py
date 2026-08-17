@@ -2371,22 +2371,21 @@ class NaverOrderWorker:
 
     def _click_other_pay_button(self, max_scroll_attempts: int = 8) -> bool:
         """
-        다른결재 버튼을 3중 인식 방식으로 탐색 후 클릭합니다.
+        다른결재 버튼을 3중 인식 방식으로 탐색 후 화면 중앙에 안착시켜 클릭합니다.
+        0순위: 최우선 XPath (btn_payment_method_accordion 등)
         1순위: 이미지 매칭 (다른결재.png, 다른결재수단2.png 등)
-        2순위: OCR (pytesseract) - 스크린샷 텍스트에서 키워드 검출
-        3순위: XPath 텍스트 탐색 - Appium 요소 텍스트 매칭
+        2순위: OCR (pytesseract)
+        3순위: XPath 텍스트 탐색
         """
         self._set_status("다른 결제수단 탐색 중")
         self._log("🔍 [다른결재 버튼] 이미지/OCR/XPath 3중 탐색 시작")
 
-        # 탐색 키워드 목록 (OCR·XPath 공용)
         other_pay_keywords = [
             "다른결재수단", "다른 결재수단", "다른결제수단", "다른 결제수단",
             "다른결재", "다른 결재", "결제수단보기",
             "다른결재4", "보기"
         ]
 
-        # 이미지 후보 목록
         img_candidates = []
         for img_path, name in [
             (IMG_OTHER_PAY,  "다른결재"),
@@ -2404,39 +2403,89 @@ class NaverOrderWorker:
             w_h, w_w = sz['height'], sz['width']
         except Exception:
             pass
-        mid_top    = int(w_h * 0.35)
-        mid_bottom = int(w_h * 0.65)
+
+        mid_top    = int(w_h * 0.20)
+        mid_bottom = int(w_h * 0.80)
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 치우침 (y={cy}) -> 미세 스크롤 업 (재탐색 필요)")
-                self._scroll_up(distance_ratio=0.18); time.sleep(0.8)
+                self._log(f"  📌 [{label}] 상단 치우침 (y={cy} < {mid_top}) -> 미세 스크롤 업 (중앙 재배치)")
+                self._scroll_up(distance_ratio=0.18)
+                time.sleep(0.8)
                 return False
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 치우침 (y={cy}) -> 미세 스크롤 다운 (재탐색 필요)")
-                self._scroll_down(distance_ratio=0.18); time.sleep(0.8)
+                self._log(f"  📌 [{label}] 하단 치우침 (y={cy} > {mid_bottom}) -> 미세 스크롤 다운 (중앙 재배치)")
+                self._scroll_down(distance_ratio=0.18)
+                time.sleep(0.8)
                 return False
-            self._log(f"  🎯 [{label}] 중앙 안착! 좌표 ({cx}, {cy}) -> 탭")
+
+            self._log(f"  🎯 [{label}] 중앙 안착! 좌표 ({cx}, {cy}) -> 확실하게 2회 탭")
+            ah.tap_by_coords(self.driver, cx, cy, self._log)
+            time.sleep(0.5)
             ah.tap_by_coords(self.driver, cx, cy, self._log)
             time.sleep(2.0)
-            return True
+
+            # ── 클릭 후 하위 메뉴 노출 검증 (하단 70% 이하의 고정 결제바 무시 & threshold 0.86으로 가짜 노출 차단) ──
+            check_images = [IMG_NORMAL_PAY, IMG_NORMAL_PAY3, IMG_BANK_TRANSFER]
+            for img in check_images:
+                if os.path.exists(img):
+                    coords = self._find_image_coords(img, threshold=0.86)
+                    if coords is not None and coords[1] < int(w_h * 0.70):
+                        self._log(f"  ✅ [{label}] 클릭 후 하위 메뉴(이미지: y={coords[1]}) 노출 확인 성공!")
+                        return True
+
+            self._log(f"  ⚠ [{label}] 클릭했지만 하위 결제수단 미노출 (스크롤하여 재탐색 필요).")
+            return None
 
         for attempt in range(1, max_scroll_attempts + 1):
             found_and_handled = False
 
-            # ── 1순위: 이미지 매칭 ──
-            for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.65)
-                if coords:
-                    if _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}"):
-                        return True
-                    found_and_handled = True
-                    break
+            # ── 0순위: 최우선 XPath 탐색 (아코디언 버튼 & ID 기반) ──
+            try:
+                priority_xpaths = [
+                    '//android.widget.Button[@resource-id="btn_payment_method_accordion"]',
+                    '//*[@resource-id="btn_payment_method_accordion"]',
+                    '//*[contains(@resource-id, "payment_method")]',
+                ]
+                for pxpath in priority_xpaths:
+                    if ah.element_exists(self.driver, pxpath, timeout=0.5):
+                        els = self.driver.find_elements(By.XPATH, pxpath)
+                        for el in els:
+                            rect = el.rect
+                            if rect and rect.get('height', 0) > 10:
+                                cx = rect['x'] + rect['width'] // 2
+                                cy = rect['y'] + rect['height'] // 2
+                                self._log(f"  📝 [XPath 우선] 아코디언/결제버튼 발견! 좌표: ({cx}, {cy})")
+                                res = _tap_coords_and_return(cx, cy, "XPath/아코디언버튼")
+                                if res is True:
+                                    return True
+                                elif res is False:
+                                    found_and_handled = True
+                                    break
+                    if found_and_handled:
+                        break
+            except Exception as xp_e:
+                self._log(f"  ⚠ [XPath 우선] 오류: {xp_e}")
 
             if found_and_handled:
-                continue  # 스크롤 보정이 일어났으므로 다시 처음(이미지)부터 탐색
+                continue
 
-            # ── 2순위: OCR 텍스트 탐색 ──
+            # ── 1순위: 이미지 매칭 (threshold 0.80) ──
+            for img_path, name in img_candidates:
+                coords = self._find_image_coords(img_path, threshold=0.80)
+                if coords:
+                    res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
+                    if res is True:
+                        return True
+                    else:
+                        # 탭 클릭 후 하위 메뉴 미노출 시, 동일 화면의 가짜 이미지 연속 클릭을 방지하고 즉시 스크롤 다운 수행
+                        found_and_handled = True
+                        break
+
+            if found_and_handled:
+                continue
+
+            # ── 2순위: OCR 텍스트 탐색 (pytesseract) ──
             try:
                 import cv2, numpy as np
                 res = _run_cmd(
@@ -2451,7 +2500,6 @@ class NaverOrderWorker:
                             import pytesseract
                             from PIL import Image as PILImage
 
-                            # Tesseract 바이너리 경로 자동 설정 (Windows 기본 경로)
                             _tess_paths = [
                                 r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                                 r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -2461,12 +2509,10 @@ class NaverOrderWorker:
                                     pytesseract.pytesseract.tesseract_cmd = _tp
                                     break
 
-                            # 전처리: 그레이스케일 + 이진화
                             gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                             _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                             pil_img = PILImage.fromarray(binarized)
 
-                            # OCR (한국어 + 영어)
                             ocr_data = pytesseract.image_to_data(
                                 pil_img,
                                 lang="kor+eng",
@@ -2488,18 +2534,18 @@ class NaverOrderWorker:
                                         cy = y + bh // 2
                                         conf = ocr_data['conf'][i]
                                         self._log(f"  🔤 [OCR] '{word}' (신뢰도:{conf}) 발견!")
-                                        if _tap_coords_and_return(cx, cy, f"OCR/{kw}"):
+                                        res = _tap_coords_and_return(cx, cy, f"OCR/{kw}")
+                                        if res is True:
                                             return True
-                                        found_and_handled = True
-                                        break
+                                        elif res is False:
+                                            found_and_handled = True
+                                            break
                                 if found_and_handled:
                                     break
-                        except ImportError:
-                            self._log("  ℹ [OCR] pytesseract 미설치 - OCR 건너뜀")
-                        except Exception as ocr_e:
-                            self._log(f"  ⚠ [OCR] 오류: {ocr_e}")
-            except Exception as sc_e:
-                self._log(f"  ⚠ [OCR 스크린샷] 오류: {sc_e}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
             if found_and_handled:
                 continue
@@ -2521,25 +2567,28 @@ class NaverOrderWorker:
                         els = self.driver.find_elements(By.XPATH, xpath)
                         for el in els:
                             rect = el.rect
-                            cx = rect['x'] + rect['width'] // 2
-                            cy = rect['y'] + rect['height'] // 2
-                            txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
-                            self._log(f"  📝 [XPath] '{txt}' 발견!")
-                            if _tap_coords_and_return(cx, cy, f"XPath/{txt}"):
-                                return True
-                            found_and_handled = True
-                            break
+                            if rect and rect.get('height', 0) > 10:
+                                cx = rect['x'] + rect['width'] // 2
+                                cy = rect['y'] + rect['height'] // 2
+                                txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
+                                self._log(f"  📝 [XPath] '{txt}' 발견! 좌표: ({cx}, {cy})")
+                                res = _tap_coords_and_return(cx, cy, f"XPath/{txt}")
+                                if res is True:
+                                    return True
+                                elif res is False:
+                                    found_and_handled = True
+                                    break
                     if found_and_handled:
                         break
             except Exception as xp_e:
                 self._log(f"  ⚠ [XPath] 오류: {xp_e}")
-                
+
             if found_and_handled:
                 continue
 
             self._log(f"  ⬇ [다른결재] 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.8)
+            self._scroll_down(distance_ratio=0.15)  # 조금씩 스크롤하며 탐색
+            time.sleep(1.0)
 
         self._log("  ❌ [다른결재 버튼] 이미지/OCR/XPath 모두 탐색 실패")
         return False
@@ -2577,7 +2626,7 @@ class NaverOrderWorker:
 
             # ── PaddleOCR 실행 (한국어, GPU 없이) ──
             try:
-                ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean", use_gpu=False)
+                ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean")
                 results = ocr_engine.ocr(screen_bgr, cls=True)
             except Exception as pe:
                 self._log(f"  ⚠ [OCR] PaddleOCR 오류: {pe}")
@@ -3237,6 +3286,27 @@ class NaverOrderWorker:
                     self._log(f"  ❌ [이미지 매칭] 매칭 좌표 y({cy}) > max_y({max_y}) → 무효 처리")
                     return None
                 self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy}), 점수: {best_score:.4f}")
+
+                # 인식된 부분만 크롭하여 저장 ('인식' 폴더: 프로젝트 최상위 루트)
+                try:
+                    root_dir = os.path.dirname(os.path.abspath(__file__))
+                    recognize_dir = os.path.join(root_dir, "인식")
+                    os.makedirs(recognize_dir, exist_ok=True)
+                    file_name = os.path.basename(template_path)
+                    name_no_ext = os.path.splitext(file_name)[0]
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    
+                    crop_name = f"crop_{name_no_ext}_({cx},{cy})_{best_score:.3f}_{timestamp}.png"
+                    crop_path = os.path.join(recognize_dir, crop_name)
+                    x1, y1 = max(0, best_loc[0]), max(0, best_loc[1])
+                    x2, y2 = min(screen_bgr.shape[1], x1 + best_tw), min(screen_bgr.shape[0], y1 + best_th)
+                    cropped = screen_bgr[y1:y2, x1:x2]
+                    if cropped.size > 0:
+                        cv2.imwrite(crop_path, cropped)
+                        self._log(f"  📸 [인식 캡처 저장 완료] {save_path}")
+                except Exception as save_err:
+                    pass
+
                 return cx, cy
             else:
                 self._log(f"  ❌ [이미지 매칭] 실패 (점수 {best_score:.4f} < {threshold})")
