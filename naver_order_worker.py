@@ -79,11 +79,19 @@ IMG_SELECT_BANK3  = os.path.join(_IMG_DIR, "은행을3.png")
 IMG_SELECT_BANK4  = os.path.join(_IMG_DIR, "은행을4.png")
 IMG_BANK_SELECT   = os.path.join(_IMG_DIR, "은행선택.png")
 IMG_SHINHAN_BANK  = os.path.join(_IMG_DIR, "신한은행.png")
+IMG_SHINHAN_BANK2 = os.path.join(_IMG_DIR, "신한은행2.png")
 IMG_HANA_BANK     = os.path.join(_IMG_DIR, "하나은행.png")
+IMG_HANA_BANK2    = os.path.join(_IMG_DIR, "하나은행2.png")
 IMG_NONGHYUP_BANK = os.path.join(_IMG_DIR, "농협.png")
+IMG_NONGHYUP_BANK2= os.path.join(_IMG_DIR, "농협2.png")
 IMG_WOORI_BANK    = os.path.join(_IMG_DIR, "우리은행.png")
+IMG_WOORI_BANK2   = os.path.join(_IMG_DIR, "우리은행2.png")
 IMG_KB_BANK       = os.path.join(_IMG_DIR, "국민은행.png")
+IMG_KB_BANK2      = os.path.join(_IMG_DIR, "국민은행2.png")
 IMG_IBK_BANK      = os.path.join(_IMG_DIR, "기업은행.png")
+IMG_IBK_BANK2     = os.path.join(_IMG_DIR, "기업은행2.png")
+IMG_BUSAN_BANK    = os.path.join(_IMG_DIR, "부산은행.png")
+IMG_BUSAN_BANK2   = os.path.join(_IMG_DIR, "부산은행2.png")
 IMG_NOT_APPLY     = os.path.join(_IMG_DIR, "미신청.png")
 IMG_NOT_APPLY2    = os.path.join(_IMG_DIR, "미신청2.png")
 IMG_NOT_APPLY3    = os.path.join(_IMG_DIR, "미신청3.png")
@@ -2663,31 +2671,41 @@ class NaverOrderWorker:
         if not self._click_bank_select_with_scroll(max_scroll_attempts=8):
             self._log("⚠ 무통장입금 클릭 후 '은행을' / '은행선택' 미발견. 무시하고 계속 진행합니다.")
 
-        # 5개 은행 중 랜덤으로 1개 지정하여 선택 (하나은행, 농협, 우리은행, 국민은행, 기업은행)
+        # 은행별 이미지 템플릿 후보 목록 (농협2 ~ 부산은행2 포함)
         random_bank_options = [
-            (IMG_HANA_BANK, "하나은행"),
-            (IMG_NONGHYUP_BANK, "농협"),
-            (IMG_WOORI_BANK, "우리은행"),
-            (IMG_KB_BANK, "국민은행"),
-            (IMG_IBK_BANK, "기업은행"),
+            ([IMG_HANA_BANK, IMG_HANA_BANK2], "하나은행"),
+            ([IMG_NONGHYUP_BANK, IMG_NONGHYUP_BANK2], "농협"),
+            ([IMG_WOORI_BANK, IMG_WOORI_BANK2], "우리은행"),
+            ([IMG_KB_BANK, IMG_KB_BANK2], "국민은행"),
+            ([IMG_IBK_BANK, IMG_IBK_BANK2], "기업은행"),
+            ([IMG_SHINHAN_BANK, IMG_SHINHAN_BANK2], "신한은행"),
+            ([IMG_BUSAN_BANK, IMG_BUSAN_BANK2], "부산은행"),
         ]
         random.shuffle(random_bank_options)
 
         bank_selected = False
-        for bank_img, bank_name in random_bank_options:
+        for bank_imgs, bank_name in random_bank_options:
             self._log(f"🎲 랜덤 은행 선택 시도: {bank_name}")
             
-            # 1. 최초 1회(실제 3번 재시도)는 스크롤 없이 탐색 (UI 렌더링 지연 대비)
-            if self._click_image_basic(bank_img, bank_name, threshold=0.70):
-                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 없이 발견)")
-                bank_selected = True
+            # 1. 스크롤 없이 먼저 1,2번 이미지 매칭 시도
+            for img in bank_imgs:
+                if os.path.exists(img) and self._click_image_basic(img, bank_name, threshold=0.70):
+                    self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 없이 발견)")
+                    bank_selected = True
+                    break
+
+            if bank_selected:
                 break
-                
-            # 2. 스크롤 없이 못 찾았을 경우 미세 스크롤 탐색 시작
+
+            # 2. 스크롤하며 1,2번 이미지 탐색
             self._log(f"🔄 {bank_name} 제자리 미발견 -> 스크롤 탐색 시작")
-            if self._click_image_with_scroll(bank_img, bank_name, threshold=0.70, max_scroll_attempts=8):
-                self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 탐색 발견)")
-                bank_selected = True
+            for img in bank_imgs:
+                if os.path.exists(img) and self._click_image_with_scroll(img, bank_name, threshold=0.70, max_scroll_attempts=8):
+                    self._log(f"✅ 랜덤 은행 [{bank_name}] 선택 완료 (스크롤 탐색 발견)")
+                    bank_selected = True
+                    break
+
+            if bank_selected:
                 break
             else:
                 self._log(f"🔄 {bank_name} 미발견 -> 다음 은행 탐색을 위해 스크롤을 맨 위로 올립니다.")
@@ -2800,9 +2818,13 @@ class NaverOrderWorker:
 
     def _dismiss_payment_benefit_popup(self) -> None:
         """
-        화면에 '결제혜택.png' 팝업이 존재할 때만 '닫기.png' 또는 '닫기' 버튼을 눌러 팝업을 닫습니다.
+        화면에 '결제혜택.png' 팝업이 존재할 때만 '닫기.png' 또는 '닫기' 버튼을 눌러 팝업을 닫습니다. (1회만 실행)
         """
-        self._log("🔍 [팝업 닫기 점검] 결제혜택.png 감지 시도...")
+        if getattr(self, 'has_dismissed_payment_benefit', False):
+            return
+
+        self.has_dismissed_payment_benefit = True
+        self._log("🔍 [팝업 닫기 점검] 결제혜택.png 감지 시도 (최초 1회)...")
         try:
             # 반드시 '결제혜택.png'가 화면에 인식되어야 팝업 닫기 작동
             if os.path.exists(IMG_PAY_BENEFIT):
@@ -2873,6 +2895,7 @@ class NaverOrderWorker:
 
             self._log(f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, 폰ID={row.device_id!r}")
             self._set_status(f"주문 중: {row.search_keyword}")
+            self.has_dismissed_payment_benefit = False
 
             try:
                 success = False
