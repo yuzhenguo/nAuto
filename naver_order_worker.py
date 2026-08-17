@@ -2321,76 +2321,247 @@ class NaverOrderWorker:
             self._scroll_down(distance_ratio=0.20)
             time.sleep(0.8)
 
-        self._log(f"  ❌ [실패] 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과 -> 작업 중단)")
+        self._log(f"  ⚠ 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과). 무시하고 계속 진행합니다.")
+        return True
+
+    def _click_other_pay_button(self, max_scroll_attempts: int = 8) -> bool:
+        """
+        다른결재 버튼을 3중 인식 방식으로 탐색 후 클릭합니다.
+        1순위: 이미지 매칭 (다른결재.png, 다른결재수단2.png 등)
+        2순위: OCR (pytesseract) - 스크린샷 텍스트에서 키워드 검출
+        3순위: XPath 텍스트 탐색 - Appium 요소 텍스트 매칭
+        """
+        self._set_status("다른 결제수단 탐색 중")
+        self._log("🔍 [다른결재 버튼] 이미지/OCR/XPath 3중 탐색 시작")
+
+        # 탐색 키워드 목록 (OCR·XPath 공용)
+        other_pay_keywords = [
+            "다른결재수단", "다른 결재수단", "다른결제수단", "다른 결제수단",
+            "다른결재", "다른 결재", "결제수단보기",
+            "다른결재4", "보기"
+        ]
+
+        # 이미지 후보 목록
+        img_candidates = []
+        for img_path, name in [
+            (IMG_OTHER_PAY,  "다른결재"),
+            (IMG_OTHER_PAY2, "다른결재수단2"),
+            (IMG_OTHER_PAY4, "다른결재4"),
+            (IMG_BOGI,       "보기"),
+        ]:
+            if os.path.exists(img_path):
+                img_candidates.append((img_path, name))
+
+        w_h = 2400
+        w_w = 1080
+        try:
+            sz = self.driver.get_window_size()
+            w_h, w_w = sz['height'], sz['width']
+        except Exception:
+            pass
+        mid_top    = int(w_h * 0.35)
+        mid_bottom = int(w_h * 0.65)
+
+        def _tap_coords_and_return(cx, cy, label):
+            if cy < mid_top:
+                self._scroll_up(distance_ratio=0.18); time.sleep(0.8)
+            elif cy > mid_bottom:
+                self._scroll_down(distance_ratio=0.18); time.sleep(0.8)
+            self._log(f"  🎯 [{label}] 발견! 좌표 ({cx}, {cy}) -> 탭")
+            ah.tap_by_coords(self.driver, cx, cy, self._log)
+            time.sleep(2.0)
+            return True
+
+        for attempt in range(1, max_scroll_attempts + 1):
+
+            # ── 1순위: 이미지 매칭 ──
+            for img_path, name in img_candidates:
+                coords = self._find_image_coords(img_path, threshold=0.65)
+                if coords:
+                    return _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
+
+            # ── 2순위: OCR 텍스트 탐색 ──
+            try:
+                import cv2, numpy as np
+                res = _run_cmd(
+                    ["adb", "-s", self.device_id, "exec-out", "screencap", "-p"],
+                    capture_output=True, timeout=8
+                )
+                if res.stdout and len(res.stdout) > 100:
+                    img_arr = np.frombuffer(res.stdout, np.uint8)
+                    screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                    if screen is not None:
+                        try:
+                            import pytesseract
+                            from PIL import Image as PILImage
+
+                            # Tesseract 바이너리 경로 자동 설정 (Windows 기본 경로)
+                            _tess_paths = [
+                                r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                                r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                            ]
+                            for _tp in _tess_paths:
+                                if os.path.exists(_tp):
+                                    pytesseract.pytesseract.tesseract_cmd = _tp
+                                    break
+
+                            # 전처리: 그레이스케일 + 이진화
+                            gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+                            _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                            pil_img = PILImage.fromarray(binarized)
+
+                            # OCR (한국어 + 영어)
+                            ocr_data = pytesseract.image_to_data(
+                                pil_img,
+                                lang="kor+eng",
+                                output_type=pytesseract.Output.DICT,
+                                config="--psm 11"
+                            )
+                            n_boxes = len(ocr_data['level'])
+                            for i in range(n_boxes):
+                                word = (ocr_data['text'][i] or "").strip()
+                                if not word:
+                                    continue
+                                for kw in other_pay_keywords:
+                                    if kw in word or word in kw:
+                                        x = ocr_data['left'][i]
+                                        y = ocr_data['top'][i]
+                                        bw = ocr_data['width'][i]
+                                        bh = ocr_data['height'][i]
+                                        cx = x + bw // 2
+                                        cy = y + bh // 2
+                                        conf = ocr_data['conf'][i]
+                                        self._log(f"  🔤 [OCR] '{word}' (신뢰도:{conf}) 발견!")
+                                        return _tap_coords_and_return(cx, cy, f"OCR/{kw}")
+                        except ImportError:
+                            self._log("  ℹ [OCR] pytesseract 미설치 - OCR 건너뜀")
+                        except Exception as ocr_e:
+                            self._log(f"  ⚠ [OCR] 오류: {ocr_e}")
+            except Exception as sc_e:
+                self._log(f"  ⚠ [OCR 스크린샷] 오류: {sc_e}")
+
+            # ── 3순위: XPath 텍스트 탐색 ──
+            try:
+                xpath_patterns = [
+                    '//*[contains(@text,"다른결재수단")]',
+                    '//*[contains(@text,"다른 결재수단")]',
+                    '//*[contains(@text,"다른결재")]',
+                    '//*[contains(@text,"다른결제수단")]',
+                    '//*[contains(@text,"다른 결제수단")]',
+                    '//*[contains(@text,"결재수단보기")]',
+                    '//*[contains(@content-desc,"다른결재")]',
+                    '//*[contains(@content-desc,"결제수단")]',
+                ]
+                for xpath in xpath_patterns:
+                    if ah.element_exists(self.driver, xpath, timeout=0.5):
+                        els = self.driver.find_elements(By.XPATH, xpath)
+                        for el in els:
+                            rect = el.rect
+                            cx = rect['x'] + rect['width'] // 2
+                            cy = rect['y'] + rect['height'] // 2
+                            txt = el.get_attribute("text") or el.get_attribute("content-desc") or ""
+                            self._log(f"  📝 [XPath] '{txt}' 발견!")
+                            return _tap_coords_and_return(cx, cy, f"XPath/{txt}")
+            except Exception as xp_e:
+                self._log(f"  ⚠ [XPath] 오류: {xp_e}")
+
+            self._log(f"  ⬇ [다른결재] 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
+            time.sleep(0.8)
+
+        self._log("  ❌ [다른결재 버튼] 이미지/OCR/XPath 모두 탐색 실패")
         return False
+
+    # ─── 결제화면 PaddleOCR 텍스트 추출 & 로그 저장 ────────────────────────────
+
+    def _ocr_payment_screen(self, label: str = "결제화면"):
+        """
+        현재 화면을 ADB 스크린샷으로 캡처하여 PaddleOCR로 한국어 텍스트를 추출하고,
+        기기별 OCR 전용 로그 파일(ocr_기기{machine_num}_{device_id}.log)에 저장합니다.
+
+        Args:
+            label: 로그에 기록될 행위 구분 레이블 (예: '결제화면진입', '다른결재탐색' 등)
+        """
+        try:
+            import datetime
+            import numpy as np
+            import cv2
+            from paddleocr import PaddleOCR
+
+            # ── 스크린샷 캡처 ──
+            res = _run_cmd(
+                ["adb", "-s", self.device_id, "exec-out", "screencap", "-p"],
+                capture_output=True, timeout=10
+            )
+            if not res.stdout or len(res.stdout) < 200:
+                self._log("  ⚠ [OCR] 스크린샷 캡처 실패")
+                return
+
+            img_arr = np.frombuffer(res.stdout, np.uint8)
+            screen_bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            if screen_bgr is None:
+                self._log("  ⚠ [OCR] 이미지 디코딩 실패")
+                return
+
+            # ── PaddleOCR 실행 (한국어, GPU 없이) ──
+            try:
+                ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean", use_gpu=False)
+                results = ocr_engine.ocr(screen_bgr, cls=True)
+            except Exception as pe:
+                self._log(f"  ⚠ [OCR] PaddleOCR 오류: {pe}")
+                return
+
+            # ── 텍스트 추출 ──
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            lines_extracted = []
+            if results:
+                for page in results:
+                    if not page:
+                        continue
+                    for item in page:
+                        # item: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]], (text, confidence)
+                        try:
+                            box = item[0]  # 4개 꼭지점 좌표
+                            text_info = item[1]  # (텍스트, 신뢰도)
+                            text = text_info[0].strip() if text_info and text_info[0] else ""
+                            conf = float(text_info[1]) if text_info and len(text_info) > 1 else 0.0
+                            if text and conf >= 0.4:
+                                cx = int((box[0][0] + box[2][0]) / 2)
+                                cy = int((box[0][1] + box[2][1]) / 2)
+                                lines_extracted.append(f"  [{cx:4d},{cy:4d}] (신뢰도:{conf:.2f}) {text}")
+                        except Exception:
+                            continue
+
+            # ── OCR 전용 로그 파일 저장 ──
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            ocr_log_path = os.path.join(
+                log_dir,
+                f"ocr_기기{self.machine_num}_{self.device_id}.log"
+            )
+            separator = "=" * 60
+            with open(ocr_log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n{separator}\n")
+                f.write(f"[{now}] [{self.device_id}] 📸 {label}\n")
+                f.write(f"{separator}\n")
+                if lines_extracted:
+                    for line in lines_extracted:
+                        f.write(line + "\n")
+                else:
+                    f.write("  (텍스트 없음)\n")
+
+            self._log(f"  📋 [OCR] '{label}' 화면 텍스트 {len(lines_extracted)}줄 추출 완료 → {ocr_log_path}")
+
+        except ImportError:
+            self._log("  ℹ [OCR] PaddleOCR 미설치 → OCR 건너뜀 (pip install paddleocr 필요)")
+        except Exception as e:
+            self._log(f"  ⚠ [OCR] 전체 오류: {e}")
 
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
-        
-        # ─── 결재수단 열림 확인 및 토글 (최대 3회) ───
-        self._log("🔍 '결재수단' 목록 펼침 상태 확인 (최대 3회 시도)")
-        money_images = [img for img in [IMG_PAY_MONEY_KR, IMG_PAYL_MONEY, IMG_MONEY_PAY] if os.path.exists(img)]
-        
-        w_h = 2400
-        try:
-            w_h = self.driver.get_window_size()['height']
-        except Exception:
-            pass
-        mid_top = int(w_h * 0.30)
-        mid_bottom = int(w_h * 0.70)
-        
-        is_pay_method_opened = False
-        
-        if os.path.exists(IMG_PAY_METHOD):
-            for attempt in range(3):
-                # 1. 결재수단.png 탐색 및 화면 중앙 정렬
-                method_coords = None
-                for _ in range(4):
-                    method_coords = self._find_image_coords(IMG_PAY_METHOD, threshold=0.70)
-                    if method_coords:
-                        if method_coords[1] < mid_top:
-                            self._scroll_up(distance_ratio=0.18)
-                            time.sleep(1)
-                        elif method_coords[1] > mid_bottom:
-                            self._scroll_down(distance_ratio=0.18)
-                            time.sleep(1)
-                        else:
-                            break  # 중앙 안착
-                    else:
-                        self._scroll_down(distance_ratio=0.20)
-                        time.sleep(1)
-                        
-                # 2. pay머니/payl머니 보이는지 확인
-                money_found = False
-                for m_img in money_images:
-                    if self._find_image_coords(m_img, threshold=0.70):
-                        money_found = True
-                        break
-                        
-                if money_found:
-                    self._log("✅ 'pay머니(또는 머니)' 존재 확인됨! (결재수단 목록 열림 상태)")
-                    is_pay_method_opened = True
-                    break
-                else:
-                    self._log(f"⚠ 'pay머니' 미발견 -> '결재수단'을 클릭하여 목록 펼침 시도 ({attempt+1}/3)")
-                    mc = self._find_image_coords(IMG_PAY_METHOD, threshold=0.70)
-                    if mc:
-                        ah.tap_by_coords(self.driver, mc[0], mc[1], self._log)
-                    time.sleep(2.0)
-        
-        # 1. 다른결재/다른결재수단2/다른결재4/보기 탐색 및 클릭 시도
-        other_pay_images = [
-            (IMG_OTHER_PAY, "다른결재"),
-            (IMG_OTHER_PAY2, "다른결재수단2"),
-            (IMG_OTHER_PAY4, "다른결재4"),
-            (IMG_BOGI, "보기"),
-        ]
-        
-        # 결재수단이 안 열려있다고 판단될 때만 '결재수단' 버튼 클릭 탐색 목록에 포함
-        if not is_pay_method_opened:
-            other_pay_images.insert(2, (IMG_PAY_METHOD, "결재수단"))
+        self._ocr_payment_screen(label="무통장결제_화면진입")
             
-        if not self._click_any_image_with_scroll(other_pay_images, threshold=0.70, max_scroll_attempts=8):
+        if not self._click_other_pay_button(max_scroll_attempts=8):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
@@ -2484,8 +2655,7 @@ class NaverOrderWorker:
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     time.sleep(1.5)
                 else:
-                    self._log("❌ '무통장입금' 버튼 미발견 -> 무통장 결제 실패")
-                    return False
+                    self._log("⚠ '무통장입금' 버튼 미발견. 중단하지 않고 계속 진행합니다.")
             else:
                 time.sleep(1.5)
 
@@ -2586,16 +2756,46 @@ class NaverOrderWorker:
         self._dismiss_payment_benefit_popup()
 
         # 위에서부터 살짝 밑으로 내리면서 탐색하기 위해 스크롤을 살짝 위로 복구
-        self._log("🔍 [무통장] 스크롤 위로 복구 후 '주문하기' 버튼 위에서부터 밑으로 탐색 시작")
+        self._log("🔍 [무통장] 스크롤 위로 복구 후 '주문하기' 버튼 위에서부터 밑으로 탐색 시작 (이미지 + XPath 동시 탐색)")
         for _ in range(3):
             self._scroll_up(distance_ratio=0.4)
             time.sleep(0.3)
 
-        if not self._click_image_with_scroll(IMG_DO_ORDER, "주문하기", threshold=0.75, max_scroll_attempts=8):
-            # 혹시 화면에 바로 있는데 미세 스크롤 오차가 발생할 경우를 대비한 기본 클릭 보조
-            if not self._click_image_basic(IMG_DO_ORDER, "주문하기", threshold=0.75):
-                self._log("❌ '주문하기' 버튼 미발견 -> 무통장 결제 실패")
-                return False
+        order_xpath = '//android.widget.Button[@text="주문하기"]'
+        found_order = False
+
+        for attempt in range(9):  # 최대 8회 스크롤 (0~8)
+            # 1. 이미지 찾기
+            if os.path.exists(IMG_DO_ORDER):
+                coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.75)
+                if coords:
+                    self._log(f"✅ '주문하기' 버튼 이미지 발견! 좌표 ({coords[0]}, {coords[1]})")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    found_order = True
+                    time.sleep(2.0)
+                    break
+
+            # 2. XPath 찾기
+            try:
+                if ah.element_exists(self.driver, order_xpath, timeout=1):
+                    el = self.driver.find_element(By.XPATH, order_xpath)
+                    self._log(f"✅ '주문하기' 버튼 XPath 발견!")
+                    if self._safe_click_element(el):
+                        found_order = True
+                        time.sleep(2.0)
+                        break
+            except Exception:
+                pass
+
+            if attempt < 8:
+                self._log(f"  ⬇ '주문하기' 버튼 미발견 -> 미세 스크롤 다운 ({attempt+1}/8)")
+                self._scroll_down(distance_ratio=0.20)
+                time.sleep(0.8)
+
+        if not found_order:
+            self._log("❌ '주문하기' 버튼 이미지/XPath 모두 미발견 -> 무통장 결제 실패")
+            return False
+
         return True
 
     def _dismiss_payment_benefit_popup(self) -> None:
@@ -2905,7 +3105,14 @@ class NaverOrderWorker:
             best_tw    = t_w
             best_th    = t_h
 
-            scales = np.linspace(0.5, 2.0, 20)  # 경량화: 60→20단계, UI 과부하 방지
+            # CLAHE 전처리: 구역별 대비 향상 (어두운 화면 및 저화질 대비 인식률 개선)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+            screen_enh = clahe.apply(screen_gray)
+            templ_enh  = clahe.apply(template_gray)
+
+            # 멀티스케일 + 멀티메서드 앙상블
+            # CCOEFF: 밝기 편차에 강함 (주력), CCORR: 패턴 강도에 강함 (보조)
+            scales = np.linspace(0.55, 1.95, 15)  # 15단계 스케일
             for scale in scales:
                 new_w = int(t_w * scale)
                 new_h = int(t_h * scale)
@@ -2913,15 +3120,33 @@ class NaverOrderWorker:
                     continue
                 if new_w < 10 or new_h < 5:
                     continue
-                resized = cv2.resize(template_gray, (new_w, new_h),
-                                     interpolation=cv2.INTER_AREA)
-                result = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                if max_val > best_score:
-                    best_score = max_val
-                    best_loc   = max_loc
-                    best_tw    = new_w
-                    best_th    = new_h
+
+                resized_enh  = cv2.resize(templ_enh,  (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+                # 1순위 메서드: TM_CCOEFF_NORMED (가중치 1.0)
+                try:
+                    r1 = cv2.matchTemplate(screen_enh, resized_enh, cv2.TM_CCOEFF_NORMED)
+                    _, mv1, _, ml1 = cv2.minMaxLoc(r1)
+                    if mv1 > best_score:
+                        best_score = mv1
+                        best_loc   = ml1
+                        best_tw    = new_w
+                        best_th    = new_h
+                except Exception:
+                    pass
+
+                # 2순위 메서드: TM_CCORR_NORMED (가중치 0.85 - 보조 강화)
+                try:
+                    r2 = cv2.matchTemplate(screen_enh, resized_enh, cv2.TM_CCORR_NORMED)
+                    _, mv2, _, ml2 = cv2.minMaxLoc(r2)
+                    score2 = mv2 * 0.85
+                    if score2 > best_score:
+                        best_score = score2
+                        best_loc   = ml2
+                        best_tw    = new_w
+                        best_th    = new_h
+                except Exception:
+                    pass
 
             if best_score >= threshold and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2

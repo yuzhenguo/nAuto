@@ -45,10 +45,10 @@ echo   Python: %PYTHON_EXE%
 echo  Done.
 
 echo [5/5] Checking required packages...
-"%PYTHON_EXE%" -c "import openpyxl, cv2, PIL" >nul 2>&1
+"%PYTHON_EXE%" -c "import openpyxl, cv2, PIL, pytesseract, paddleocr" >nul 2>&1
 if %errorlevel% neq 0 (
     echo   Installing required packages...
-    "%PYTHON_EXE%" -m pip install openpyxl opencv-python Pillow appium-python-client
+    "%PYTHON_EXE%" -m pip install openpyxl opencv-python Pillow appium-python-client pytesseract paddleocr
     echo   Done.
 ) else (
     echo   All packages are ready.
