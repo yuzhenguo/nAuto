@@ -521,6 +521,15 @@ class MainApp(tk.Tk):
         right_ctrl = tk.Frame(ctrl, bg=CLR_SURFACE)
         right_ctrl.pack(side=tk.RIGHT)
 
+        self.test_mode_var = tk.BooleanVar(value=False)
+        self.test_mode_chk = tk.Checkbutton(
+            right_ctrl, text="테스트 모드", variable=self.test_mode_var,
+            bg=CLR_SURFACE, fg="#38bdf8", selectcolor="#ffffff",
+            activebackground=CLR_SURFACE, activeforeground="#38bdf8",
+            font=("Segoe UI", 10, "bold")
+        )
+        self.test_mode_chk.pack(side=tk.LEFT, padx=10)
+
         self.adb_btn = self._make_btn(
             right_ctrl, "📱 ADB 조회", self._query_adb_devices,
             fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2
@@ -770,7 +779,8 @@ class MainApp(tk.Tk):
                 order_manager  = self.order_manager,
                 log_callback   = self._on_worker_log,
                 status_callback= self._on_worker_status,
-                machine_num    = i + 1
+                machine_num    = i + 1,
+                test_mode      = self.test_mode_var.get()
             )
             self.workers[did] = worker
 

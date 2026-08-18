@@ -213,13 +213,15 @@ class NaverOrderWorker:
                  order_manager: OrderManager,
                  log_callback: Optional[Callable] = None,
                  status_callback: Optional[Callable] = None,
-                 machine_num: int = 1):
+                 machine_num: int = 1,
+                 test_mode: bool = False):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
         self._log_cb        = log_callback
         self._status_cb     = status_callback
         self.machine_num    = machine_num
+        self.test_mode      = test_mode
         self.driver         = None
         self._stop_event    = threading.Event()
 
@@ -1624,7 +1626,28 @@ class NaverOrderWorker:
                             rect = target_view.rect
                             tap_x = rect['x'] + rect['width'] // 2
                             tap_y = rect['y'] + rect['height'] // 2
-                        self._log(f"  👉 직접 ADB 탭: ({tap_x}, {tap_y})")
+
+                        # ── 안전 영역 확인: 상하 끝에 몰려있으면 스크롤로 중앙에 위치시킨 후 탭 ──
+                        # 상단 20% 미만 또는 하단 20% 초과 시 잘못된 항목 클릭 방지를 위해 스크롤
+                        try:
+                            scr_h = self.driver.get_window_size()['height']
+                        except Exception:
+                            scr_h = 2400
+                        safe_top    = int(scr_h * 0.20)   # 상단 안전선
+                        safe_bottom = int(scr_h * 0.80)   # 하단 안전선
+
+                        if tap_y < safe_top:
+                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 상단 안전선({safe_top}) 위에 있음 → 살짝 스크롤 다운 후 재탐색")
+                            self._scroll_down(distance_ratio=0.12)
+                            time.sleep(0.8)
+                            return False   # _try_and_verify 에서 재시도하도록 False 반환
+                        elif tap_y > safe_bottom:
+                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 하단 안전선({safe_bottom}) 아래에 있음 → 살짝 스크롤 업 후 재탐색")
+                            self._scroll_up(distance_ratio=0.12)
+                            time.sleep(0.8)
+                            return False   # _try_and_verify 에서 재시도하도록 False 반환
+
+                        self._log(f"  👉 직접 ADB 탭: ({tap_x}, {tap_y})  [안전 영역 내]")
                         _run_cmd(
                             ["adb", "-s", self.device_id, "shell", "input", "tap",
                              str(tap_x), str(tap_y)],
@@ -1828,37 +1851,46 @@ class NaverOrderWorker:
         time.sleep(1.5)
 
         def _try_and_verify() -> bool:
-            if self._find_recipient_on_screen(recipient_name, phone_digits):
-                self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
-                time.sleep(3.0)
-                is_success = False
+            # 안전 영역 스크롤 후 재시도 포함: 최대 3번 탐색 시도
+            for _attempt in range(3):
+                found = self._find_recipient_on_screen(recipient_name, phone_digits)
+                if found:
+                    break
+                # False 반환 = 안전 영역 밖이라 스크롤하고 리턴한 경우 → 재탐색
+                # (스크롤은 _find_recipient_on_screen 내부에서 이미 수행됨)
+            else:
+                return False
+
+            self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
+            time.sleep(3.0)
+            is_success = False
+            
+            img_dest = os.path.join(_IMG_DIR, "배송지.png")
+            if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
+                is_success = True
+            elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
+                is_success = True
+            else:
+                try:
+                    if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                        is_success = True
+                except Exception:
+                    pass
+            
+            if is_success:
+                self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
+                return True
+            else:
+                self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (요소가 뒤쪽에 가려진 것으로 의심)")
+                self._log("  👉 살짝 스크롤 업해서 요소를 앞단으로 노출 후 재탐색/클릭 시도합니다.")
+                for _ in range(2):
+                    self._scroll_up(distance_ratio=0.12)
+                    time.sleep(0.8)
                 
-                img_dest = os.path.join(_IMG_DIR, "배송지.png")
-                if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
-                    is_success = True
-                elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
-                    is_success = True
-                else:
-                    try:
-                        if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
-                            is_success = True
-                    except Exception:
-                        pass
-                
-                if is_success:
-                    self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
+                self._log("  📋 스크롤 업 후 수취인 재탐색...")
+                if self._find_recipient_on_screen(recipient_name, phone_digits):
+                    time.sleep(3.0)
                     return True
-                else:
-                    self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (잘려서 터치 무시됨 의심)")
-                    self._log("  👉 부드럽게 스크롤을 2번 더 내린 후 재탐색/클릭을 시도합니다.")
-                    for _ in range(2):
-                        self._scroll_down(distance_ratio=0.15)
-                        time.sleep(1.0)
-                    
-                    self._log("  📋 스크롤 후 수취인 재탐색...")
-                    if self._find_recipient_on_screen(recipient_name, phone_digits):
-                        time.sleep(3.0)
-                        return True
             return False
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
@@ -1972,6 +2004,10 @@ class NaverOrderWorker:
         """[단계 18] 결제하기 버튼 클릭, 5초 대기"""
         self._set_status("결제하기 클릭")
 
+        if self.test_mode:
+            self._log("🧪 [테스트 모드] 결제하기 버튼 클릭 생략 (성공 처리)")
+            return True
+
         if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
             ah.wait_and_click(self.driver, PAY_BTN_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 결제하기 버튼 클릭 완료")
@@ -2064,6 +2100,11 @@ class NaverOrderWorker:
         - 경량화된 20스케일 매칭 (UI 과부하 방지)
         """
         self._set_status("비밀번호 입력")
+
+        if self.test_mode:
+            self._log("🧪 [테스트 모드] 비밀번호 입력 생략 (강제 성공)")
+            return True
+
         pwd_digits = ''.join(filter(str.isdigit, password))
 
         if not pwd_digits:
@@ -2795,8 +2836,11 @@ class NaverOrderWorker:
             for attempt in range(5):
                 coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.70)
                 if coords:
-                    self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    if self.test_mode:
+                        self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🧪 [테스트 모드] 클릭 생략")
+                    else:
+                        self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     found_order = True
                     time.sleep(2.0)
                     break
@@ -2814,8 +2858,11 @@ class NaverOrderWorker:
                     if os.path.exists(pay_img):
                         coords = self._find_image_coords(pay_img, threshold=0.70)
                         if coords:
-                            self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                            ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                            if self.test_mode:
+                                self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🧪 [테스트 모드] 클릭 생략")
+                            else:
+                                self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                             found_order = True
                             time.sleep(2.0)
                             break
@@ -2938,7 +2985,11 @@ class NaverOrderWorker:
                 if row.payment_method == "무통장":
                     # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
-                        order_confirmed = self._capture_and_log_bank_transfer(row)
+                        if self.test_mode:
+                            self._log("🧪 [테스트 모드] 주문번호 캡처/확인 생략 (강제 성공)")
+                            order_confirmed = True
+                        else:
+                            order_confirmed = self._capture_and_log_bank_transfer(row)
                     except Exception as e:
                         self._log(f"❌ 무통장 스크린샷/로그 처리 중 예외 발생: {e}")
                         order_confirmed = False
