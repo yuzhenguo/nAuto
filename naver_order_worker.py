@@ -98,6 +98,10 @@ IMG_NOT_APPLY3    = os.path.join(_IMG_DIR, "미신청3.png")
 IMG_NOT_APPLY4    = os.path.join(_IMG_DIR, "미신청4.png")
 IMG_DO_PAY        = os.path.join(_IMG_DIR, "결재하기.png")
 IMG_DO_ORDER      = os.path.join(_IMG_DIR, "주문하기.png")
+IMG_BUY_BTN       = os.path.join(_IMG_DIR, "구매하기.png")
+IMG_BUY_BTN2      = os.path.join(_IMG_DIR, "구매하기2.png")
+IMG_BUY_BTN3      = os.path.join(_IMG_DIR, "구매하기3.png")
+IMG_BUY_BTN4      = os.path.join(_IMG_DIR, "구매하기4.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
 IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
@@ -1138,13 +1142,34 @@ class NaverOrderWorker:
     # ─── 단계 11: 구매하기 버튼 ──────────────────────────────────────────────
 
     def _click_buy_button(self) -> bool:
-        """[단계 11] 구매하기 버튼 클릭, 5초 대기"""
+        """[단계 11] 구매하기 버튼 클릭 (구매하기, 구매하기2, 구매하기3, 구매하기4 이미지 중 하나 인식 시 즉시 클릭), 3초 대기"""
         self._set_status("구매하기 클릭")
-        if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=5):
+
+        buy_img_candidates = [
+            (IMG_BUY_BTN,  "구매하기"),
+            (IMG_BUY_BTN2, "구매하기2"),
+            (IMG_BUY_BTN3, "구매하기3"),
+            (IMG_BUY_BTN4, "구매하기4"),
+        ]
+
+        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭
+        for img_path, img_name in buy_img_candidates:
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(img_path, threshold=0.70)
+                if coords:
+                    self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"✅ [{img_name}] 이미지 인식 클릭 완료")
+                    time.sleep(3)
+                    return True
+
+        # 2순위: XPath 매칭 폴백
+        if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=3):
             ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=5, log_callback=self._log)
-            self._log("✅ 구매하기 버튼 클릭 완료")
+            self._log("✅ 구매하기 XPath 버튼 클릭 완료")
             time.sleep(3)
             return True
+
         self._log("⚠ 구매하기 버튼 미발견 → 계속 진행")
         return True  # 없어도 계속 진행
 
@@ -1360,13 +1385,7 @@ class NaverOrderWorker:
             # 바로구매 버튼을 찾지 못한 경우 (하단 바가 닫혔을 가능성 대응)
             if attempt == 1:
                 self._log("  ⚠ 바로구매 버튼 미발견 (1회차) → '구매하기' 버튼 재클릭으로 옵션 드로어 복구 시도")
-                if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=3):
-                    ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=3, log_callback=self._log)
-                    self._log("  ✅ '구매하기' 버튼 재클릭 완료 → 3초 대기 후 바로구매 재시도")
-                    time.sleep(3)
-                else:
-                    self._log("  ⚠ '구매하기' 버튼도 화면에 없음")
-                    break
+                self._click_buy_button()
 
         self._log("  ❌ 바로구매 버튼 미발견")
 
