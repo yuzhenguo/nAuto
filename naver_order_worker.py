@@ -2145,7 +2145,8 @@ class NaverOrderWorker:
 
         time.sleep(2)
 
-        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "캡쳐", "무통장")
+        today_str = time.strftime("%Y%m%d")
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "캡쳐", "무통장", today_str)
         os.makedirs(save_dir, exist_ok=True)
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -2560,7 +2561,8 @@ class NaverOrderWorker:
                             continue
 
             # ── OCR 전용 로그 파일 저장 ──
-            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            today_ocr = datetime.datetime.now().strftime("%Y%m%d")
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", today_ocr)
             os.makedirs(log_dir, exist_ok=True)
             ocr_log_path = os.path.join(
                 log_dir,
@@ -3331,7 +3333,8 @@ class NaverOrderWorker:
         # 로그 파일 기록
         try:
             import datetime
-            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            today_folder = datetime.datetime.now().strftime("%Y%m%d")
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", today_folder)
             os.makedirs(log_dir, exist_ok=True)
             log_path = os.path.join(log_dir, f"naver_order_기기{self.machine_num}_{self.device_id}.log")
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
