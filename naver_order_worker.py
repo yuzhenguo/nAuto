@@ -59,6 +59,8 @@ IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
+IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
+IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
 IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
 
@@ -1476,6 +1478,18 @@ class NaverOrderWorker:
             
         return False
 
+    def _soft_tap(self, x: int, y: int, duration_ms: int = 120) -> None:
+        """
+        제자리 짧은 swipe(꾹 눌렀다 떼기)로 부드러운 탭을 수행합니다.
+        네이버 주문/결제 WebView에서는 순간적인 'input tap'이 무시되는 경우가 있어,
+        약 120ms 동안 눌렀다 떼는 방식이 훨씬 안정적으로 클릭을 인식합니다.
+        """
+        _run_cmd(
+            ["adb", "-s", self.device_id, "shell", "input", "swipe",
+             str(x), str(y), str(x), str(y), str(duration_ms)],
+            capture_output=True, timeout=5
+        )
+
     def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
         """
         현재 화면(스크롤 없이)에서 수취인을 탐색하여 클릭. 찾으면 True 반환.
@@ -1517,16 +1531,13 @@ class NaverOrderWorker:
                         bounds_str = sv.get_attribute("bounds") or ""
                         self._log(f"  🎯 팝업 매칭! '{recipient_name}' 그룹의 '{sv_text}' 버튼 클릭 시도")
                         
-                        import re as _re, subprocess
+                        import re as _re
                         m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
                         if m:
                             x1, y1, x2, y2 = map(int, m.groups())
                             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                            self._log(f"  👉 '{sv_text}' 직접 ADB 탭: ({cx}, {cy})")
-                            subprocess.run(
-                                ["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)],
-                                capture_output=True, timeout=5
-                            )
+                            self._log(f"  👉 '{sv_text}' 부드러운 탭(120ms): ({cx}, {cy})")
+                            self._soft_tap(cx, cy)
                         else:
                             self._log("  ⚠ 좌표 파싱 실패 -> 기본 클릭")
                             self._safe_click_element(sv)
@@ -1614,18 +1625,38 @@ class NaverOrderWorker:
                         except Exception:
                             pass
 
-                    import re as _re, subprocess
+                    import re as _re
+
+                    def _parse_bounds(el):
+                        try:
+                            bs = el.get_attribute("bounds") or ""
+                            mm = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bs)
+                            if mm:
+                                return tuple(map(int, mm.groups()))
+                            rect = el.rect
+                            return (rect['x'], rect['y'],
+                                    rect['x'] + rect['width'], rect['y'] + rect['height'])
+                        except Exception:
+                            return None
+
                     try:
-                        bounds_str = target_view.get_attribute("bounds") or ""
-                        m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                        if m:
-                            x1, y1, x2, y2 = map(int, m.groups())
-                            tap_x = (x1 + x2) // 2
-                            tap_y = (y1 + y2) // 2
-                        else:
-                            rect = target_view.rect
-                            tap_x = rect['x'] + rect['width'] // 2
-                            tap_y = rect['y'] + rect['height'] // 2
+                        # ── 좌표 안정화: 스크롤 관성/재렌더링으로 bounds가 밀리는 것을 방지 ──
+                        # bounds가 두 번 연속 동일할 때까지 최대 3회 재측정 (최대 ~1.5초)
+                        bounds = _parse_bounds(target_view)
+                        for _ in range(3):
+                            time.sleep(0.5)
+                            new_bounds = _parse_bounds(target_view)
+                            if new_bounds is None or new_bounds == bounds:
+                                bounds = new_bounds or bounds
+                                break
+                            self._log(f"  ↕ 화면 이동 감지 → 좌표 재측정: {bounds} → {new_bounds}")
+                            bounds = new_bounds
+                        if not bounds:
+                            raise RuntimeError("bounds 파싱 실패")
+
+                        x1, y1, x2, y2 = bounds
+                        tap_x = (x1 + x2) // 2
+                        tap_y = (y1 + y2) // 2
 
                         # ── 안전 영역 확인: 상하 끝에 몰려있으면 스크롤로 중앙에 위치시킨 후 탭 ──
                         # 상단 20% 미만 또는 하단 20% 초과 시 잘못된 항목 클릭 방지를 위해 스크롤
@@ -1647,12 +1678,23 @@ class NaverOrderWorker:
                             time.sleep(0.8)
                             return False   # _try_and_verify 에서 재시도하도록 False 반환
 
-                        self._log(f"  👉 직접 ADB 탭: ({tap_x}, {tap_y})  [안전 영역 내]")
-                        _run_cmd(
-                            ["adb", "-s", self.device_id, "shell", "input", "tap",
-                             str(tap_x), str(tap_y)],
-                            capture_output=True, timeout=5
-                        )
+                        # ── 이름 텍스트(clickable=false) 대신, 같은 블록을 덮고 있는
+                        #    '선택' Button(실제 클릭 가능한 요소)의 중앙으로 탭 좌표 보정 ──
+                        try:
+                            for btn in self.driver.find_elements(
+                                    By.XPATH,
+                                    '//android.widget.Button[@text="선택" or @text="선택됨"]'):
+                                bb = _parse_bounds(btn)
+                                if bb and bb[0] <= tap_x <= bb[2] and bb[1] <= tap_y <= bb[3]:
+                                    tap_x = (bb[0] + bb[2]) // 2
+                                    tap_y = (bb[1] + bb[3]) // 2
+                                    self._log(f"  🎯 이름 블록을 덮는 '선택' 버튼 발견 → 버튼 중앙 ({tap_x}, {tap_y})으로 보정")
+                                    break
+                        except Exception:
+                            pass
+
+                        self._log(f"  👉 부드러운 탭(120ms): ({tap_x}, {tap_y})  [안전 영역 내]")
+                        self._soft_tap(tap_x, tap_y)
                         time.sleep(3)
                         return True
                     except Exception as e:
@@ -1864,19 +1906,41 @@ class NaverOrderWorker:
             self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
             time.sleep(3.0)
             is_success = False
-            
-            img_dest = os.path.join(_IMG_DIR, "배송지.png")
-            if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
-                is_success = True
-            elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
-                is_success = True
+
+            # ── 1차 검증: 배송지 목록 팝업이 실제로 닫혔는지 확인 ──
+            # (팝업이 열려있어도 뒤쪽 결제 화면의 '결제하기' 텍스트가 UI 트리에 남아있어
+            #  기존 텍스트 검증만으로는 오탐이 발생했음)
+            popup_still_open = False
+            try:
+                popup_still_open = bool(self.driver.find_elements(
+                    By.XPATH, '//android.widget.Button[@text="선택"]'))
+            except Exception:
+                pass
+
+            if popup_still_open:
+                self._log("  ⚠ 배송지 목록 팝업이 아직 열려있음 → 선택 미완료로 판단")
             else:
+                # ── 2차 검증: 결제 화면 인라인 배송지가 목표 수취인으로 바뀌었는지 확인 ──
                 try:
-                    if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                    if self._check_current_delivery_address(recipient_name, phone):
+                        self._log("  ✅ 결제 화면 배송지가 목표 수취인으로 변경 확인됨")
                         is_success = True
                 except Exception:
                     pass
-            
+
+                if not is_success:
+                    img_dest = os.path.join(_IMG_DIR, "배송지.png")
+                    if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
+                        is_success = True
+                    elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
+                        is_success = True
+                    else:
+                        try:
+                            if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                                is_success = True
+                        except Exception:
+                            pass
+
             if is_success:
                 self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
                 return True
@@ -1890,7 +1954,16 @@ class NaverOrderWorker:
                 self._log("  📋 스크롤 업 후 수취인 재탐색...")
                 if self._find_recipient_on_screen(recipient_name, phone_digits):
                     time.sleep(3.0)
-                    return True
+                    # 재클릭 후에도 팝업이 닫혔는지 최종 확인
+                    try:
+                        if not self.driver.find_elements(
+                                By.XPATH, '//android.widget.Button[@text="선택"]'):
+                            self._log("  ✅ 재클릭 후 배송지 목록 닫힘 확인")
+                            return True
+                        self._log("  ⚠ 재클릭 후에도 배송지 목록이 열려있음 → 실패 처리 (스크롤 후 재시도)")
+                        return False
+                    except Exception:
+                        return True
             return False
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
@@ -1931,6 +2004,55 @@ class NaverOrderWorker:
 
         self._log(f"  ❌ 배송지 '{recipient_name}' 매칭 실패")
         return False
+
+    # ─── 단계 16.5: 배송메모 '선택안함' 처리 ─────────────────────────────────
+
+    def _handle_delivery_memo(self) -> None:
+        """
+        [단계 16.5] 배송지 선택 직후 배송메모 처리:
+        배송메모.png가 화면에 인식되면 1회 탭하여 드롭다운을 열고,
+        '선택안함'(이미지 우선, XPath 텍스트 폴백)을 1회 클릭 후 다음 작업으로 진행합니다.
+        미발견 시 아무것도 하지 않고 그대로 진행합니다 (주문 흐름을 막지 않음).
+        """
+        if not os.path.exists(IMG_DELIVERY_MEMO):
+            return
+
+        self._log("🔍 [배송메모] 배송메모.png 인식 시도...")
+        memo_coords = self._find_image_coords(IMG_DELIVERY_MEMO, threshold=0.70)
+        if not memo_coords:
+            self._log("  ℹ [배송메모] 미감지 → 건너뛰고 다음 작업 진행")
+            return
+
+        self._log(f"  🎯 [배송메모] 발견! 좌표 ({memo_coords[0]}, {memo_coords[1]}) -> 1회 탭 (드롭다운 오픈)")
+        ah.tap_by_coords(self.driver, memo_coords[0], memo_coords[1], self._log)
+        time.sleep(1.5)
+
+        # ── '선택안함' 탐색: 이미지 우선 ──
+        ns_coords = None
+        if os.path.exists(IMG_MEMO_NO_SELECT):
+            ns_coords = self._find_image_coords(IMG_MEMO_NO_SELECT, threshold=0.70)
+        if ns_coords:
+            self._log(f"  🎯 [선택안함] 이미지 발견! 좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭")
+            ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
+            time.sleep(1.5)
+            self._log("✅ [배송메모] '선택안함' 선택 완료 → 다음 작업 진행")
+            return
+
+        # ── XPath 텍스트 폴백 ──
+        try:
+            els = self.driver.find_elements(
+                By.XPATH, '//*[contains(@text, "선택안함") or contains(@text, "선택 안함")]'
+            )
+            if els:
+                self._log("  🎯 [선택안함] 텍스트 요소 발견 -> 1회 클릭")
+                self._safe_click_element(els[0])
+                time.sleep(1.5)
+                self._log("✅ [배송메모] '선택안함' 선택 완료 → 다음 작업 진행")
+                return
+        except Exception:
+            pass
+
+        self._log("  ⚠ [배송메모] '선택안함' 미발견 → 무시하고 다음 작업 진행")
 
     # ─── 단계 17: 전액사용 클릭 ──────────────────────────────────────────────
 
@@ -2495,7 +2617,7 @@ class NaverOrderWorker:
                 time.sleep(1.0)
                 return False
 
-            self._log(f"  🎯 [{label}] 앞단 안착! 좌표 ({cx}, {cy}) -> 캡처 후 확실하게 2회 탭")
+            self._log(f"  🎯 [{label}] 앞단 안착! 좌표 ({cx}, {cy}) -> 캡처 후 1회 탭")
             
             # 사용자 요청: 클릭 직전 화면 캡처
             try:
@@ -2510,8 +2632,6 @@ class NaverOrderWorker:
             except Exception as e:
                 self._log(f"  ⚠ 화면 캡처 실패: {e}")
 
-            ah.tap_by_coords(self.driver, cx, cy, self._log)
-            time.sleep(0.5)
             ah.tap_by_coords(self.driver, cx, cy, self._log)
             time.sleep(2.0)
 
@@ -3107,6 +3227,9 @@ class NaverOrderWorker:
             if not self._select_delivery_address(row.recipient_name, row.phone):
                 self._log("❌ 배송지 선택 실패")
                 return False
+
+        # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)
+        self._handle_delivery_memo()
 
         # [단계 17] 전액사용 클릭 등 결제 방식 분기
         if row.payment_method == "무통장":
