@@ -2010,49 +2010,31 @@ class NaverOrderWorker:
     def _handle_delivery_memo(self) -> None:
         """
         [단계 16.5] 배송지 선택 직후 배송메모 처리:
-        배송메모.png가 화면에 인식되면 1회 탭하여 드롭다운을 열고,
-        '선택안함'(이미지 우선, XPath 텍스트 폴백)을 1회 클릭 후 다음 작업으로 진행합니다.
-        미발견 시 아무것도 하지 않고 그대로 진행합니다 (주문 흐름을 막지 않음).
+        '배송메모 선택' 팝업이 떠 있는 경우에만 '선택 안 함'(선택안함.png)을
+        이미지 인식으로 찾아 1회 클릭합니다.
+        (배송메모 필드를 직접 클릭해서 팝업을 여는 동작은 하지 않음)
         """
-        if not os.path.exists(IMG_DELIVERY_MEMO):
+        self._set_status("배송메모 처리")
+        self._log("🔍 [배송메모] '선택 안 함' 이미지 인식 시도...")
+        time.sleep(1.0)
+
+        if not os.path.exists(IMG_MEMO_NO_SELECT):
+            self._log("  ℹ [배송메모] 선택안함.png 템플릿 없음 → 건너뛰고 다음 작업 진행")
             return
 
-        self._log("🔍 [배송메모] 배송메모.png 인식 시도...")
-        memo_coords = self._find_image_coords(IMG_DELIVERY_MEMO, threshold=0.70)
-        if not memo_coords:
-            self._log("  ℹ [배송메모] 미감지 → 건너뛰고 다음 작업 진행")
-            return
-
-        self._log(f"  🎯 [배송메모] 발견! 좌표 ({memo_coords[0]}, {memo_coords[1]}) -> 1회 탭 (드롭다운 오픈)")
-        ah.tap_by_coords(self.driver, memo_coords[0], memo_coords[1], self._log)
-        time.sleep(1.5)
-
-        # ── '선택안함' 탐색: 이미지 우선 ──
-        ns_coords = None
-        if os.path.exists(IMG_MEMO_NO_SELECT):
-            ns_coords = self._find_image_coords(IMG_MEMO_NO_SELECT, threshold=0.70)
-        if ns_coords:
-            self._log(f"  🎯 [선택안함] 이미지 발견! 좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭")
-            ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
-            time.sleep(1.5)
-            self._log("✅ [배송메모] '선택안함' 선택 완료 → 다음 작업 진행")
-            return
-
-        # ── XPath 텍스트 폴백 ──
-        try:
-            els = self.driver.find_elements(
-                By.XPATH, '//*[contains(@text, "선택안함") or contains(@text, "선택 안함")]'
-            )
-            if els:
-                self._log("  🎯 [선택안함] 텍스트 요소 발견 -> 1회 클릭")
-                self._safe_click_element(els[0])
-                time.sleep(1.5)
-                self._log("✅ [배송메모] '선택안함' 선택 완료 → 다음 작업 진행")
+        # '선택 안 함' 이미지 인식 (최대 3회 재시도)
+        for ns_try in range(1, 4):
+            ns_coords = self._find_image_coords(IMG_MEMO_NO_SELECT, threshold=0.60)
+            if ns_coords:
+                self._log(f"  🎯 [선택 안 함] 이미지 발견! 좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭")
+                ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
+                time.sleep(1.2)
+                self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
                 return
-        except Exception:
-            pass
+            if ns_try < 3:
+                time.sleep(1.0)
 
-        self._log("  ⚠ [배송메모] '선택안함' 미발견 → 무시하고 다음 작업 진행")
+        self._log("  ℹ [배송메모] '선택 안 함' 미감지 → 건너뛰고 다음 작업 진행")
 
     # ─── 단계 17: 전액사용 클릭 ──────────────────────────────────────────────
 

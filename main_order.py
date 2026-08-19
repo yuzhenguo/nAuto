@@ -360,6 +360,8 @@ class MainApp(tk.Tk):
     def _toggle_remark_sort(self):
         self.sort_desc = not getattr(self, "sort_desc", False)
         self._draw_device_list()
+        if not self.running:
+            self._rebuild_device_panels()
 
     def _remark_sort_key(self, item):
         did, info = item
@@ -377,6 +379,8 @@ class MainApp(tk.Tk):
                 self.devices_data[device_id]["remark"] = remark
                 self._save_devices_config()
                 self._draw_device_list()
+                if not self.running:
+                    self._rebuild_device_panels()
 
     def _on_tethering_toggled(self, device_id: str, is_tethering: bool):
         if device_id in self.devices_data:
@@ -724,8 +728,13 @@ class MainApp(tk.Tk):
             self.panels_frame.columnconfigure(col, weight=1)
 
     def _get_selected_devices(self) -> list:
-        return [did for did, info in self.devices_data.items()
-                if info.get("selected", False)]
+        """선택된 기기를 비고 번호 오름차순(1번부터)으로 반환"""
+        selected = [
+            (did, info) for did, info in self.devices_data.items()
+            if info.get("selected", False)
+        ]
+        selected.sort(key=self._remark_sort_key)
+        return [did for did, _ in selected]
 
     def _get_port_for_device(self, index: int) -> int:
         return APPIUM_PORT_MIN + index
