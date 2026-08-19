@@ -934,33 +934,32 @@ class NaverWorker:
             '//*[contains(@text, "shopping.naver.com")]',
         ]
 
+        # XPath union으로 묶어 회차당 조회 횟수 최소화 (개별 조회는 회차당 최대 10회 → 2회)
+        popup_union_xpath = " | ".join(popup_xpaths)
+        dup_union_xpath = " | ".join(duplicate_pop_xpaths)
+        confirm_union_xpath = (
+            '//android.widget.Button[@text="확인"]'
+            ' | //android.widget.Button[@resource-id="android:id/button1"]'
+            ' | //*[@text="확인"]'
+        )
+
         for i in range(max_count):
             dismissed = False
 
             # 1. 중복 배송지 알림 (페이지 내용: 회원의 배송지 목록에 동일한 주소가 존재...) 감지 및 확인 클릭
-            for dup_xpath in duplicate_pop_xpaths:
-                if ah.element_exists(self.driver, dup_xpath, timeout=1):
-                    self._log("📌 중복 배송지 알림 팝업 감지 (동일한 주소 존재) → '확인' 버튼 클릭")
-                    confirm_btn_xpaths = [
-                        '//android.widget.Button[@text="확인"]',
-                        '//android.widget.Button[@resource-id="android:id/button1"]',
-                        '//*[@text="확인"]',
-                    ]
-                    for c_xpath in confirm_btn_xpaths:
-                        if ah.element_exists(self.driver, c_xpath, timeout=2):
-                            ah.wait_and_click(self.driver, c_xpath, timeout=3, log_callback=self._log)
-                            time.sleep(1.5)
-                            dismissed = True
-                            break
+            if ah.element_exists(self.driver, dup_union_xpath, timeout=1):
+                self._log("📌 중복 배송지 알림 팝업 감지 (동일한 주소 존재) → '확인' 버튼 클릭")
+                if ah.element_exists(self.driver, confirm_union_xpath, timeout=2):
+                    ah.wait_and_click(self.driver, confirm_union_xpath, timeout=3, log_callback=self._log)
+                    time.sleep(1.5)
+                    dismissed = True
 
             # 2. 일반 팝업 감지
-            for xpath in popup_xpaths:
-                if ah.element_exists(self.driver, xpath, timeout=2):
-                    self._log(f"📌 팝업 감지 ({xpath[:30]}) → 클릭 (회차 {i+1})")
-                    ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                    time.sleep(2)
-                    dismissed = True
-                    break
+            if ah.element_exists(self.driver, popup_union_xpath, timeout=2):
+                self._log(f"📌 팝업 감지 → 클릭 (회차 {i+1})")
+                ah.wait_and_click(self.driver, popup_union_xpath, timeout=3, log_callback=self._log)
+                time.sleep(2)
+                dismissed = True
 
             # 7일간.png 이미지 템플릿 매칭 검사
             tpl_7days = os.path.join(os.path.dirname(__file__), "7일간.png")
@@ -1002,11 +1001,14 @@ class NaverWorker:
           4. '변경' 버튼 존재하면 클릭 (3초 대기)
         이후 기존 [단계 9]부터 동일하게 진행됩니다.
         """
+        self._log("🛒 [배송지 목록 진입] 장바구니 → 주문하기 → 변경 경로 탐색 시작")
+
         # 사전 "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 팝업 감지 및 클릭
         self._dismiss_hide_popup(max_count=3)
 
         # [25-1] 장바구니 버튼 클릭 (3초 대기)
         self._set_status("장바구니 클릭")
+        self._log("🔍 장바구니 버튼 탐색 중...")
         cart_xpaths = [
             '//android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"]',
             '//android.widget.Button[contains(@text, "장바구니")]',

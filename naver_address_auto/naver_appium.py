@@ -288,6 +288,9 @@ def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdri
     opts.set_capability("appium:forceAppLaunch", True)
     opts.set_capability("appium:disableWindowAnimation", True)      # 윈도우 애니메이션 비활성화 (성능 향상)
     opts.set_capability("appium:ensureWebviewsHavePages", True)
+    # 네이버 WebView는 애니메이션/광고 때문에 UI가 'idle' 상태가 되지 않아
+    # 기본 waitForIdleTimeout(10초) 탓에 모든 요소 탐색/클릭이 매번 10초+ 지연됨 → 0으로 비활성화
+    opts.set_capability("appium:waitForIdleTimeout", 0)
 
     server_url = f"http://127.0.0.1:{appium_port}"
 
@@ -313,6 +316,16 @@ def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdri
     for attempt in range(1, max_retries + 1):
         try:
             driver = webdriver.Remote(server_url, options=opts)
+            # 세션 설정으로도 idle 대기 비활성화 (capability 미반영 환경 대비 이중 적용)
+            try:
+                driver.update_settings({
+                    "waitForIdleTimeout": 0,
+                    "actionAcknowledgmentTimeout": 0,
+                    "keyInjectionDelay": 0,
+                })
+                _log(log_callback, f"  ⚡ [{device_id}] UiAutomator2 waitForIdle 비활성화 (요소 탐색 지연 제거)")
+            except Exception as st_err:
+                _log(log_callback, f"  ⚠ [{device_id}] UiAutomator2 설정 변경 실패(무시하고 진행): {st_err}")
             _log(log_callback,
                  f"드라이버 연결 완료: {device_id} (포트 {appium_port}, systemPort {system_port})")
             return driver
