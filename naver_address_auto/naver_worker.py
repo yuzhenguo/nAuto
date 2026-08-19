@@ -993,45 +993,47 @@ class NaverWorker:
                 break
 
     def _navigate_to_delivery_mgmt(self) -> bool:
-        """[단계 7~8] 설정 → 배송지 관리 화면 진입"""
-        # [단계 7 전] "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 사전 팝업 감지 및 클릭
+        """[문서 25번 변경] 장바구니 → 주문하기 → 변경 버튼으로 배송지 목록 진입
+
+        기존 [단계 7~8] '설정 → 배송지 관리' 경로 대신:
+          1. 장바구니 버튼 클릭 (3초 대기)
+          2. '하루 동안 보지 않기' 팝업 보이면 클릭 (2초 대기)
+          3. '주문하기 N 개의 상품' 버튼 존재하면 클릭 (3초 대기)
+          4. '변경' 버튼 존재하면 클릭 (3초 대기)
+        이후 기존 [단계 9]부터 동일하게 진행됩니다.
+        """
+        # 사전 "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 팝업 감지 및 클릭
         self._dismiss_hide_popup(max_count=3)
 
-        # [단계 7] 설정 클릭 (7일간 팝업 재감지 및 다중 후보 XPath 적용)
-        self._set_status("설정 클릭")
-        setting_clicked = False
-
-        setting_xpaths = [
-            '//android.view.View[@content-desc="설정"]',
-            '//*[@content-desc="설정"]',
-            '//android.widget.ImageView[@content-desc="설정"]',
-            '//android.view.ViewGroup[@content-desc="설정"]',
-            '//android.view.View[contains(@content-desc, "설정")]',
-            '//*[contains(@content-desc, "설정")]',
-            '//android.widget.Button[@text="설정"]',
-            '//android.view.View[@text="설정"]',
+        # [25-1] 장바구니 버튼 클릭 (3초 대기)
+        self._set_status("장바구니 클릭")
+        cart_xpaths = [
+            '//android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"]',
+            '//android.widget.Button[contains(@text, "장바구니")]',
+            '//*[contains(@content-desc, "장바구니")]',
         ]
+        cart_clicked = False
 
         for attempt in range(1, 4):
-            # 매 시도마다 7일간 보지 않기 / 7일간.png 팝업 체크
+            # 매 시도마다 하루 동안 보지 않기 / 7일간.png 팝업 체크
             self._dismiss_hide_popup(max_count=1)
 
-            for xpath in setting_xpaths:
+            for xpath in cart_xpaths:
                 if ah.element_exists(self.driver, xpath, timeout=3):
-                    self._log(f"📌 설정 버튼 발견 ({xpath[:35]}) → 클릭 (시도 {attempt}/3)")
+                    self._log(f"📌 장바구니 버튼 발견 ({xpath[:45]}) → 클릭 (시도 {attempt}/3)")
                     if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
-                        setting_clicked = True
-                        time.sleep(2.5)
+                        cart_clicked = True
+                        time.sleep(3)
                         break
 
-            if setting_clicked:
+            if cart_clicked:
                 break
 
-            self._log(f"  ⚠ 설정 버튼 미발견 ({attempt}/3) -> 7일간 팝업 재감지 후 재시도...")
+            self._log(f"  ⚠ 장바구니 버튼 미발견 ({attempt}/3) -> 팝업 재감지 후 재시도...")
             time.sleep(1.5)
 
-        if not setting_clicked:
-            self._log("  🔄 설정 버튼 미발견 -> 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
+        if not cart_clicked:
+            self._log("  🔄 장바구니 버튼 미발견 -> 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
             ah.go_to_main_page(self.driver, self._log)
             time.sleep(3)
             self._dismiss_hide_popup(max_count=2)
@@ -1046,37 +1048,55 @@ class NaverWorker:
                 time.sleep(4)
 
             self._dismiss_hide_popup(max_count=2)
-            for xpath in setting_xpaths:
+            for xpath in cart_xpaths:
                 if ah.element_exists(self.driver, xpath, timeout=4):
                     if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
-                        setting_clicked = True
-                        time.sleep(2.5)
+                        cart_clicked = True
+                        time.sleep(3)
                         break
 
-        if not setting_clicked:
-            self._log("❌ 설정 버튼을 최종적으로 찾지 못했습니다.")
+        if not cart_clicked:
+            self._log("❌ 장바구니 버튼을 최종적으로 찾지 못했습니다.")
             return False
 
-        # [단계 8] 배송지 관리 클릭
-        self._set_status("배송지 관리 클릭")
-        delivery_mgmt_xpaths = [
-            DELIVERY_MGMT_XPATH,
-            '//*[contains(@text, "배송지 관리")]',
-            '//*[contains(@content-desc, "배송지 관리")]',
+        # [25-2] '하루 동안 보지 않기' 팝업 보이면 클릭 (내부에서 2초 대기)
+        self._dismiss_hide_popup(max_count=2)
+
+        # [25-3] '주문하기 N 개의 상품' 버튼 존재하면 클릭 (3초 대기)
+        self._set_status("주문하기 클릭")
+        order_xpaths = [
+            '//android.widget.Button[@text="주문하기 1 개의 상품"]',
+            '//android.widget.Button[contains(@text, "주문하기")]',
         ]
-        mgmt_clicked = False
-        for xpath in delivery_mgmt_xpaths:
+        order_clicked = False
+        for xpath in order_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=5):
+                self._log(f"📌 주문하기 버튼 발견 ({xpath[:45]}) → 클릭")
                 if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
-                    mgmt_clicked = True
+                    order_clicked = True
+                    time.sleep(3)
                     break
+        if not order_clicked:
+            self._log("  ℹ 주문하기 버튼 미발견 → 건너뛰고 계속 진행")
 
-        if not mgmt_clicked:
-            self._log("❌ 배송지 관리 버튼을 찾지 못했습니다.")
-            return False
+        # [25-4] '변경' 버튼 존재하면 클릭 (3초 대기)
+        self._set_status("배송지 변경 클릭")
+        change_xpaths = [
+            '//android.widget.Button[@text="변경"]',
+            '//android.widget.Button[contains(@text, "변경")]',
+        ]
+        change_clicked = False
+        for xpath in change_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=5):
+                self._log(f"📌 변경 버튼 발견 ({xpath[:40]}) → 클릭")
+                if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
+                    change_clicked = True
+                    time.sleep(3)
+                    break
+        if not change_clicked:
+            self._log("  ℹ 변경 버튼 미발견 → 건너뛰고 계속 진행")
 
-        time.sleep(3)
-        self._log("✅ 배송지 관리 화면 진입")
+        self._log("✅ 배송지 목록 화면 진입 (장바구니 → 주문하기 → 변경 경로)")
         return True
 
 

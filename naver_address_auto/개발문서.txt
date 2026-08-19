@@ -59,3 +59,7 @@
 naver_worker 자동 주소지 등록 변경합니다 
 //android.view.View[@content-desc="설정"]/android.widget.Image 버튼 대신 
 //android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"] 장바구니 버튼 클릭합니다  3초대기 
+//android.widget.Button[@text="하루 동안 보지 않기"] 버튼 보이면 클릭 2초 대기 
+//android.widget.Button[@text="주문하기 1 개의 상품"] 버튼 존재하면 클릭하고 3초 대기 
+//android.widget.Button[@text="변경"] 버튼 존재하는지 판단해서 클릭 3초 대기 
+그후 9번부터 작업 들어갑니다 
