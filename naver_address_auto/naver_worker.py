@@ -131,6 +131,8 @@ ADDR_SEARCH_SCREEN_XPATH = '//android.view.View[@text="주소 검색"]'
 
 ADDR_SEARCH_INPUT_XPATHS = [
 
+    '//android.widget.EditText[@hint="주소"]',   # 신규 레이아웃 (배송지입력3.xml)
+
     '//android.widget.EditText[@hint="지번/도로명 주소"]',
 
     '//android.widget.EditText[@hint="지번/도로명을 입력해주세요."]',
@@ -1589,31 +1591,47 @@ class NaverWorker:
 
 
 
-        # [단계 11] 배송지입력.xml 구조 - 수취인 입력 (1열)
+        # [단계 11] 배송지입력 화면 - 수취인 입력 (1열)
+        # 신규 레이아웃(배송지입력3.xml): '배송지 신규입력' 클릭 시 수취인 입력 없이
+        # 곧바로 주소 검색 화면(EditText[hint=주소] + '검색' 버튼)이 표시됨
+        new_addr_layout = False
 
         self._set_status(f"수취인 입력: {row.name}")
 
-        if not ah.wait_and_input(self.driver, RECEIVER_XPATH, row.name, timeout=10, log_callback=self._log):
+        if ah.element_exists(self.driver, RECEIVER_XPATH, timeout=5):
 
-            self._log("❌ 수취인 입력 실패")
+            # 구 레이아웃: 수취인 입력 → 주소검색 버튼 클릭
+            if not ah.wait_and_input(self.driver, RECEIVER_XPATH, row.name, timeout=10, log_callback=self._log):
+
+                self._log("❌ 수취인 입력 실패")
+
+                return False
+
+            # [단계 12] 주소검색 버튼 클릭
+
+            time.sleep(1)
+
+            if not ah.wait_and_click(self.driver, ADDR_SEARCH_BTN_XPATH, timeout=5, log_callback=self._log):
+
+                self._log("❌ 주소검색 버튼 클릭 실패")
+
+                return False
+
+            # 팝업 렌더링 대기 (2→5초)
+
+            time.sleep(5)
+
+        elif (ah.element_exists(self.driver, SEARCH_BTN_XPATH, timeout=5)
+              or ah.element_exists(self.driver, '//*[contains(@text, "주소를 검색해주세요")]', timeout=2)):
+
+            self._log("ℹ [단계 11] 신규 레이아웃(배송지입력3) 감지 → 수취인 입력 건너뛰고 바로 주소 검색 진행")
+            new_addr_layout = True
+
+        else:
+
+            self._log("❌ 수취인 입력창/주소 검색 화면 모두 미감지")
 
             return False
-
-
-
-        # [단계 12] 주소검색 버튼 클릭
-
-        time.sleep(1)
-
-        if not ah.wait_and_click(self.driver, ADDR_SEARCH_BTN_XPATH, timeout=5, log_callback=self._log):
-
-            self._log("❌ 주소검색 버튼 클릭 실패")
-
-            return False
-
-        # 팝업 렌더링 대기 (2→5초)
-
-        time.sleep(5)
 
 
 
@@ -1736,6 +1754,18 @@ class NaverWorker:
             return False
 
         time.sleep(2)
+
+        # 신규 레이아웃: 주소 선택 완료 후 표시되는 입력 폼에서 수취인 입력 (1열)
+        if new_addr_layout:
+            self._set_status(f"수취인 입력: {row.name}")
+            if ah.element_exists(self.driver, RECEIVER_XPATH, timeout=5):
+                if ah.wait_and_input(self.driver, RECEIVER_XPATH, row.name, timeout=8, log_callback=self._log):
+                    self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
+                    time.sleep(1)
+                else:
+                    self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행")
+            else:
+                self._log("  ⚠ [신규 레이아웃] 수취인 입력창(receiver_name) 미발견 → 건너뜀")
 
 
 
