@@ -1143,6 +1143,9 @@ class NaverWorker:
             # ─── 1순위: 삭제.png 이미지 매칭으로 삭제 버튼 좌표 탐색 ───
             if img_based:
                 coords = self._find_image_coords(delete_img_path, threshold=0.70)
+                if coords and self._is_default_delete_coords(coords):
+                    self._log(f"  ⛔ [이미지 매칭] 좌표 {coords}는 기본배송지의 삭제 버튼 → 제외 (XPath 탐색으로 전환)")
+                    coords = None
                 if coords:
                     tap_x, tap_y = coords
                     self._log(f"  🎯 [이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
@@ -1174,6 +1177,9 @@ class NaverWorker:
                 # 스크롤 후 재탐색
                 if img_based:
                     coords = self._find_image_coords(delete_img_path, threshold=0.70)
+                    if coords and self._is_default_delete_coords(coords):
+                        self._log(f"  ⛔ [스크롤 후 이미지 매칭] 좌표 {coords}는 기본배송지의 삭제 버튼 → 제외")
+                        coords = None
                     if coords:
                         tap_x, tap_y = coords
                         self._log(f"  🎯 [스크롤 후 이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
@@ -1229,135 +1235,109 @@ class NaverWorker:
 
 
 
+    def _get_default_delete_rect(self):
+
+        """기본배송지 항목에 속한 '삭제' 버튼의 rect 반환 (미노출 시 None)
+
+        배송지목록2.xml 신규 레이아웃 기준:
+          - 기본배송지에도 삭제 버튼이 존재함
+          - 주소 헤더 View(text에 '기본배송지' 포함)와 수정/삭제 버튼이
+            형제 구조로 나열되므로, '기본배송지' 라벨 바로 아래에 있는
+            첫 번째 '삭제' 버튼을 기본배송지 소속으로 판단
+
+        """
+
+        try:
+            label_bottom = None
+            narrow_label_bottom = None
+            for lb in self.driver.find_elements(By.XPATH, '//*[contains(@text, "기본배송지")]'):
+                try:
+                    r = lb.rect
+                except WebDriverException:
+                    continue
+                # 폭이 넓은 요소 = 주소 카드 헤더 (신규 레이아웃) 우선
+                if r['width'] > 300:
+                    label_bottom = r['y'] + r['height']
+                    break
+                if narrow_label_bottom is None:
+                    narrow_label_bottom = r['y'] + r['height']
+
+            if label_bottom is None:
+                label_bottom = narrow_label_bottom
+            if label_bottom is None:
+                return None
+
+            # 라벨 아래에서 가장 가까운 삭제 버튼 = 기본배송지 소속
+            best = None
+            for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
+                try:
+                    r = btn.rect
+                except WebDriverException:
+                    continue
+                if r['y'] >= label_bottom - 20 and (best is None or r['y'] < best['y']):
+                    best = r
+            return best
+        except WebDriverException:
+            return None
+
+
+
+    def _is_default_delete_coords(self, coords) -> bool:
+
+        """이미지 매칭으로 찾은 좌표가 기본배송지의 삭제 버튼 영역인지 판정"""
+
+        rect = self._get_default_delete_rect()
+        if not rect:
+            return False
+        cx, cy = coords
+        margin = 25
+        return (rect['x'] - margin <= cx <= rect['x'] + rect['width'] + margin
+                and rect['y'] - margin <= cy <= rect['y'] + rect['height'] + margin)
+
+
+
     def _find_non_default_delete_button(self):
 
         """
 
-        ListView 하위 요소 중 '기본배송지' 텍스트가 없는 항목의 삭제 버튼 반환
+        '기본배송지' 항목을 제외한 삭제 버튼 반환
+
+        신규 레이아웃(배송지목록2.xml)에서는 기본배송지에도 삭제 버튼이 있으므로,
+        화면의 모든 삭제 버튼 중 기본배송지 소속(라벨 바로 아래 첫 버튼)을
+        제외하고 가장 위의 버튼을 반환합니다.
+        구 레이아웃(기본배송지에 삭제 버튼 없음)에서는 기본배송지 라벨이
+        미검출되어 첫 번째 삭제 버튼 반환과 동일하게 동작합니다.
 
         """
 
         try:
 
-            # 1. full XPATH로 직접 아이템들 찾기 (상대 경로 버그 회피 및 가로폭 필터링)
-
-            items = []
-
-            for items_xpath in [
-
-                '//android.webkit.WebView[@text="네이버+ 스토어"]/android.view.View/android.widget.ListView/android.view.View',
-
-                '//android.webkit.WebView/android.view.View/android.widget.ListView/android.view.View',
-
-                '//android.widget.ListView/android.view.View'
-
-            ]:
-
+            candidates = []
+            for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
                 try:
-
-                    raw_items = self.driver.find_elements(By.XPATH, items_xpath)
-
-                    if raw_items:
-
-                        # 가로 폭이 넓은 항목(실제 배송지 카드)만 필터링 (버튼 등 내부 요소 제외)
-
-                        filtered_items = []
-
-                        for item in raw_items:
-
-                            try:
-
-                                rect = item.rect
-
-                                if rect['width'] > 800:
-
-                                    filtered_items.append(item)
-
-                            except Exception:
-
-                                filtered_items.append(item)
-
-                        
-
-                        if filtered_items:
-
-                            items = filtered_items
-
-                            self._log(f"  [디버그] 배송지 항목 수: {len(items)} (xpath: {items_xpath})")
-
-                            break
-
+                    candidates.append((btn.rect['y'], btn))
                 except WebDriverException:
-
                     continue
 
+            if not candidates:
+                self._log("  [디버그] 화면에 '삭제' 버튼 없음")
+                return None
 
+            candidates.sort(key=lambda t: t[0])
 
-            if not items:
-
-                self._log("  [디버그] 배송지 항목(ListView 하위 View)을 찾을 수 없습니다.")
-
-                raise NoSuchElementException("ListView items not found")
-
-
-
-            for idx, item in enumerate(items):
-
-                try:
-
-                    # 기본배송지 텍스트 포함 여부 확인
-
-                    default_tags = item.find_elements(
-
-                        By.XPATH, './/*[@text="기본배송지"]'
-
-                    )
-
-                    if default_tags:
-
-                        self._log(f"  [디버그] 항목 {idx}: 기본배송지 → 건너뜀")
-
-                        continue
-
-
-
-                    # 이 항목의 삭제 버튼 반환
-
-                    del_btns = item.find_elements(By.XPATH, './/android.widget.Button[@text="삭제"]')
-
-                    if del_btns:
-
-                        self._log(f"  [디버그] 항목 {idx}: 삭제 버튼 발견")
-
-                        return del_btns[0]
-
-                except (NoSuchElementException, WebDriverException):
-
+            default_rect = self._get_default_delete_rect()
+            for y, btn in candidates:
+                if default_rect is not None and abs(y - default_rect['y']) <= 30:
+                    self._log(f"  [디버그] y={y} 삭제 버튼: 기본배송지 소속 → 건너뜀")
                     continue
+                self._log(f"  [디버그] 삭제 대상 버튼 선택 (y={y}, 화면 내 삭제 버튼 {len(candidates)}개)")
+                return btn
 
-
+            self._log("  [디버그] 기본배송지 외 삭제 가능한 버튼 없음")
 
         except (NoSuchElementException, WebDriverException) as e:
 
-            self._log(f"  [디버그] ListView 조회 중 오류/폴백 진행: {e}")
-
-            # 폴백: 화면 전체에서 삭제 버튼 목록을 찾아 첫 번째 삭제 버튼 반환
-
-            # 기본배송지는 삭제 버튼이 없으므로, 화면에 보이는 첫 번째 삭제 버튼은 무조건 삭제 대상임!
-
-            try:
-
-                all_del = self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH)
-
-                if all_del:
-
-                    self._log(f"  [디버그] 폴백: 전체 화면에서 삭제 버튼 {len(all_del)}개 발견, 첫 번째 반환")
-
-                    return all_del[0]
-
-            except WebDriverException:
-
-                pass
+            self._log(f"  [디버그] 삭제 버튼 탐색 오류: {e}")
 
 
 
