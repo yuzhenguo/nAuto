@@ -1213,14 +1213,43 @@ class NaverWorker:
 
             time.sleep(1)
 
-            # [9.2] 삭제 확인 팝업에서 OK 버튼 클릭
-            if ah.element_exists(self.driver, DELETE_CONFIRM_XPATH, timeout=4):
-                ah.wait_and_click(self.driver, DELETE_CONFIRM_XPATH, timeout=4, log_callback=self._log)
-                self._log("  삭제 확인 OK 클릭 완료")
-            else:
-                if ah.element_exists(self.driver, '//android.widget.Button[@text="확인"]', timeout=2):
-                    ah.wait_and_click(self.driver, '//android.widget.Button[@text="확인"]',
+            # [9.2] 삭제 확인 창: 삭제하기.png / 삭제하기2.png / 삭제하기3.png 이미지 인식 클릭 (클릭 후 2초 대기)
+            confirm_clicked = False
+            for img_name in ("삭제하기.png", "삭제하기2.png", "삭제하기3.png"):
+                confirm_img = os.path.join(os.path.dirname(__file__), img_name)
+                if not os.path.exists(confirm_img):
+                    continue
+                coords = self._find_image_coords(confirm_img, threshold=0.70)
+                if coords:
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "tap",
+                             str(coords[0]), str(coords[1])],
+                            capture_output=True, timeout=5
+                        )
+                        self._log(f"  ✅ [삭제 확인] {img_name} 인식 클릭 완료 (좌표: {coords[0]},{coords[1]}) → 2초 대기")
+                        confirm_clicked = True
+                        time.sleep(2)
+                    except Exception as e:
+                        self._log(f"  ⚠ [삭제 확인] {img_name} 클릭 실패: {e}")
+                    break
+
+            # 이미지 미인식 시 기존 XPath 확인 버튼 폴백
+            if not confirm_clicked:
+                self._log("  ℹ [삭제 확인] 삭제하기 이미지 미인식 → XPath 확인 버튼 폴백")
+                if ah.element_exists(self.driver, '//android.widget.Button[@text="삭제하기"]', timeout=2):
+                    ah.wait_and_click(self.driver, '//android.widget.Button[@text="삭제하기"]',
                                       timeout=2, log_callback=self._log)
+                    self._log("  삭제 확인 '삭제하기' 버튼 클릭 완료")
+                    time.sleep(2)
+                elif ah.element_exists(self.driver, DELETE_CONFIRM_XPATH, timeout=4):
+                    ah.wait_and_click(self.driver, DELETE_CONFIRM_XPATH, timeout=4, log_callback=self._log)
+                    self._log("  삭제 확인 OK 클릭 완료")
+                else:
+                    if ah.element_exists(self.driver, '//android.widget.Button[@text="확인"]', timeout=2):
+                        ah.wait_and_click(self.driver, '//android.widget.Button[@text="확인"]',
+                                          timeout=2, log_callback=self._log)
 
             deleted_count += 1
 
