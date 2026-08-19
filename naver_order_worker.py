@@ -3402,44 +3402,34 @@ class NaverOrderWorker:
         except Exception:
             return True  # 비교 불가 시 '변화 있음'으로 간주 (기존 동작 유지)
 
-    def _perform_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 450):
-        """스와이프 1회 수행 (W3C → TouchAction → swipe → ADB 순 폴백)"""
-        # 1순위: W3C Actions (최신 Appium 2.x 권장)
+    def _scroll_gesture(self, direction: str, distance_ratio: float) -> bool:
+        """UiAutomator2 네이티브 'mobile: scrollGesture' 수행.
+
+        시스템 제스처 라이브러리를 사용하므로 터치 슬롭이 보장되어
+        스크롤 도중 요소 클릭/롱클릭이 절대 발생하지 않습니다.
+        화면 중앙 밴드(세로 25%~75%)에서만 제스처를 수행하여
+        상단 헤더/하단 고정 결제바를 건드리지 않습니다.
+
+        Returns:
+            제스처 수행 성공 여부 (드라이버 미지원/오류 시 False)
+        """
         try:
-            from selenium.webdriver.common.actions.action_builder import ActionBuilder
-            from selenium.webdriver.common.actions.pointer_input import PointerInput
-            from selenium.webdriver.common.actions import interaction
-
-            pointer = PointerInput(interaction.POINTER_TOUCH, "touch")
-            action = ActionBuilder(self.driver, mouse=pointer)
-            action.pointer_action.move_to_location(sx, sy)
-            action.pointer_action.pointer_down()
-            action.pointer_action.pause(0.1)
-            action.pointer_action.move_to_location(ex, ey)
-            action.pointer_action.release()
-            action.perform()
-            return
+            w, h = self._get_window_size()
+            top = int(h * 0.25)
+            area_h = int(h * 0.50)
+            percent = max(0.15, min(1.0, (h * distance_ratio) / area_h))
+            self.driver.execute_script('mobile: scrollGesture', {
+                'left': int(w * 0.10),
+                'top': top,
+                'width': int(w * 0.80),
+                'height': area_h,
+                'direction': direction,
+                'percent': percent,
+                'speed': 1200,  # px/s. 낮은 속도 = 관성(fling) 없는 부드러운 드래그
+            })
+            return True
         except Exception:
-            pass
-
-        # 2순위: TouchAction (사용자 요청: 터치 방식 스크롤)
-        try:
-            from appium.webdriver.common.touch_action import TouchAction
-            action = TouchAction(self.driver)
-            action.press(x=sx, y=sy).wait(500).move_to(x=ex, y=ey).release().perform()
-            return
-        except Exception:
-            pass
-
-        # 3순위: Appium 기존 swipe
-        try:
-            self.driver.swipe(sx, sy, ex, ey, duration_ms)
-            return
-        except Exception:
-            pass
-
-        # 4순위: ADB shell input swipe (WebView 및 예외 발생 시 보장)
-        self._adb_swipe(sx, sy, ex, ey, duration_ms)
+            return False
 
     def _adb_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 500):
         """ADB input swipe (긴 duration = 관성 없는 드래그 스크롤)"""
@@ -3462,20 +3452,25 @@ class NaverOrderWorker:
         return w, h
 
     def _scroll_down(self, distance_ratio: float = 0.20):
-        """아래로 미세 스크롤.
+        """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
 
-        스와이프 후 화면 지문을 비교하여 실제로 화면이 움직였는지 검증하고,
-        변화가 없으면 시작점(Y)을 바꿔 ADB 드래그 스와이프로 재시도합니다.
+        1차: UiAutomator2 네이티브 scrollGesture (클릭 이벤트 미발생 보장)
+        폴백/재시도: ADB 장거리 저속 드래그 (이동 거리가 터치 슬롭을 크게
+        초과하므로 클릭으로 인식되지 않음)
+
+        스크롤 후 화면 지문을 비교하여 실제로 화면이 움직였는지 검증하고,
+        변화가 없으면 시작점(Y)을 바꿔 재시도합니다.
         (결제화면의 가로 스크롤 카드영역/드롭다운 오버레이 등이 세로 스와이프를
         가로채 스크롤이 무시되는 현상 대응)
         """
         w, h = self._get_window_size()
         before = self._capture_screen_fingerprint()
 
-        # 1차: 기존 방식 (start_y = 72%)
-        start_y = int(h * 0.72)
-        end_y = max(100, int(start_y - (h * distance_ratio)))
-        self._perform_swipe(w // 2, start_y, w // 2, end_y)
+        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
+        if not self._scroll_gesture("down", distance_ratio):
+            start_y = int(h * 0.72)
+            end_y = max(100, int(start_y - (h * distance_ratio)))
+            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
 
         if before is None:
             return
@@ -3499,14 +3494,15 @@ class NaverOrderWorker:
         self._log("  ⚠ [스크롤 다운] 재시도에도 화면이 움직이지 않음 (페이지 끝 또는 스크롤 불가 상태)")
 
     def _scroll_up(self, distance_ratio: float = 0.4):
-        """위로 스크롤 (화면을 아래로 내림). 화면 무변화 시 시작점 변경 재시도 포함"""
+        """위로 스크롤 (화면을 아래로 내림). 요소 클릭 미발생 방식 + 무변화 시 재시도"""
         w, h = self._get_window_size()
         before = self._capture_screen_fingerprint()
 
-        # 1차: 기존 방식 (start_y = 30%)
-        start_y = int(h * 0.3)
-        end_y = min(h - 100, int(start_y + (h * distance_ratio)))
-        self._perform_swipe(w // 2, start_y, w // 2, end_y)
+        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
+        if not self._scroll_gesture("up", distance_ratio):
+            start_y = int(h * 0.3)
+            end_y = min(h - 100, int(start_y + (h * distance_ratio)))
+            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
 
         if before is None:
             return

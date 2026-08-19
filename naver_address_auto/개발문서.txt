@@ -52,3 +52,10 @@
 
 
 엑셀 데이타 loop로 돌려서 해당 device에 주소지등록 작업을 10번부터 22번작업을 반복 합니다 
+
+
+25.
+7번으로 안하고 
+naver_worker 자동 주소지 등록 변경합니다 
+//android.view.View[@content-desc="설정"]/android.widget.Image 버튼 대신 
+//android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"] 장바구니 버튼 클릭합니다  3초대기 
