@@ -115,9 +115,13 @@ WELCOME_MODAL_XPATHS = [
 
 NEW_ADDRESS_BTN_XPATH = '//android.widget.Button[@text="배송지 신규입력"]'
 
-# 수취인 입력
-
-RECEIVER_XPATH     = '//android.widget.EditText[@resource-id="receiver_name"]'
+# 수취인 입력 (신규 레이아웃: receiver / 구 레이아웃: receiver_name)
+RECEIVER_XPATH     = '//android.widget.EditText[@resource-id="receiver"]'
+RECEIVER_XPATHS    = [
+    '//android.widget.EditText[@resource-id="receiver"]',
+    '//android.widget.EditText[@hint="받는 이"]',
+    '//android.widget.EditText[@resource-id="receiver_name"]',
+]
 
 # 주소검색 버튼
 
@@ -175,9 +179,10 @@ PHONE_LAST_XPATH   = (
 
 )
 
-# 등록 버튼
+# 등록/저장 버튼
 
 REGISTER_BTN_XPATH = '//android.widget.Button[@text="등록"]'
+SAVE_BTN_XPATH     = '//android.widget.Button[@text="저장하기"]'
 
 
 
@@ -1598,10 +1603,10 @@ class NaverWorker:
 
         self._set_status(f"수취인 입력: {row.name}")
 
-        if ah.element_exists(self.driver, RECEIVER_XPATH, timeout=5):
+        if self._find_receiver_xpath(timeout=5):
 
             # 구 레이아웃: 수취인 입력 → 주소검색 버튼 클릭
-            if not ah.wait_and_input(self.driver, RECEIVER_XPATH, row.name, timeout=10, log_callback=self._log):
+            if not self._input_receiver_name(row.name):
 
                 self._log("❌ 수취인 입력 실패")
 
@@ -1743,29 +1748,31 @@ class NaverWorker:
 
 
 
-        # 선택완료 버튼 클릭
+        # 선택완료 버튼 클릭 (신규 레이아웃은 선택완료 없이 바로 수취인 입력 화면으로 전환될 수 있음)
 
         self._log("  👉 선택완료 버튼 클릭 시도")
 
-        if not self._click_confirm_button():
-
-            self._log("  ❌ 선택완료 버튼 매칭 실패 → 주소 등록 작업 실패 처리")
-
-            return False
+        confirm_ok = self._click_confirm_button()
+        if not confirm_ok:
+            if (self._find_receiver_xpath(timeout=3)
+                    or ah.element_exists(self.driver, '//*[contains(@text, "이름을 입력해주세요")]', timeout=2)
+                    or ah.element_exists(self.driver, SAVE_BTN_XPATH, timeout=2)):
+                self._log("  ℹ 선택완료 미발견이지만 수취인 입력 화면 감지 → 계속 진행")
+            else:
+                self._log("  ❌ 선택완료 버튼 매칭 실패 → 주소 등록 작업 실패 처리")
+                return False
 
         time.sleep(2)
 
-        # 신규 레이아웃: 주소 선택 완료 후 표시되는 입력 폼에서 수취인 입력 (1열)
-        if new_addr_layout:
+        # 신규 레이아웃: 주소 선택 후 '이름을 입력해주세요' 화면에서 수취인 입력
+        # XPath: //android.widget.EditText[@resource-id="receiver"]
+        if new_addr_layout or self._find_receiver_xpath(timeout=3):
             self._set_status(f"수취인 입력: {row.name}")
-            if ah.element_exists(self.driver, RECEIVER_XPATH, timeout=5):
-                if ah.wait_and_input(self.driver, RECEIVER_XPATH, row.name, timeout=8, log_callback=self._log):
-                    self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
-                    time.sleep(1)
-                else:
-                    self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행")
+            if self._input_receiver_name(row.name):
+                self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
+                time.sleep(1)
             else:
-                self._log("  ⚠ [신규 레이아웃] 수취인 입력창(receiver_name) 미발견 → 건너뜀")
+                self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행")
 
 
 
@@ -1997,11 +2004,21 @@ class NaverWorker:
 
 
 
-        # [단계 21] 등록 버튼 클릭
+        # [단계 21] 저장하기/등록 버튼 클릭
         time.sleep(2)
-        self._set_status("등록 버튼 클릭")
-        if not ah.wait_and_click(self.driver, REGISTER_BTN_XPATH, timeout=10, log_callback=self._log):
-            self._log("❌ 등록 버튼 클릭 실패")
+        self._set_status("저장/등록 버튼 클릭")
+        saved = False
+        for xpath, label in (
+            (SAVE_BTN_XPATH, "저장하기"),
+            (REGISTER_BTN_XPATH, "등록"),
+        ):
+            if ah.element_exists(self.driver, xpath, timeout=4):
+                self._log(f"📌 '{label}' 버튼 발견 → 클릭")
+                if ah.wait_and_click(self.driver, xpath, timeout=8, log_callback=self._log):
+                    saved = True
+                    break
+        if not saved:
+            self._log("❌ 저장하기/등록 버튼 클릭 실패")
             return False
 
         time.sleep(2.5)
@@ -2444,6 +2461,37 @@ class NaverWorker:
     # ─── 주소검색 입력 / 검색버튼 ────────────────────────────────────────────
 
 
+
+    def _find_receiver_xpath(self, timeout: int = 3) -> Optional[str]:
+        """수취인 입력창 XPath를 찾아 반환 (신규 receiver → 구 receiver_name)"""
+        first_timeout = timeout
+        for i, xpath in enumerate(RECEIVER_XPATHS):
+            wait = first_timeout if i == 0 else 1
+            if ah.element_exists(self.driver, xpath, timeout=wait):
+                return xpath
+        return None
+
+    def _input_receiver_name(self, name: str) -> bool:
+        """수취인 이름 입력. 신규 레이아웃 resource-id='receiver' 우선."""
+        xpath = self._find_receiver_xpath(timeout=5)
+        if not xpath:
+            self._log("  ⚠ 수취인 입력창(receiver / receiver_name) 미발견")
+            return False
+        self._log(f"  📌 수취인 입력창 발견 ({xpath}) → '{name}' 입력")
+        if ah.wait_and_input(self.driver, xpath, name, timeout=8, log_callback=self._log):
+            return True
+        # send_keys 실패 시 탭 후 mobile: type 폴백
+        try:
+            el = self.driver.find_element(By.XPATH, xpath)
+            self._click_element_center_coordinates(el)
+            time.sleep(0.4)
+            self.driver.execute_script("mobile: type", {"text": name})
+            time.sleep(0.5)
+            self._log(f"  ✅ 수취인 입력 완료 (mobile: type): '{name}'")
+            return True
+        except Exception as e:
+            self._log(f"  ❌ 수취인 입력 실패: {e}")
+            return False
 
     def _input_address_search(self, address_text: str) -> bool:
 
