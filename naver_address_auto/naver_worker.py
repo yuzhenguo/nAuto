@@ -155,7 +155,14 @@ SEARCH_BTN_XPATH   = '//android.widget.Button[@text="검색"]'
 
 ADDR_LIST_XPATH    = '//android.widget.ListView'
 
-# 전화번호 중간 4자리 입력 EditText[1]
+# 연락처 입력 (신규 레이아웃: contact-1 단일 필드에 전체 번호)
+CONTACT_XPATH      = '//android.widget.EditText[@resource-id="contact-1"]'
+CONTACT_XPATHS     = [
+    '//android.widget.EditText[@resource-id="contact-1"]',
+    '//android.widget.EditText[@hint="연락처"]',
+]
+
+# 전화번호 중간 4자리 입력 EditText[1] (구 레이아웃)
 
 PHONE_MID_XPATH    = (
 
@@ -999,16 +1006,17 @@ class NaverWorker:
                 break
 
     def _navigate_to_delivery_mgmt(self) -> bool:
-        """[문서 25번 변경] 장바구니 → 주문하기 → 변경 버튼으로 배송지 목록 진입
+        """[문서 25번 변경] 장바구니 → 상품 체크 → 주문하기 → 변경 버튼으로 배송지 목록 진입
 
         기존 [단계 7~8] '설정 → 배송지 관리' 경로 대신:
           1. 장바구니 버튼 클릭 (3초 대기)
           2. '하루 동안 보지 않기' 팝업 보이면 클릭 (2초 대기)
-          3. '주문하기 N 개의 상품' 버튼 존재하면 클릭 (3초 대기)
-          4. '변경' 버튼 존재하면 클릭 (3초 대기)
+          3. CheckBox[@text="상품"] 체크 (미체크 → 주문하기 0개 / 체크완료 → 주문하기 1개)
+          4. '주문하기 N 개의 상품' (N>=1) 버튼 클릭 (3초 대기)
+          5. '변경' 버튼 존재하면 클릭 (3초 대기)
         이후 기존 [단계 9]부터 동일하게 진행됩니다.
         """
-        self._log("🛒 [배송지 목록 진입] 장바구니 → 주문하기 → 변경 경로 탐색 시작")
+        self._log("🛒 [배송지 목록 진입] 장바구니 → 상품체크 → 주문하기 → 변경 경로 탐색 시작")
 
         # 사전 "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 팝업 감지 및 클릭
         self._dismiss_hide_popup(max_count=3)
@@ -1071,16 +1079,32 @@ class NaverWorker:
         # [25-2] '하루 동안 보지 않기' 팝업 보이면 클릭 (내부에서 2초 대기)
         self._dismiss_hide_popup(max_count=2)
 
-        # [25-3] '주문하기 N 개의 상품' 버튼 존재하면 클릭 (3초 대기)
+        # [25-2.5] 상품 체크박스 선택 (바구니미체크 → 바구니체크완료)
+        self._ensure_cart_product_checked()
+
+        # [25-3] '주문하기 N 개의 상품' (N>=1) 버튼 클릭 (3초 대기)
+        # 미체크: '주문하기 0 개의 상품' / 체크완료: '주문하기 1 개의 상품'
         self._set_status("주문하기 클릭")
         order_xpaths = [
             '//android.widget.Button[@text="주문하기 1 개의 상품"]',
+            '//android.widget.Button[contains(@text, "주문하기") and not(contains(@text, "0 개의"))]',
             '//android.widget.Button[contains(@text, "주문하기")]',
         ]
         order_clicked = False
         for xpath in order_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=5):
-                self._log(f"📌 주문하기 버튼 발견 ({xpath[:45]}) → 클릭")
+                # '주문하기 0 개의 상품'은 클릭하지 않음
+                try:
+                    btn = self.driver.find_element(By.XPATH, xpath)
+                    btn_text = (btn.get_attribute("text") or "").strip()
+                    if "0 개의" in btn_text or btn_text.endswith("0개"):
+                        self._log(f"  ⚠ 주문하기 버튼이 아직 0개 상태('{btn_text}') → 재체크 후 재시도")
+                        self._ensure_cart_product_checked()
+                        time.sleep(1)
+                        continue
+                except Exception:
+                    pass
+                self._log(f"📌 주문하기 버튼 발견 ({xpath[:55]}) → 클릭")
                 if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
                     order_clicked = True
                     time.sleep(3)
@@ -1105,8 +1129,86 @@ class NaverWorker:
         if not change_clicked:
             self._log("  ℹ 변경 버튼 미발견 → 건너뛰고 계속 진행")
 
-        self._log("✅ 배송지 목록 화면 진입 (장바구니 → 주문하기 → 변경 경로)")
+        self._log("✅ 배송지 목록 화면 진입 (장바구니 → 상품체크 → 주문하기 → 변경 경로)")
         return True
+
+    def _ensure_cart_product_checked(self) -> bool:
+        """장바구니에서 상품 체크박스를 선택합니다.
+
+        바구니미체크.xml: CheckBox[@text="상품"] unchecked → 주문하기 0 개의 상품
+        바구니체크완료.xml: 체크 후 → 주문하기 1 개의 상품
+        """
+        self._set_status("장바구니 상품 체크")
+        self._log("☑️ [장바구니] 상품 체크박스 선택 시도")
+
+        # 이미 '주문하기 1개+' 상태면 체크 완료로 간주
+        if ah.element_exists(
+            self.driver,
+            '//android.widget.Button[contains(@text, "주문하기") and not(contains(@text, "0 개의"))]',
+            timeout=2,
+        ):
+            # 0개 버튼만 있는 경우는 제외 (contains 매칭 오탐 방지)
+            try:
+                for btn in self.driver.find_elements(By.XPATH, '//android.widget.Button[contains(@text, "주문하기")]'):
+                    t = (btn.get_attribute("text") or "").strip()
+                    if "주문하기" in t and "0 개의" not in t and not t.endswith("0개"):
+                        self._log(f"  ✅ 이미 상품 선택됨 ('{t}') → 체크 생략")
+                        return True
+            except Exception:
+                pass
+
+        checkbox_xpaths = [
+            '//android.widget.CheckBox[@text="상품"]',
+            '//android.widget.CheckBox[@text="전체 선택"]',
+            '//android.widget.CheckBox[@text="스토어 상품 전체"]',
+        ]
+
+        for xpath in checkbox_xpaths:
+            if not ah.element_exists(self.driver, xpath, timeout=3):
+                continue
+            try:
+                el = self.driver.find_element(By.XPATH, xpath)
+                checked = (el.get_attribute("checked") or "").lower()
+                label = el.get_attribute("text") or xpath
+                if checked in ("true", "1"):
+                    self._log(f"  ✅ 체크박스 이미 선택됨: '{label}'")
+                    return True
+
+                self._log(f"  📌 체크박스 클릭: '{label}' ({xpath})")
+                # WebView CheckBox는 element.click 무시되는 경우가 있어 좌표 탭 우선
+                if not self._click_element_center_coordinates(el):
+                    ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
+                time.sleep(1.5)
+
+                # 체크 후 주문하기 버튼이 1개 이상으로 바뀌었는지 확인
+                for _ in range(4):
+                    try:
+                        for btn in self.driver.find_elements(
+                            By.XPATH, '//android.widget.Button[contains(@text, "주문하기")]'
+                        ):
+                            t = (btn.get_attribute("text") or "").strip()
+                            if "주문하기" in t and "0 개의" not in t and not t.endswith("0개"):
+                                self._log(f"  ✅ 상품 체크 완료 → '{t}'")
+                                return True
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+                # checked 속성 재확인
+                try:
+                    el2 = self.driver.find_element(By.XPATH, xpath)
+                    if (el2.get_attribute("checked") or "").lower() in ("true", "1"):
+                        self._log(f"  ✅ 체크박스 checked=true 확인: '{label}'")
+                        return True
+                except Exception:
+                    pass
+
+                self._log(f"  ⚠ '{label}' 클릭 후에도 주문하기 0개 상태 → 다음 체크박스 시도")
+            except Exception as e:
+                self._log(f"  ⚠ 체크박스 클릭 예외 ({xpath}): {e}")
+
+        self._log("  ⚠ 상품 체크박스 선택 실패 (주문하기 0개일 수 있음)")
+        return False
 
 
 
@@ -1776,237 +1878,100 @@ class NaverWorker:
 
 
 
-        # [단계 19] 전화번호 중간 4자리 입력
+        # [단계 19~20] 연락처 입력
+        # 신규(연락처입력.xml): 010 선택 → contact-1 에 중간4+마지막4(8자리) 입력
+        # 구 레이아웃: 중간 4자리 + 마지막 4자리 분할 입력
+        self._set_status("연락처 입력")
 
-        self._set_status("전화번호 입력")
+        contact_ok = self._input_contact_mid_last(row)
+        if contact_ok:
+            self._log("  ✅ [연락처] 010 선택 + contact-1 (중간+마지막) 입력 완료")
+            time.sleep(1)
+        else:
+            self._log("  ℹ contact-1 미발견 → 구 레이아웃(분할 전화번호) 입력 시도")
 
-        
+            self._select_phone_prefix_010()
 
-        # //android.view.View[@text="통신사 번호"] 클릭후 2초 대기
+            phone_mid = row.get_phone_middle()
+            phone_last = row.get_phone_last()
 
-        carrier_xpath = '//android.view.View[@text="통신사 번호"]'
-
-        if ah.element_exists(self.driver, carrier_xpath, timeout=3):
-
-            self._log("  📞 [전화번호] '통신사 번호' 발견 → 클릭")
-
-            ah.wait_and_click(self.driver, carrier_xpath, timeout=5, log_callback=self._log)
+            if phone_mid:
+                mid_xpaths = [
+                    '//android.widget.EditText[@hint="휴대전화번호 앞자리"]',
+                    '//android.widget.EditText[@hint="휴대전화번호 중간자리"]',
+                    '//android.widget.EditText[@hint="휴대전화번호 앞"]',
+                    PHONE_MID_XPATH,
+                ]
+                mid_success = False
+                for xpath in mid_xpaths:
+                    if ah.element_exists(self.driver, xpath, timeout=3):
+                        try:
+                            el = self.driver.find_element(By.XPATH, xpath)
+                            self._log(f"  📞 전화번호 중간 4자리 입력 필드 발견: {xpath}")
+                            self._click_element_center_coordinates(el)
+                            time.sleep(0.5)
+                            try:
+                                self.driver.execute_script("mobile: type", {"text": phone_mid})
+                                time.sleep(0.5)
+                            except Exception:
+                                pass
+                            el = self.driver.find_element(By.XPATH, xpath)
+                            try:
+                                curr_val = el.text or ""
+                            except Exception:
+                                curr_val = ""
+                            if phone_mid not in curr_val:
+                                self._log("  ⌨ [전화번호 중간] mobile: type 미입력 확인 -> send_keys 시도 (stale 방지)")
+                                el = self.driver.find_element(By.XPATH, xpath)
+                                el.clear()
+                                time.sleep(0.3)
+                                el = self.driver.find_element(By.XPATH, xpath)
+                                el.send_keys(phone_mid)
+                                time.sleep(0.5)
+                            mid_success = True
+                            break
+                        except Exception as e_mid:
+                            self._log(f"  ⚠ 중간 번호 입력 시도 실패 ({xpath}): {e_mid}")
+                if not mid_success:
+                    self._log("  ❌ 전화번호 중간 4자리 입력 최종 실패")
 
             time.sleep(2)
-
-            
-
-            # 그후 //android.widget.CheckedTextView[@resource-id="android:id/text1" and @text="010"] 존재 하면 클릭 후 2초 대기
-
-            prefix_010_xpaths = [
-
-                '//android.widget.CheckedTextView[@resource-id="android:id/text1" and @text="010"]',
-
-                '//android.widget.CheckedTextView[@text="010"]',
-
-                '//android.widget.TextView[@text="010"]',
-
-                '//*[@text="010"]',
-
-            ]
-
-            clicked_010 = False
-
-            for p_xpath in prefix_010_xpaths:
-
-                if ah.element_exists(self.driver, p_xpath, timeout=2):
-
-                    self._log(f"  📞 [전화번호] '010' 옵션 발견 ({p_xpath[:50]}) → 클릭")
-
-                    if ah.wait_and_click(self.driver, p_xpath, timeout=5, log_callback=self._log):
-
-                        clicked_010 = True
-
-                        time.sleep(2)
-
-                        break
-
-            if not clicked_010:
-
-                self._log("  ⚠ [전화번호] '010' 옵션을 찾을 수 없어 010 선택 단계를 패스합니다.")
-
-                
-
-        phone_mid = row.get_phone_middle()
-
-        phone_last = row.get_phone_last()
-
-
-
-        if phone_mid:
-
-            mid_xpaths = [
-
-                '//android.widget.EditText[@hint="휴대전화번호 앞자리"]',
-
-                '//android.widget.EditText[@hint="휴대전화번호 중간자리"]',
-
-                '//android.widget.EditText[@hint="휴대전화번호 앞"]',
-
-                PHONE_MID_XPATH,
-
-            ]
-
-            mid_success = False
-
-            for xpath in mid_xpaths:
-
-                if ah.element_exists(self.driver, xpath, timeout=3):
-
-                    try:
-
-                        # 1. 엘리먼트 탭
-
-                        el = self.driver.find_element(By.XPATH, xpath)
-
-                        self._log(f"  📞 전화번호 중간 4자리 입력 필드 발견: {xpath}")
-
-                        self._click_element_center_coordinates(el)
-
-                        time.sleep(0.5)
-
-                        
-
-                        # 2. mobile: type
-
+            if phone_last:
+                last_xpaths = [
+                    '//android.widget.EditText[@hint="휴대전화번호 뒷자리"]',
+                    '//android.widget.EditText[@hint="휴대전화번호 뒤"]',
+                    PHONE_LAST_XPATH,
+                ]
+                last_success = False
+                for xpath in last_xpaths:
+                    if ah.element_exists(self.driver, xpath, timeout=3):
                         try:
-
-                            self.driver.execute_script("mobile: type", {"text": phone_mid})
-
-                            time.sleep(0.5)
-
-                        except Exception:
-
-                            pass
-
-                            
-
-                        # 3. 검증 (stale 방지 위해 새로 찾기)
-
-                        el = self.driver.find_element(By.XPATH, xpath)
-
-                        try:
-
-                            curr_val = el.text or ""
-
-                        except Exception:
-
-                            curr_val = ""
-
-                        
-
-                        if phone_mid not in curr_val:
-
-                            self._log("  ⌨ [전화번호 중간] mobile: type 미입력 확인 -> send_keys 시도 (stale 방지)")
-
                             el = self.driver.find_element(By.XPATH, xpath)
-
+                            self._log(f"  📞 전화번호 마지막 4자리 입력 필드 발견: {xpath}")
                             el.clear()
-
                             time.sleep(0.3)
-
                             el = self.driver.find_element(By.XPATH, xpath)
-
-                            el.send_keys(phone_mid)
-
+                            el.send_keys(phone_last)
                             time.sleep(0.5)
+                            try:
+                                self.driver.hide_keyboard()
+                            except Exception:
+                                pass
+                            last_success = True
+                            break
+                        except Exception as e_last:
+                            self._log(f"  ⚠ 마지막 번호 입력 시도 실패 ({xpath}): {e_last}")
+                if not last_success:
+                    self._log("  ❌ 전화번호 마지막 4자리 입력 최종 실패")
 
-                        mid_success = True
-
-                        break
-
-                    except Exception as e_mid:
-
-                        self._log(f"  ⚠ 중간 번호 입력 시도 실패 ({xpath}): {e_mid}")
-
-            if not mid_success:
-
-                self._log("  ❌ 전화번호 중간 4자리 입력 최종 실패")
-
-
-
-        # [단계 20] 전화번호 마지막 4자리 입력, 2초 대기
-
+        # [단계 21] 저장하기 버튼 클릭 (연락처입력.xml 하단)
         time.sleep(2)
+        self._set_status("저장하기 클릭")
+        if not ah.element_exists(self.driver, SAVE_BTN_XPATH, timeout=3):
+            self._log("  ⬇ 저장하기 버튼 미노출 → 스크롤 다운")
+            self._scroll_down()
+            time.sleep(0.8)
 
-        if phone_last:
-
-            last_xpaths = [
-
-                '//android.widget.EditText[@hint="휴대전화번호 뒷자리"]',
-
-                '//android.widget.EditText[@hint="휴대전화번호 뒤"]',
-
-                PHONE_LAST_XPATH,
-
-            ]
-
-            last_success = False
-
-            for xpath in last_xpaths:
-
-                if ah.element_exists(self.driver, xpath, timeout=3):
-
-                    try:
-
-                        # 1. 엘리먼트 탭
-
-                        el = self.driver.find_element(By.XPATH, xpath)
-
-                        self._log(f"  📞 전화번호 마지막 4자리 입력 필드 발견: {xpath}")
-
-                        # 좌표탭 하지 않고 바로 값 입력
-
-                        el.clear()
-
-                        time.sleep(0.3)
-
-                        el = self.driver.find_element(By.XPATH, xpath)
-
-                        el.send_keys(phone_last)
-
-                        time.sleep(0.5)
-
-                        
-
-                        # 키보드 숨기기
-
-                        try:
-
-                            self.driver.hide_keyboard()
-
-                            self._log("  ⌨ 키보드 숨기기 실행 완료")
-
-                            time.sleep(0.5)
-
-                        except Exception:
-
-                            pass
-
-                        
-
-                        last_success = True
-
-                        break
-
-                    except Exception as e_last:
-
-                        self._log(f"  ⚠ 마지막 번호 입력 시도 실패 ({xpath}): {e_last}")
-
-            if not last_success:
-
-                self._log("  ❌ 전화번호 마지막 4자리 입력 최종 실패")
-
-
-
-        # [단계 21] 저장하기/등록 버튼 클릭
-        time.sleep(2)
-        self._set_status("저장/등록 버튼 클릭")
         saved = False
         for xpath, label in (
             (SAVE_BTN_XPATH, "저장하기"),
@@ -2478,19 +2443,170 @@ class NaverWorker:
             self._log("  ⚠ 수취인 입력창(receiver / receiver_name) 미발견")
             return False
         self._log(f"  📌 수취인 입력창 발견 ({xpath}) → '{name}' 입력")
+        ok = False
         if ah.wait_and_input(self.driver, xpath, name, timeout=8, log_callback=self._log):
+            ok = True
+        else:
+            # send_keys 실패 시 탭 후 mobile: type 폴백
+            try:
+                el = self.driver.find_element(By.XPATH, xpath)
+                self._click_element_center_coordinates(el)
+                time.sleep(0.4)
+                self.driver.execute_script("mobile: type", {"text": name})
+                time.sleep(0.5)
+                self._log(f"  ✅ 수취인 입력 완료 (mobile: type): '{name}'")
+                ok = True
+            except Exception as e:
+                self._log(f"  ❌ 수취인 입력 실패: {e}")
+                return False
+        if ok:
+            self._press_enter_key()
+            time.sleep(0.8)
+        return ok
+
+    def _press_enter_key(self):
+        """수취인 입력 후 Enter(확인) 키 전송"""
+        try:
+            import subprocess
+            subprocess.run(
+                ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
+                capture_output=True, timeout=5,
+            )
+            self._log("  ⌨ Enter 키 전송 완료")
+        except Exception as e:
+            self._log(f"  ⚠ Enter 키 전송 실패: {e}")
+
+    def _select_phone_prefix_010(self) -> bool:
+        """연락처 입력 전 '010' 접두 선택"""
+        carrier_xpath = '//android.view.View[@text="통신사 번호"]'
+        if ah.element_exists(self.driver, carrier_xpath, timeout=2):
+            self._log("  📞 [연락처] '통신사 번호' 발견 → 클릭")
+            ah.wait_and_click(self.driver, carrier_xpath, timeout=4, log_callback=self._log)
+            time.sleep(1.5)
+
+        prefix_010_xpaths = [
+            '//android.widget.CheckedTextView[@resource-id="android:id/text1" and @text="010"]',
+            '//android.widget.CheckedTextView[@text="010"]',
+            '//android.widget.TextView[@text="010"]',
+            '//*[@text="010"]',
+        ]
+        for p_xpath in prefix_010_xpaths:
+            if ah.element_exists(self.driver, p_xpath, timeout=2):
+                self._log(f"  📞 [연락처] '010' 선택 ({p_xpath[:50]})")
+                if ah.wait_and_click(self.driver, p_xpath, timeout=4, log_callback=self._log):
+                    time.sleep(1)
+                    return True
+        self._log("  ℹ '010' 선택 UI 미발견 (기본값 010일 수 있음)")
+        return False
+
+    def _input_contact_mid_last(self, row: AddressRow) -> bool:
+        """연락처입력.xml: contact-1 연락처 입력
+
+        - 010 선택 UI 있음 → 중간4+마지막4(8자리)만 입력
+        - 010 선택 UI 없음 → 010+중간4+마지막4(11자리 전체) 입력
+        """
+        phone_mid = row.get_phone_middle()
+        phone_last = row.get_phone_last()
+        if not phone_mid or not phone_last:
+            self._log("  ⚠ 전화번호 중간/마지막 4자리 추출 실패")
+            return False
+
+        xpath = None
+        for xp in CONTACT_XPATHS:
+            if ah.element_exists(self.driver, xp, timeout=3):
+                xpath = xp
+                break
+        if not xpath:
+            return False
+
+        try:
+            el = self.driver.find_element(By.XPATH, xpath)
+            self._click_element_center_coordinates(el)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        prefix_selected = self._select_phone_prefix_010()
+        time.sleep(0.5)
+
+        if prefix_selected:
+            to_input = phone_mid + phone_last
+            self._log(f"  📞 [연락처] 010 선택됨 → contact-1에 '{to_input}' 입력 (8자리)")
+        else:
+            to_input = "010" + phone_mid + phone_last
+            self._log(f"  📞 [연락처] 010 UI 미발견 → contact-1에 '{to_input}' 입력 (010+8자리)")
+
+        if ah.wait_and_input(self.driver, xpath, to_input, timeout=8, log_callback=self._log):
+            try:
+                self.driver.hide_keyboard()
+            except Exception:
+                pass
+            self._log(f"  ✅ [연락처] contact-1 입력 완료: '{to_input}'")
             return True
-        # send_keys 실패 시 탭 후 mobile: type 폴백
+
         try:
             el = self.driver.find_element(By.XPATH, xpath)
             self._click_element_center_coordinates(el)
             time.sleep(0.4)
-            self.driver.execute_script("mobile: type", {"text": name})
+            try:
+                el.clear()
+            except Exception:
+                pass
+            self.driver.execute_script("mobile: type", {"text": to_input})
             time.sleep(0.5)
-            self._log(f"  ✅ 수취인 입력 완료 (mobile: type): '{name}'")
+            try:
+                self.driver.hide_keyboard()
+            except Exception:
+                pass
+            self._log(f"  ✅ [연락처] contact-1 입력 완료 (mobile: type): '{to_input}'")
             return True
         except Exception as e:
-            self._log(f"  ❌ 수취인 입력 실패: {e}")
+            self._log(f"  ❌ [연락처] contact-1 입력 실패: {e}")
+            return False
+
+    def _input_contact_phone(self, phone: str) -> bool:
+        """연락처입력.xml: contact-1 필드에 전체 전화번호 한 번에 입력"""
+        if not phone:
+            self._log("  ⚠ 연락처(전화번호) 데이터 없음")
+            return False
+
+        phone_digits = ''.join(filter(str.isdigit, str(phone)))
+        if len(phone_digits) < 10:
+            self._log(f"  ⚠ 유효하지 않은 전화번호: '{phone}'")
+            return False
+
+        xpath = None
+        for xp in CONTACT_XPATHS:
+            if ah.element_exists(self.driver, xp, timeout=3):
+                xpath = xp
+                break
+        if not xpath:
+            return False
+
+        self._log(f"  📞 [연락처] 입력창 발견 ({xpath}) → 전체 번호 '{phone_digits}' 입력")
+
+        if ah.wait_and_input(self.driver, xpath, phone_digits, timeout=8, log_callback=self._log):
+            time.sleep(0.5)
+            return True
+
+        try:
+            el = self.driver.find_element(By.XPATH, xpath)
+            self._click_element_center_coordinates(el)
+            time.sleep(0.4)
+            try:
+                el.clear()
+            except Exception:
+                pass
+            self.driver.execute_script("mobile: type", {"text": phone_digits})
+            time.sleep(0.5)
+            self._log(f"  ✅ 연락처 입력 완료 (mobile: type): '{phone_digits}'")
+            try:
+                self.driver.hide_keyboard()
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            self._log(f"  ❌ 연락처 입력 실패: {e}")
             return False
 
     def _input_address_search(self, address_text: str) -> bool:
