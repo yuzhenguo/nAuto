@@ -1233,24 +1233,6 @@ class NaverOrderWorker:
             max_y_check = bar_limit
             self._log(f"  📌 체크박스 탐색 Y영역: 옵션선택 하단({opt_y}) ~ 하단바 제외({max_y_check})")
 
-        # ─── 체크박스 클릭 후 추가 탭 헬퍼 ───────────────────────────────────────
-        def _post_click_extra_tap():
-            # 옵션선택과 배송정보가 모두 있으면 배송정보 위를 한 번 더 탭 (사용자 화살표 요청)
-            if opt_y and del_y:
-                tap_x = int(w_w * 0.15)
-                tap_y = del_y - 65  # 배송정보 텍스트 바로 위쪽 약 65픽셀 부근
-                self._log(f"  👉 옵션 선택/배송정보 확인됨. 배송정보 바로 위({tap_x}, {tap_y}) 추가 탭 시도")
-                try:
-                    import subprocess
-                    subprocess.run(
-                        ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
-                        capture_output=True, timeout=5
-                    )
-                    time.sleep(1.0)
-                except Exception:
-                    pass
-            return True
-
         # ─── 1순위: 체크박스.png / 체크박스4.png 매칭 (인식률 높은 것 우선) ──────────────
         checkbox_imgs = [img for img in [IMG_CHECKBOX, IMG_CHECKBOX4] if os.path.exists(img)]
         if checkbox_imgs:
@@ -1265,7 +1247,7 @@ class NaverOrderWorker:
                         img_name = os.path.basename(img_path)
                         self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (threshold={thr})")
                         time.sleep(1.5)
-                        return _post_click_extra_tap()
+                        return True
 
             # X축 제한 없이 재시도
             for img_path in checkbox_imgs:
@@ -1276,7 +1258,7 @@ class NaverOrderWorker:
                     img_name = os.path.basename(img_path)
                     self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (X축 제한 해제)")
                     time.sleep(1.5)
-                    return _post_click_extra_tap()
+                    return True
 
         # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선, X축 제한 완화) ──
         if product_name:
@@ -1303,7 +1285,7 @@ class NaverOrderWorker:
                                     self._safe_click_element(el)
                                     self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
                                     time.sleep(1.5)
-                                    return _post_click_extra_tap()
+                                    return True
                         except Exception:
                             pass
 
@@ -1327,7 +1309,7 @@ class NaverOrderWorker:
                             self._safe_click_element(el)
                             self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
                             time.sleep(1.5)
-                            return _post_click_extra_tap()
+                            return True
                 except Exception:
                     pass
 
@@ -1346,7 +1328,7 @@ class NaverOrderWorker:
                 )
                 self._log(f"  ✅ 좌표 고정 탭 완료 ({fallback_x}, {fallback_y})")
                 time.sleep(1.5)
-                return _post_click_extra_tap()
+                return True
             except Exception as e:
                 self._log(f"  ⚠ 좌표 탭 실패: {e}")
         else:
