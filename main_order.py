@@ -748,7 +748,7 @@ class MainApp(tk.Tk):
     # ─── 작업 제어 ────────────────────────────────────────────────────────────
 
     def _start_manual(self):
-        """수동시작: 주문하기 클릭 없이 결제 직전까지 진행 → 엑셀 Y 기록 후 종료"""
+        """수동시작: 배송지 선택(결제창 복귀)까지 진행 → 엑셀 Y 기록 후 종료"""
         self._start_all(manual_mode=True)
 
     def _start_all(self, manual_mode: bool = False):
@@ -784,8 +784,8 @@ class MainApp(tk.Tk):
             confirm = messagebox.askyesno(
                 "수동시작",
                 "수동시작 모드로 진행합니다.\n\n"
-                "· 결제 준비까지 자동 진행\n"
-                "· '주문하기'는 클릭하지 않음\n"
+                "· 배송지 선택(결제창 복귀)까지 자동 진행\n"
+                "· 배송메모/결제 단계는 진행하지 않음\n"
                 "· 엑셀 작업여부를 Y로 기록 후 종료\n\n"
                 "계속하시겠습니까?"
             )
@@ -800,7 +800,7 @@ class MainApp(tk.Tk):
         self._draw_device_list()
         self._rebuild_device_panels()
         if manual_mode:
-            self._log_status("🖐 수동시작 (주문하기 클릭 생략 → Y 기록)")
+            self._log_status("🖐 수동시작 (배송지 선택까지 → Y 기록)")
         else:
             self._log_status("🚀 자동 주문 시작")
 

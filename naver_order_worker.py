@@ -228,7 +228,7 @@ class NaverOrderWorker:
         self._status_cb     = status_callback
         self.machine_num    = machine_num
         self.test_mode      = test_mode
-        # 수동시작: 주문하기 클릭 생략 + 엑셀 Y 기록 후 종료
+        # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
         self.manual_mode    = manual_mode
         self.driver         = None
         self._stop_event    = threading.Event()
@@ -242,7 +242,7 @@ class NaverOrderWorker:
     def run(self) -> bool:
         """워커 메인 실행 (별도 스레드에서 호출)"""
         if self.manual_mode:
-            self._log("🖐 수동시작 워커 시작 (주문하기 클릭 생략 → Y 기록 후 종료)")
+            self._log("🖐 수동시작 워커 시작 (배송지 선택까지 → Y 기록 후 종료)")
         else:
             self._log("🚀 자동 주문 워커 시작")
 
@@ -3301,7 +3301,7 @@ class NaverOrderWorker:
                     if order_confirmed:
                         self.order_manager.mark_success(row.row_index)
                         if self.manual_mode:
-                            self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                            self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
                         else:
                             self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
                     else:
@@ -3313,7 +3313,7 @@ class NaverOrderWorker:
                 else:
                     self.order_manager.mark_success(row.row_index)
                     if self.manual_mode:
-                        self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                        self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
                     else:
                         self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
@@ -3426,6 +3426,11 @@ class NaverOrderWorker:
             if not self._select_delivery_address(row.recipient_name, row.phone):
                 self._log("❌ 배송지 선택 실패")
                 return False
+
+        # 수동시작: 배송지 선택(결제창 복귀)까지 완료하면 결제 단계 생략 → Y 기록
+        if self.manual_mode:
+            self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
+            return True
 
         # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)
         self._handle_delivery_memo()
