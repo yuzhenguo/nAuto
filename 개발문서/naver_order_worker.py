@@ -16,7 +16,7 @@ naver_order_worker.py
 10    상품 리스트에서 판매자명 + 상품명 매칭 클릭, 5초 대기
 11    구매하기 버튼 클릭, 5초 대기
 12    체크박스.png 이미지 인식 클릭, 2초 대기
-13    바로구매.png / 바로구매2/3/4 이미지 인식 클릭, 8초 대기
+13    바로구매.png 이미지 인식 클릭, 8초 대기
 14    변경 버튼 클릭, 3초 대기
 15    스크롤 다운
 16    배송지 목록에서 수취인/전화번호 매칭 클릭, 5초 대기
@@ -59,9 +59,6 @@ IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
-IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
-IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
-IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
 IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
@@ -1404,39 +1401,10 @@ class NaverOrderWorker:
                 continue
         return False
 
-    def _is_order_pay_screen(self) -> bool:
-        """주문/결제 화면 진입 여부 확인 (바로구매 성공 판정용)"""
-        markers = [
-            '//android.webkit.WebView[@text="주문/결제"]',
-            '//android.widget.TextView[@text="주문/결제"]',
-            '//android.widget.Button[@text="변경"]',
-            '//*[contains(@text,"결제하기")]',
-            '//*[contains(@text,"배송지명")]',
-            '//*[contains(@text,"배송메모")]',
-        ]
-        for xpath in markers:
-            try:
-                if ah.element_exists(self.driver, xpath, timeout=1):
-                    return True
-            except Exception:
-                continue
-        if os.path.exists(IMG_ORDER_PAY):
-            try:
-                if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
-                    return True
-            except Exception:
-                pass
-        return False
-
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매 클릭 (XPath 우선 → 하단 이미지만 → 검증)"""
+        """[단계 13] 바로구매 클릭 (이미지 → XPath → 하단 구매하기 CTA)"""
         self._set_status("바로구매 클릭")
         time.sleep(1.0)
-
-        # 이미 주문/결제 화면이면 성공
-        if self._is_order_pay_screen():
-            self._log("  ✅ 이미 주문/결제 화면 → 바로구매 생략")
-            return True
 
         w_h, w_w = 2400, 1080
         try:
@@ -1445,49 +1413,29 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 72% 이상으로 제한
-        min_y_buynow = int(w_h * 0.72)
-        max_y_buynow = int(w_h * 0.98)
-        min_x_right = int(w_w * 0.30)
-
-        buy_now_imgs = [
-            (p, n) for p, n in (
-                (IMG_BUY_NOW, "바로구매"),
-                (IMG_BUY_NOW2, "바로구매2"),
-                (IMG_BUY_NOW3, "바로구매3"),
-                (IMG_BUY_NOW4, "바로구매4"),
-            ) if os.path.exists(p)
-        ]
-
-        def _confirm_after_click(label: str) -> bool:
-            time.sleep(4.0)
-            if self._is_order_pay_screen():
-                self._log(f"  ✅ {label} 후 주문/결제 화면 확인")
-                return True
-            self._log(f"  ⚠ {label} 후 주문/결제 화면 미확인 → 오클릭 가능")
-            return False
+        min_y_buynow = int(w_h * 0.55)
+        max_y_buynow = int(w_h * 0.96)
+        min_x_right = int(w_w * 0.35)  # 바로구매는 보통 하단 우측
 
         for attempt in range(1, 4):
-            # 1) XPath 우선 (하단 CTA만)
-            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
-                if _confirm_after_click("XPath CTA"):
-                    return True
-
-            # 2) 이미지: 하단만, threshold 완화하되 Y는 엄격
-            for thr in (0.65, 0.58, 0.52):
-                for img_path, img_name in buy_now_imgs:
+            # 1) 이미지 (우측 하단, threshold 단계 완화)
+            if os.path.exists(IMG_BUY_NOW):
+                for thr in (0.65, 0.58, 0.52):
                     coords = self._find_image_coords(
-                        img_path, threshold=thr,
+                        IMG_BUY_NOW, threshold=thr,
                         min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
                     )
-                    if not coords:
-                        continue
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={coords[1]})")
-                    if _confirm_after_click(img_name):
+                    if coords:
+                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                        self._log(f"✅ 바로구매 이미지 인식 클릭 완료 (threshold={thr})")
+                        time.sleep(5)
                         return True
 
-            # 3) 옵션시트 확인이 '구매하기'인 경우 (하단만)
+            # 2) XPath: 바로구매 / 바로 구매 / 하단 구매하기
+            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
+                return True
+
+            # 3) 구매하기 이미지(하단 우측) — 옵션 시트의 확인 버튼이 '구매하기'인 경우
             for img_path, img_name in (
                 (IMG_BUY_BTN, "구매하기"),
                 (IMG_BUY_BTN2, "구매하기2"),
@@ -1500,19 +1448,18 @@ class NaverOrderWorker:
                     img_path, threshold=0.70,
                     min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
                 )
-                if not coords:
-                    continue
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={coords[1]})")
-                if _confirm_after_click(img_name):
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 완료 (바로구매 대체)")
+                    time.sleep(5)
                     return True
 
             if attempt < 3:
-                self._log(f"  ⚠ 바로구매 미확인 ({attempt}회차) → 옵션 시트 재오픈 후 재시도")
+                self._log(f"  ⚠ 바로구매 미발견 ({attempt}회차) → 옵션 시트 재오픈 후 재시도")
                 self._click_buy_button()
                 time.sleep(1.2)
 
-        self._log("  ❌ 바로구매 버튼 미발견/미확인")
+        self._log("  ❌ 바로구매 버튼 미발견")
         try:
             btns = self.driver.find_elements(By.XPATH, '//android.widget.Button')
             names = []
@@ -1525,72 +1472,26 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        if self._is_order_pay_screen():
-            self._log("  ✅ 주문/결제 화면 확인됨 → 바로구매 성공으로 간주")
-            return True
+        if os.path.exists(IMG_ORDER_PAY):
+            self._log("  🔍 주문결재.png 존재 여부 확인 중...")
+            if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
+                self._log("  ✅ 주문결재.png 확인됨! 바로구매 버튼 클릭 성공으로 간주하고 계속 진행")
+                return True
+
         return False
 
     # ─── 단계 14: 변경 버튼 클릭 ─────────────────────────────────────────────
 
     def _click_change_button(self) -> bool:
-        """[단계 14] 변경 버튼 클릭 (XPath → 좌표 탭), 미발견 시 False"""
+        """[단계 14] 변경 버튼 클릭, 3초 대기"""
         self._set_status("변경 버튼 클릭")
-        time.sleep(1.0)
-
-        w_h = 2400
-        try:
-            w_h = self.driver.get_window_size()['height']
-        except Exception:
-            pass
-        # 배송지 영역 '변경'은 상단~중상단. 하단 CTA와 구분
-        max_y_change = int(w_h * 0.55)
-
-        xpaths = [
-            CHANGE_BTN_XPATH,
-            '//android.widget.Button[contains(@text,"변경")]',
-            '//*[@text="변경" and @clickable="true"]',
-            '//android.view.View[@text="변경"]',
-        ]
-
-        for xpath in xpaths:
-            try:
-                if not ah.element_exists(self.driver, xpath, timeout=3):
-                    continue
-                for el in self.driver.find_elements(By.XPATH, xpath):
-                    try:
-                        rect = el.rect
-                    except Exception:
-                        continue
-                    cx = rect['x'] + rect['width'] // 2
-                    cy = rect['y'] + rect['height'] // 2
-                    if cy > max_y_change:
-                        continue
-                    txt = (el.get_attribute("text") or "").strip()
-                    self._log(f"  📌 변경 버튼 발견 (text={txt!r}, x={cx}, y={cy})")
-                    if ah.tap_by_coords(self.driver, cx, cy, self._log):
-                        self._log("✅ 변경 버튼 좌표 클릭 완료")
-                        time.sleep(2.5)
-                        return True
-                    if self._safe_click_element(el):
-                        self._log("✅ 변경 버튼 클릭 완료")
-                        time.sleep(2.5)
-                        return True
-            except Exception:
-                continue
-
-        self._log("❌ 변경 버튼 미발견")
-        try:
-            btns = self.driver.find_elements(By.XPATH, '//android.widget.Button')
-            names = [
-                (b.get_attribute("text") or b.get_attribute("content-desc") or "").strip()
-                for b in btns[:15]
-            ]
-            names = [n for n in names if n]
-            if names:
-                self._log(f"  ℹ 현재 화면 Button: {names}")
-        except Exception:
-            pass
-        return False
+        if ah.element_exists(self.driver, CHANGE_BTN_XPATH, timeout=5):
+            ah.wait_and_click(self.driver, CHANGE_BTN_XPATH, timeout=5, log_callback=self._log)
+            self._log("✅ 변경 버튼 클릭 완료")
+            time.sleep(2)
+            return True
+        self._log("⚠ 변경 버튼 미발견 → 계속 진행")
+        return True
 
     # ─── 단계 16: 배송지 선택 ────────────────────────────────────────────────
 
@@ -3417,12 +3318,10 @@ class NaverOrderWorker:
             self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
         else:
             self._log("🔄 목표 배송지가 선택되어 있지 않아 변경을 시도합니다.")
-            if not self._click_change_button():
-                self._log("❌ 변경 버튼 클릭 실패 (주문/결제 화면 미진입 가능)")
-                return False
-
+            self._click_change_button()
+            
             # [단계 15] 스크롤 다운 → 제거 (배송지 목록이 바로 표시되므로 불필요)
-
+            
             if not self._select_delivery_address(row.recipient_name, row.phone):
                 self._log("❌ 배송지 선택 실패")
                 return False

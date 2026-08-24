@@ -2817,59 +2817,17 @@ class NaverWorker:
 
         """
 
-        [단계 14] 주소검색 화면의 검색(돋보기) 버튼 클릭
+        [단계 14] 주소검색 화면의 검색 버튼 클릭
 
-        XML: Button text="검색", bounds=[900,291][1080,409]
+        XML: //android.widget.Button[@text="검색"]  bounds=[843,422][1020,566]
 
-        이미지 인식 -> XPath -> 좌표 탭 순으로 시도
+        하단 툴바 '통합검색' 아이콘과 혼동하지 않도록 XPath를 최우선으로 사용
 
         """
 
         import os
 
-        template_path = os.path.join(os.path.dirname(__file__), "검색.png")
-
-
-
-        # 1순위: 이미지 매칭 (검색.png)
-
-        if os.path.exists(template_path):
-
-            self._log("🔍 [이미지 매칭] 검색.png 인식 시도")
-
-            coords = self._find_image_coords(template_path)
-
-            if coords:
-
-                x, y = coords
-
-                self._tap_coordinates(x, y)
-
-                self._log("  ✅ 검색 버튼 이미지 인식 클릭 완료")
-
-                return True
-
-
-
-        # 2순위: XPath 클릭 (주소검색 화면 로딩 후)
-
-        if ah.element_exists(self.driver, SEARCH_BTN_XPATH, timeout=5):
-
-            if ah.wait_and_click(self.driver, SEARCH_BTN_XPATH, timeout=5,
-
-                                 log_callback=self._log):
-
-                self._log("  ✅ 검색 버튼 XPath 클릭 완료")
-
-                return True
-
-
-
-        # 3순위: 좌표 탭
-
-        # XML 기준 검색버튼 중앙: x=990, y=350 (1080x2340 기준)
-
-        self._log("  ⚠ 검색 버튼 이미지/XPath 실패 → 좌표 탭 시도")
+        w, h = 1080, 2400
 
         try:
 
@@ -2877,15 +2835,125 @@ class NaverWorker:
 
             w, h = size['width'], size['height']
 
-            # 검색버튼 중앙 비율: x=990/1080=0.917, y=350/2340=0.150
+        except Exception:
 
-            tap_x = int(w * 0.917)
+            pass
 
-            tap_y = int(h * 0.150)
+        # 주소 입력창 옆 검색 버튼은 화면 상단. 하단 네비(y≈2100+)는 제외
+
+        max_y_addr_search = int(h * 0.40)
+
+
+
+        search_xpaths = [
+
+            SEARCH_BTN_XPATH,
+
+            '//android.widget.Button[@text="검색"]',
+
+            '//*[@text="검색" and @clickable="true"]',
+
+        ]
+
+
+
+        # 1순위: Native XPath → 좌표 탭 (WebView wait_and_click 보다 안정)
+
+        for xpath in search_xpaths:
+
+            try:
+
+                if not ah.element_exists(self.driver, xpath, timeout=3):
+
+                    continue
+
+                els = self.driver.find_elements(By.XPATH, xpath)
+
+                for el in els:
+
+                    try:
+
+                        rect = el.rect
+
+                    except Exception:
+
+                        continue
+
+                    cx = rect['x'] + rect['width'] // 2
+
+                    cy = rect['y'] + rect['height'] // 2
+
+                    if cy > max_y_addr_search:
+
+                        self._log(f"  ⚠ 하단 영역 검색 후보 제외 (y={cy})")
+
+                        continue
+
+                    self._log(f"  📌 [XPath] 검색 버튼 발견 ({xpath}) → 좌표: ({cx}, {cy})")
+
+                    if self._tap_coordinates(cx, cy):
+
+                        self._log("  ✅ 검색 버튼 XPath 좌표 클릭 완료")
+
+                        return True
+
+                    try:
+
+                        el.click()
+
+                        self._log("  ✅ 검색 버튼 XPath 엘리먼트 클릭 완료")
+
+                        return True
+
+                    except Exception:
+
+                        continue
+
+            except Exception as e:
+
+                self._log(f"  ⚠ 검색 버튼 XPath 시도 실패: {e}")
+
+
+
+        # 2순위: 이미지 매칭 — 상단 영역만 허용 (하단 통합검색 오인 방지)
+
+        template_path = os.path.join(os.path.dirname(__file__), "검색.png")
+
+        if os.path.exists(template_path):
+
+            self._log("🔍 [이미지 매칭] 검색.png 인식 시도 (상단 영역만)")
+
+            coords = self._find_image_coords(template_path)
+
+            if coords:
+
+                x, y = coords
+
+                if y <= max_y_addr_search:
+
+                    self._tap_coordinates(x, y)
+
+                    self._log("  ✅ 검색 버튼 이미지 인식 클릭 완료")
+
+                    return True
+
+                self._log(f"  ⚠ 이미지 매칭 좌표가 하단 툴바로 판단되어 무시 (x={x}, y={y})")
+
+
+
+        # 3순위: XML 기준 주소검색 버튼 좌표 ([843,422][1020,566] 중앙 ≈ 0.86w, 0.206h)
+
+        self._log("  ⚠ 검색 버튼 XPath/이미지 실패 → 좌표 탭 시도")
+
+        try:
+
+            tap_x = int(w * 0.863)
+
+            tap_y = int(h * 0.206)
 
             self._log(f"  📌 검색버튼 좌표 탭: ({tap_x}, {tap_y})")
 
-            self.driver.tap([(tap_x, tap_y)])
+            self._tap_coordinates(tap_x, tap_y)
 
             self._log("  ✅ 검색버튼 좌표 탭 완료")
 
