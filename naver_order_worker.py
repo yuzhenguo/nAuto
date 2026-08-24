@@ -216,7 +216,8 @@ class NaverOrderWorker:
                  log_callback: Optional[Callable] = None,
                  status_callback: Optional[Callable] = None,
                  machine_num: int = 1,
-                 test_mode: bool = False):
+                 test_mode: bool = False,
+                 manual_mode: bool = False):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
@@ -224,14 +225,23 @@ class NaverOrderWorker:
         self._status_cb     = status_callback
         self.machine_num    = machine_num
         self.test_mode      = test_mode
+        # 수동시작: 주문하기 클릭 생략 + 엑셀 Y 기록 후 종료
+        self.manual_mode    = manual_mode
         self.driver         = None
         self._stop_event    = threading.Event()
+
+    def _skip_final_order_click(self) -> bool:
+        """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
+        return bool(self.test_mode or self.manual_mode)
 
     # ─── 공개 메서드 ─────────────────────────────────────────────────────────
 
     def run(self) -> bool:
         """워커 메인 실행 (별도 스레드에서 호출)"""
-        self._log("🚀 자동 주문 워커 시작")
+        if self.manual_mode:
+            self._log("🖐 수동시작 워커 시작 (주문하기 클릭 생략 → Y 기록 후 종료)")
+        else:
+            self._log("🚀 자동 주문 워커 시작")
 
         # ── 재부팅 후 핫스팟 활성 여부 사전 확인 (활성.PNG 이미지 인식) ──
         if os.path.exists(IMG_ACTIVE):
@@ -2108,8 +2118,9 @@ class NaverOrderWorker:
         """[단계 18] 결제하기 버튼 클릭, 5초 대기"""
         self._set_status("결제하기 클릭")
 
-        if self.test_mode:
-            self._log("🧪 [테스트 모드] 결제하기 버튼 클릭 생략 (성공 처리)")
+        if self._skip_final_order_click():
+            mode = "수동시작" if self.manual_mode else "테스트 모드"
+            self._log(f"🖐 [{mode}] 결제하기 버튼 클릭 생략 (성공 처리)")
             return True
 
         if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
@@ -2205,8 +2216,9 @@ class NaverOrderWorker:
         """
         self._set_status("비밀번호 입력")
 
-        if self.test_mode:
-            self._log("🧪 [테스트 모드] 비밀번호 입력 생략 (강제 성공)")
+        if self._skip_final_order_click():
+            mode = "수동시작" if self.manual_mode else "테스트 모드"
+            self._log(f"🖐 [{mode}] 비밀번호 입력 생략 (강제 성공)")
             return True
 
         pwd_digits = ''.join(filter(str.isdigit, password))
@@ -2938,8 +2950,9 @@ class NaverOrderWorker:
             for attempt in range(5):
                 coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.70)
                 if coords:
-                    if self.test_mode:
-                        self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🧪 [테스트 모드] 클릭 생략")
+                    if self._skip_final_order_click():
+                        mode = "수동시작" if self.manual_mode else "테스트 모드"
+                        self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🖐 [{mode}] 클릭 생략")
                     else:
                         self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -2960,8 +2973,9 @@ class NaverOrderWorker:
                     if os.path.exists(pay_img):
                         coords = self._find_image_coords(pay_img, threshold=0.70)
                         if coords:
-                            if self.test_mode:
-                                self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🧪 [테스트 모드] 클릭 생략")
+                            if self._skip_final_order_click():
+                                mode = "수동시작" if self.manual_mode else "테스트 모드"
+                                self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🖐 [{mode}] 클릭 생략")
                             else:
                                 self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -3087,8 +3101,9 @@ class NaverOrderWorker:
                 if row.payment_method == "무통장":
                     # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
-                        if self.test_mode:
-                            self._log("🧪 [테스트 모드] 주문번호 캡처/확인 생략 (강제 성공)")
+                        if self._skip_final_order_click():
+                            mode = "수동시작" if self.manual_mode else "테스트 모드"
+                            self._log(f"🖐 [{mode}] 주문번호 캡처/확인 생략 → 엑셀 Y 기록")
                             order_confirmed = True
                         else:
                             order_confirmed = self._capture_and_log_bank_transfer(row)
@@ -3098,7 +3113,10 @@ class NaverOrderWorker:
 
                     if order_confirmed:
                         self.order_manager.mark_success(row.row_index)
-                        self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
+                        if self.manual_mode:
+                            self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                        else:
+                            self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
                     else:
                         self.order_manager.mark_failed(row.row_index)
                         self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
@@ -3107,7 +3125,15 @@ class NaverOrderWorker:
                         continue
                 else:
                     self.order_manager.mark_success(row.row_index)
-                    self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+                    if self.manual_mode:
+                        self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                    else:
+                        self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+
+                # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
+                if self.manual_mode:
+                    self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
+                    break
 
                 self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
                 import gc

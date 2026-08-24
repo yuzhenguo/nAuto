@@ -557,6 +557,12 @@ class MainApp(tk.Tk):
         )
         self.start_btn.pack(side=tk.LEFT, padx=4)
 
+        self.manual_start_btn = self._make_btn(
+            right_ctrl, "🖐  수동시작", self._start_manual,
+            fg="#ffffff", bg="#7c3aed"
+        )
+        self.manual_start_btn.pack(side=tk.LEFT, padx=4)
+
         self.stop_btn = self._make_btn(
             right_ctrl, "⏹  중지", self._stop_all,
             fg="#ffffff", bg=CLR_ERROR, state=tk.DISABLED
@@ -741,7 +747,11 @@ class MainApp(tk.Tk):
 
     # ─── 작업 제어 ────────────────────────────────────────────────────────────
 
-    def _start_all(self):
+    def _start_manual(self):
+        """수동시작: 주문하기 클릭 없이 결제 직전까지 진행 → 엑셀 Y 기록 후 종료"""
+        self._start_all(manual_mode=True)
+
+    def _start_all(self, manual_mode: bool = False):
         xlsx = self._xlsx_path
         if not os.path.exists(xlsx):
             messagebox.showerror("오류", f"결재목록.xlsx 파일을 찾을 수 없습니다:\n{xlsx}")
@@ -770,12 +780,29 @@ class MainApp(tk.Tk):
             messagebox.showinfo("알림", "처리할 미완료 주문이 없습니다.\n결재목록.xlsx를 확인하세요.")
             return
 
+        if manual_mode:
+            confirm = messagebox.askyesno(
+                "수동시작",
+                "수동시작 모드로 진행합니다.\n\n"
+                "· 결제 준비까지 자동 진행\n"
+                "· '주문하기'는 클릭하지 않음\n"
+                "· 엑셀 작업여부를 Y로 기록 후 종료\n\n"
+                "계속하시겠습니까?"
+            )
+            if not confirm:
+                return
+
         self.running = True
         self.start_btn.config(state=tk.DISABLED)
+        if hasattr(self, "manual_start_btn"):
+            self.manual_start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self._draw_device_list()
         self._rebuild_device_panels()
-        self._log_status("🚀 자동 주문 시작")
+        if manual_mode:
+            self._log_status("🖐 수동시작 (주문하기 클릭 생략 → Y 기록)")
+        else:
+            self._log_status("🚀 자동 주문 시작")
 
         used_ports: set = set()
         for i, did in enumerate(selected_devices):
@@ -789,7 +816,8 @@ class MainApp(tk.Tk):
                 log_callback   = self._on_worker_log,
                 status_callback= self._on_worker_status,
                 machine_num    = i + 1,
-                test_mode      = self.test_mode_var.get()
+                test_mode      = self.test_mode_var.get(),
+                manual_mode    = manual_mode,
             )
             self.workers[did] = worker
 
@@ -797,8 +825,9 @@ class MainApp(tk.Tk):
             self.worker_threads[did] = t
             t.start()
 
+            mode_tag = "수동시작" if manual_mode else "자동"
             if did in self.device_panels:
-                self.device_panels[did].append_log(f"🚀 워커 시작 (포트: {port})")
+                self.device_panels[did].append_log(f"🚀 워커 시작 ({mode_tag}, 포트: {port})")
 
         threading.Thread(target=self._monitor_completion, daemon=True).start()
         self._refresh_summary()
@@ -853,6 +882,8 @@ class MainApp(tk.Tk):
     def _on_all_done(self):
         self.running = False
         self.start_btn.config(state=tk.NORMAL)
+        if hasattr(self, "manual_start_btn"):
+            self.manual_start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.workers.clear()
         self.worker_threads.clear()
@@ -1212,6 +1243,8 @@ class MainApp(tk.Tk):
         # 로그 패널 생성을 위해 running 임시 true
         self.running = True
         self.start_btn.config(state=tk.DISABLED)
+        if hasattr(self, "manual_start_btn"):
+            self.manual_start_btn.config(state=tk.DISABLED)
         self._rebuild_device_panels()
 
         def _reboot_all_task():
@@ -1225,7 +1258,11 @@ class MainApp(tk.Tk):
                 t.join()
                 
             self.running = False
-            self.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
+            def _restore_btns():
+                self.start_btn.config(state=tk.NORMAL)
+                if hasattr(self, "manual_start_btn"):
+                    self.manual_start_btn.config(state=tk.NORMAL)
+            self.after(0, _restore_btns)
             self._log_status(f"✅ {len(selected_devices)}대 기기 재부팅 및 핫스팟 처리 완료")
             self.after(0, lambda: messagebox.showinfo("작업 완료", "모든 기기의 재부팅 및 핫스팟 켜기 작업이 완료되었습니다."))
 
