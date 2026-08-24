@@ -3061,10 +3061,30 @@ class NaverOrderWorker:
     def _order_loop(self):
         """[단계 2~19] 결재목록 루프 주문 처리"""
         self._log(f"📋 주문 루프 시작 (폰ID 필터: {self.device_id})")
+        try:
+            extra = self.order_manager.describe_pending_filter(self.device_id)
+            self._log(f"  ℹ {extra}")
+        except Exception:
+            pass
 
         while not self._stop_event.is_set():
-            row = self.order_manager.get_next_pending(device_id=self.device_id)
+            # OrderManager 버전에 따라 device_id 인자 지원 여부 호환
+            try:
+                row = self.order_manager.get_next_pending(device_id=self.device_id)
+            except TypeError:
+                # 구버전: device_id 미지원 → 전체 pending에서 기기ID 필터
+                try:
+                    rows = self.order_manager.get_pending_rows(device_id=self.device_id)
+                except TypeError:
+                    rows = self.order_manager.get_pending_rows()
+                    rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
+                row = rows[0] if rows else None
             if not row:
+                try:
+                    extra = self.order_manager.describe_pending_filter(self.device_id)
+                    self._log(f"⚠ 해당 기기 미처리 행 없음 ({extra})")
+                except Exception:
+                    pass
                 self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
                 break
 

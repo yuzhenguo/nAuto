@@ -34,19 +34,33 @@ COL_DEVICE_ID       = 9   # 폰ID (기기 ID)
 COL_LOGIN_ID        = 11  # 로그인아이디
 
 
-# ─── 헤더 키워드 매핑 (대소문자/공백 무시) ───────────────────────────────────
+# ─── 헤더 키워드 매핑 (대소문자/공백 무시, 긴 키워드 우선) ───────────────────
 HEADER_KEYWORDS = {
-    "search_keyword": ["검색어", "search", "keyword", "검색"],
-    "seller_name":    ["판매자명", "판매자", "seller", "스토어명", "스토어"],
-    "product_name":   ["상품명", "product", "상품", "매칭상품명", "매칭 상품명"],
+    "search_keyword": ["검색어", "searchkeyword", "search_keyword", "keyword"],
+    "seller_name":    ["판매자명", "판매자", "seller", "스토어명"],
+    "product_name":   ["매칭상품명", "매칭 상품명", "상품명", "productname"],
     "recipient_name": ["수취인", "수령인", "recipient", "받는사람", "받는분"],
-    "phone":          ["전화번호", "전화", "phone", "연락처", "핸드폰"],
-    "password":       ["비밀번호", "password", "pw", "암호"],
-    "status":         ["완료여부", "완료", "상태", "status", "처리여부"],
-    "payment_method": ["결제방식", "결재방식", "결제", "결재", "방식", "payment"],
-    "device_id":      ["폰id", "폰 id", "기기id", "기기 id", "device_id", "deviceid", "단말기id"],
-    "login_id":       ["로그인아이디", "로그인 아이디", "아이디", "login_id", "id"],
+    "phone":          ["전화번호", "연락처", "phone"],
+    "password":       ["비밀번호", "password", "암호"],
+    "status":         ["완료여부", "처리여부", "작업여부", "status"],
+    "payment_method": ["결제방식", "결재방식", "payment"],
+    "device_id":      ["폰id", "기기id", "단말기id", "deviceid", "device_id"],
+    "login_id":       ["로그인아이디", "로그인id", "loginid", "login_id"],
 }
+
+
+def _norm_device_id(val: str) -> str:
+    return str(val or "").strip().upper()
+
+
+def _device_ids_match(excel_id: str, device_id: str) -> bool:
+    """엑셀 폰ID와 ADB 기기ID 비교 (대소문자/공백 무시). 엑셀이 비어 있으면 미지정으로 간주."""
+    a, b = _norm_device_id(excel_id), _norm_device_id(device_id)
+    if not b:
+        return True
+    if not a:
+        return True  # 폰ID 공백 행은 현재 기기가 가져갈 수 있음
+    return a == b
 
 
 class OrderRow:
@@ -93,8 +107,8 @@ class OrderRow:
 def _detect_columns(ws) -> dict:
     """
     1행을 헤더로 읽어 컬럼 인덱스 자동 감지.
+    짧은 부분문자열 오탐 방지를 위해 정확 일치 > 긴 키워드 포함 순으로 채점.
     감지 실패 컬럼은 COL_* 기본값 사용.
-    Returns: {'search_keyword': 1, 'seller_name': 2, ...}
     """
     mapping = {
         "search_keyword": COL_SEARCH_KEYWORD,
@@ -108,17 +122,27 @@ def _detect_columns(ws) -> dict:
         "device_id":      COL_DEVICE_ID,
         "login_id":       COL_LOGIN_ID,
     }
+    scores = {k: -1 for k in mapping}
 
     for col_idx in range(1, ws.max_column + 1):
         cell_val = ws.cell(1, col_idx).value
         if not cell_val:
             continue
-        cell_str = str(cell_val).strip().lower().replace(" ", "")
+        cell_str = str(cell_val).strip().lower().replace(" ", "").replace("_", "")
         for field, keywords in HEADER_KEYWORDS.items():
             for kw in keywords:
-                if kw.lower().replace(" ", "") in cell_str:
+                kw_n = kw.lower().replace(" ", "").replace("_", "")
+                if not kw_n:
+                    continue
+                if cell_str == kw_n:
+                    score = 1000 + len(kw_n)
+                elif kw_n in cell_str:
+                    score = len(kw_n)
+                else:
+                    continue
+                if score > scores[field]:
+                    scores[field] = score
                     mapping[field] = col_idx
-                    break
 
     return mapping
 
@@ -175,12 +199,12 @@ class OrderManager:
                     else:
                         continue  # 이미 처리된 행(Y/F/기타) → 건너뜀
 
-                    # 폰ID 필터링: 엑셀 폰ID가 현재 기기ID와 정확히 일치해야만 처리
+                    # 폰ID 필터링: 대소문자 무시, 엑셀 폰ID가 비어 있으면 현재 기기에 할당 가능
                     row_device_id = ""
                     if "device_id" in cm:
                         row_device_id = self._str(ws.cell(row_idx, cm["device_id"]).value)
-                    if device_id and row_device_id != device_id:
-                        continue  # 폰ID 불일치(공백 포함) → 무조건 건너뜀
+                    if device_id and not _device_ids_match(row_device_id, device_id):
+                        continue
 
                     rows.append(OrderRow(
                         row_index      = row_idx,
@@ -203,6 +227,17 @@ class OrderManager:
         """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상."""
         rows = self.get_pending_rows(device_id=device_id)
         return rows[0] if rows else None
+
+    def describe_pending_filter(self, device_id: str) -> str:
+        """기기 필터로 0건일 때 원인 파악용 요약 문자열"""
+        all_pending = self.get_pending_rows()
+        matched = self.get_pending_rows(device_id=device_id)
+        excel_ids = sorted({(r.device_id or "(빈값)") for r in all_pending})
+        return (
+            f"엑셀 pending={len(all_pending)}건, "
+            f"기기 '{device_id}' 매칭={len(matched)}건, "
+            f"엑셀 폰ID 목록={excel_ids}"
+        )
 
     def mark_success(self, row_index: int):
         """해당 행 완료여부를 Y로 업데이트"""
