@@ -1192,8 +1192,46 @@ class NaverOrderWorker:
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
+    def _tap_option_at(self, x: int, y: int, w_w: int) -> None:
+        """옵션 시트(WebView) 클릭. Appium driver.tap 은 무시되는 경우가 많아 ADB 제자리 swipe 사용.
+        작은 체크박스 히트박스를 놓치지 않도록 같은 Y의 옵션 행(오른쪽 텍스트)도 이어서 탭한다."""
+        self._log(f"  👉 체크박스 ADB soft tap: ({x}, {y})")
+        self._soft_tap(x, y, duration_ms=160)
+        time.sleep(0.25)
+        row_x = min(x + int(w_w * 0.22), int(w_w * 0.48))
+        if abs(row_x - x) >= 40:
+            self._log(f"  👉 옵션 행 ADB soft tap: ({row_x}, {y})")
+            self._soft_tap(row_x, y, duration_ms=160)
+
+    def _find_unchecked_checkbox(self, checkbox_imgs, min_y, max_y, max_x=None,
+                                 thresholds=None, near_y=None, y_tol=90):
+        """미체크 체크박스 이미지 좌표 탐색. 없으면 (None, None, None).
+        near_y 가 있으면 해당 Y 근처(±y_tol) 매칭만 인정 (옵션 헤더 오탐 방지)."""
+        if not checkbox_imgs:
+            return None, None, None
+        if thresholds is None:
+            thresholds = [0.75, 0.70, 0.65, 0.60]
+        for thr in thresholds:
+            for img_path in checkbox_imgs:
+                kwargs = dict(threshold=thr, min_y=min_y, max_y=max_y)
+                if max_x is not None:
+                    kwargs["min_x"] = 0
+                    kwargs["max_x"] = max_x
+                coords = self._find_image_coords(img_path, **kwargs)
+                if not coords:
+                    continue
+                if near_y is not None and abs(coords[1] - near_y) > y_tol:
+                    self._log(
+                        f"  ℹ {os.path.basename(img_path)} 매칭 y={coords[1]} 이 "
+                        f"기준 y={near_y}±{y_tol} 밖 → 오탐 무시"
+                    )
+                    continue
+                return coords, img_path, thr
+        return None, None, None
+
     def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 및 옵션 항목 클릭, 2초 대기 (threshold 0.65, min_y 0.40*h, max_y 0.90*h)"""
+        """[단계 12] 체크박스.png 이미지 인식 및 옵션 항목 클릭.
+        클릭 후 '클릭한 위치'의 미체크 이미지가 사라졌는지로 성공 판정 (다른 Y 오탐 무시)."""
         self._set_status("체크박스/옵션 선택")
         self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
 
@@ -1224,43 +1262,96 @@ class NaverOrderWorker:
                 del_y = del_coords[1]
 
         bar_limit = int(w_h * 0.82)
+        # '옵션 선택' / '◆ 옵션 필수 선택 ◆' 헤더·드롭다운 UI를 체크박스로 오인하지 않도록
+        # 옵션선택 라벨 아래 여백을 두고 탐색한다.
+        header_gap = max(100, int(w_h * 0.045))
         if opt_y and del_y and opt_y < del_y:
-            min_y_check = opt_y
-            max_y_check = min(del_y, bar_limit)
-            self._log(f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션~배송정보): {min_y_check} ~ {max_y_check}")
+            min_y_check = opt_y + header_gap
+            max_y_check = min(del_y - 20, bar_limit)
+            if min_y_check >= max_y_check:
+                min_y_check = opt_y
+                max_y_check = min(del_y, bar_limit)
+            self._log(
+                f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션+{header_gap}~배송정보): "
+                f"{min_y_check} ~ {max_y_check}"
+            )
         elif opt_y:
-            min_y_check = opt_y
+            min_y_check = opt_y + header_gap
             max_y_check = bar_limit
-            self._log(f"  📌 체크박스 탐색 Y영역: 옵션선택 하단({opt_y}) ~ 하단바 제외({max_y_check})")
+            self._log(
+                f"  📌 체크박스 탐색 Y영역: 옵션선택+{header_gap}({min_y_check}) "
+                f"~ 하단바 제외({max_y_check})"
+            )
 
-        # ─── 1순위: 체크박스.png / 체크박스4.png 매칭 (인식률 높은 것 우선) ──────────────
-        checkbox_imgs = [img for img in [IMG_CHECKBOX, IMG_CHECKBOX4] if os.path.exists(img)]
+        # 체크박스.png 우선 (인식률 높음). 체크박스4는 헤더 오탐이 많아 보조만 사용.
+        primary_imgs = [img for img in [IMG_CHECKBOX] if os.path.exists(img)]
+        secondary_imgs = [img for img in [IMG_CHECKBOX4] if os.path.exists(img)]
+        checkbox_imgs = primary_imgs + secondary_imgs
+
+        def _still_unchecked_near(click_y: int, prefer_img: str = None) -> bool:
+            """클릭한 Y 근처에서 미체크 이미지가 남아있는지. 다른 Y 오탐은 무시."""
+            imgs = []
+            if prefer_img and os.path.exists(prefer_img):
+                imgs.append(prefer_img)
+            for img in checkbox_imgs:
+                if img not in imgs:
+                    imgs.append(img)
+            still, _, _ = self._find_unchecked_checkbox(
+                imgs, min_y_check, max_y_check, max_x_check,
+                thresholds=[0.78, 0.72], near_y=click_y, y_tol=90
+            )
+            return still is not None
+
+        def _option_selected_near(click_y: int, prefer_img: str = None) -> bool:
+            return not _still_unchecked_near(click_y, prefer_img)
+
+        # ─── 1순위: 체크박스.png 우선 매칭 후 ADB soft tap + '클릭 위치' 검증 ─────
         if checkbox_imgs:
-            # threshold 단계별 시도 (0.75 → 0.60): 두 이미지에 대해 같은 점수대에서 찾으면 더 인식률 높은게 걸림
-            for thr in [0.75, 0.70, 0.65, 0.60]:
-                for img_path in checkbox_imgs:
-                    coords = self._find_image_coords(img_path, threshold=thr,
-                                                     min_x=0, max_x=max_x_check,
-                                                     min_y=min_y_check, max_y=max_y_check)
-                    if coords:
-                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        img_name = os.path.basename(img_path)
-                        self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (threshold={thr})")
-                        time.sleep(1.5)
+            coords, img_path, thr = self._find_unchecked_checkbox(
+                primary_imgs or checkbox_imgs, min_y_check, max_y_check, max_x_check,
+                thresholds=[0.75, 0.70, 0.65]
+            )
+            if coords is None and secondary_imgs:
+                # 체크박스4는 threshold 더 높게 (오탐 억제)
+                coords, img_path, thr = self._find_unchecked_checkbox(
+                    secondary_imgs, min_y_check, max_y_check, max_x_check,
+                    thresholds=[0.85, 0.80]
+                )
+            if coords is None:
+                coords, img_path, thr = self._find_unchecked_checkbox(
+                    primary_imgs or checkbox_imgs, min_y_check, max_y_check,
+                    max_x=None, thresholds=[0.60]
+                )
+            if coords:
+                img_name = os.path.basename(img_path)
+                click_y = coords[1]
+                for attempt in range(1, 4):
+                    self._log(f"  📌 {img_name} 클릭 시도 ({attempt}/3, threshold={thr}, y={click_y})")
+                    self._tap_option_at(coords[0], coords[1], w_w)
+                    time.sleep(1.2)
+                    if _option_selected_near(click_y, prefer_img=img_path):
+                        self._log(f"✅ {img_name} 옵션 선택 확인 완료 (클릭 y={click_y} 근처 미체크 소멸)")
+                        time.sleep(0.5)
                         return True
-
-            # X축 제한 없이 재시도
-            for img_path in checkbox_imgs:
-                coords = self._find_image_coords(img_path, threshold=0.55,
-                                                 min_y=min_y_check, max_y=max_y_check)
-                if coords:
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"  ⚠ 클릭 y={click_y} 근처 미체크 잔존 → 같은 위치 재탐색")
+                    retry_coords, retry_img, retry_thr = self._find_unchecked_checkbox(
+                        [img_path] if img_path else checkbox_imgs,
+                        min_y_check, max_y_check, max_x_check,
+                        thresholds=[0.75, 0.70, 0.65], near_y=click_y, y_tol=90
+                    )
+                    if retry_coords is None:
+                        # 원래 이미지가 클릭 위치에서 사라짐 → 다른 템플릿 오탐과 무관하게 성공
+                        self._log(
+                            f"  ✅ 클릭 y={click_y} 근처에서 {img_name} 소멸 확인 "
+                            f"(다른 위치 오탐 무시) → 선택 완료"
+                        )
+                        return True
+                    coords, img_path, thr = retry_coords, retry_img, retry_thr
                     img_name = os.path.basename(img_path)
-                    self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (X축 제한 해제)")
-                    time.sleep(1.5)
-                    return True
+                    click_y = coords[1]
+                self._log("  ⚠ 이미지 클릭 후 체크 미확인 → XPath 폴백")
 
-        # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선, X축 제한 완화) ──
+        # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선) ──
         if product_name:
             import re
             clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
@@ -1276,16 +1367,17 @@ class NaverOrderWorker:
                     if ah.element_exists(self.driver, xpath, timeout=1):
                         try:
                             els = self.driver.find_elements(By.XPATH, xpath)
-                            # Y 범위 내 우선 탐색
                             for el in els:
                                 rect = el.rect
                                 cx = rect['x'] + rect['width'] // 2
                                 cy = rect['y'] + rect['height'] // 2
                                 if min_y_check <= cy <= max_y_check:
-                                    self._safe_click_element(el)
-                                    self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
-                                    time.sleep(1.5)
-                                    return True
+                                    self._log(f"  👉 옵션 텍스트 soft tap ({kw}, x={cx}, y={cy})")
+                                    self._tap_option_at(cx, cy, w_w)
+                                    time.sleep(1.2)
+                                    if not checkbox_imgs or _option_selected_near(cy):
+                                        self._log(f"  ✅ 옵션 상품 텍스트 클릭 확인 ({kw}): {xpath}")
+                                        return True
                         except Exception:
                             pass
 
@@ -1306,31 +1398,27 @@ class NaverOrderWorker:
                         cx = rect['x'] + rect['width'] // 2
                         cy = rect['y'] + rect['height'] // 2
                         if min_y_check <= cy <= max_y_check:
-                            self._safe_click_element(el)
-                            self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
-                            time.sleep(1.5)
-                            return True
+                            self._log(f"  👉 체크박스 XPath soft tap (x={cx}, y={cy}): {xpath}")
+                            self._tap_option_at(cx, cy, w_w)
+                            time.sleep(1.2)
+                            if not checkbox_imgs or _option_selected_near(cy):
+                                self._log(f"  ✅ 체크박스 XPath 클릭 확인 (x={cx}, y={cy})")
+                                return True
                 except Exception:
                     pass
 
         # ─── 4순위: 좌표 고정 ADB 탭 폴백 (옵션선택/배송정보 영역이 확실할 때만) ─────────────────
         if opt_y and del_y and opt_y < del_y:
-            # 옵션선택과 배송정보 사이의 하단(배송정보 바로 위 약 65픽셀)을 타격
             fallback_x = int(w_w * 0.15)
-            fallback_y = del_y - 65
-            self._log(f"  ⚠ 이미지/XPath 미발견 -> 확실한 영역(배송정보 바로 위) 탭 ({fallback_x}, {fallback_y})")
-            try:
-                import subprocess
-                subprocess.run(
-                    ["adb", "-s", self.device_id, "shell", "input", "tap",
-                     str(fallback_x), str(fallback_y)],
-                    capture_output=True, timeout=5
-                )
-                self._log(f"  ✅ 좌표 고정 탭 완료 ({fallback_x}, {fallback_y})")
-                time.sleep(1.5)
+            # 헤더(옵션선택)와 배송정보 사이의 중하단 = 실제 옵션 행 위치
+            fallback_y = int(opt_y + (del_y - opt_y) * 0.65)
+            self._log(f"  ⚠ 이미지/XPath 미확인 -> 옵션 행 추정 탭 ({fallback_x}, {fallback_y})")
+            self._tap_option_at(fallback_x, fallback_y, w_w)
+            time.sleep(1.2)
+            if not checkbox_imgs or _option_selected_near(fallback_y):
+                self._log(f"  ✅ 좌표 고정 탭 후 옵션 선택 확인 ({fallback_x}, {fallback_y})")
                 return True
-            except Exception as e:
-                self._log(f"  ⚠ 좌표 탭 실패: {e}")
+            self._log("  ⚠ 좌표 고정 탭 후에도 체크 미확인")
         else:
             self._log("  ⚠ 옵션선택~배송정보 기준점을 찾지 못해 임의 좌표 클릭을 생략합니다. (오작동 방지)")
 
@@ -1576,6 +1664,29 @@ class NaverOrderWorker:
 
     # ─── 단계 16: 배송지 선택 ────────────────────────────────────────────────
 
+    def _recipient_name_matches(self, text: str, recipient_name: str) -> bool:
+        """배송지/수취인 텍스트에 목표 수취인명이 포함되는지 확인.
+        예: '박경아', '배송지명박경아', '배송지명박경아(박경아)'
+        """
+        if not recipient_name or not text:
+            return False
+        name = recipient_name.strip()
+        if not name:
+            return False
+        if name in text:
+            return True
+        # '배송지명' 접두사 제거 후 비교 (배송지명박경아(박경아) 등)
+        if text.startswith("배송지명"):
+            rest = text[len("배송지명"):].strip()
+            if name in rest or rest.startswith(name):
+                return True
+            # '이름(이름)' 형태에서 괄호 앞 이름만 비교
+            if "(" in rest:
+                head = rest.split("(", 1)[0].strip()
+                if head == name or name in head:
+                    return True
+        return False
+
     def _check_current_delivery_address(self, recipient_name: str, phone: str) -> bool:
         """
         현재 주문/결제 화면에 목표 배송지가 이미 선택되어 있는지 확인합니다.
@@ -1607,7 +1718,7 @@ class NaverOrderWorker:
                                         node = node.find_element(By.XPATH, "..")
                                         els = node.find_elements(By.XPATH, ".//*")
                                         area_text = " ".join([e.get_attribute("text") or "" for e in els])
-                                        if recipient_name in area_text:
+                                        if self._recipient_name_matches(area_text, recipient_name):
                                             return True
                                     except Exception:
                                         break
@@ -1616,22 +1727,29 @@ class NaverOrderWorker:
         except Exception:
             pass
             
-        # 기존 폴백 로직 (배송지명으로 탐색)
+        # 폴백: '배송지명{수취인}' 패턴이면 이름만으로도 현재 선택으로 인정
+        # (연락처가 다른 View에 있거나 마스킹되어 last4 검증이 실패하는 경우 대응)
         try:
             views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
             for view in views:
                 text = view.get_attribute("text") or ""
-                if recipient_name in text:
-                    if not last4:
+                if not self._recipient_name_matches(text, recipient_name):
+                    continue
+                self._log(f"  ✅ 현재 배송지명 매칭: '{text[:60]}' ← '{recipient_name}'")
+                if not last4:
+                    return True
+                try:
+                    parent = view.find_element(By.XPATH, "..")
+                    area_views = parent.find_elements(By.XPATH, ".//*")
+                    area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
+                    if last4 in area_text or "***" in area_text:
                         return True
-                    try:
-                        parent = view.find_element(By.XPATH, "..")
-                        area_views = parent.find_elements(By.XPATH, ".//*")
-                        area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
-                        if last4 in area_text:
-                            return True
-                    except Exception:
-                        pass
+                    # 부모에 전화가 없어도 배송지명에 수취인이 명확히 있으면 성공
+                    # (결제창 '배송지명박경아(박경아)' 형태)
+                    self._log(f"  ℹ 배송지명에 '{recipient_name}' 확인됨 (전화 미확인 → 이름만으로 인정)")
+                    return True
+                except Exception:
+                    return True
         except Exception:
             pass
             
@@ -1675,7 +1793,7 @@ class NaverOrderWorker:
                             els = node.find_elements(By.XPATH, ".//*")
                             area_text = " ".join((e.get_attribute("text") or "") for e in els)
 
-                            if recipient_name in area_text:
+                            if self._recipient_name_matches(area_text, recipient_name):
                                 # 전화번호 검증 (팝업은 마스킹 안됨, 하지만 혹시 모르니 확인)
                                 if (formatted_phone in area_text) or (last4 in area_text) or ("***" in area_text):
                                     found_name = True
@@ -1683,6 +1801,10 @@ class NaverOrderWorker:
                                 elif not last4:
                                     found_name = True
                                     break
+                                # 이름만 확실하면 전화 미확인이어도 선택 버튼 클릭 허용
+                                found_name = True
+                                self._log(f"  ℹ 선택 블록에 '{recipient_name}' 확인 (전화 미확인 → 이름만으로 진행)")
+                                break
                         except Exception:
                             break
                     
@@ -1708,7 +1830,7 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # ── 방법 2: 수취인 이름 기반 탐색 (팝업 폴백, '배송지명' 인라인 텍스트 제외) ──
+        # ── 방법 2: 수취인 이름 기반 탐색 (팝업 폴백) ──
         # 팝업에서 '선택' 버튼을 못 찾았을 경우, 이름 텍스트 뷰 자체를 클릭합니다.
         try:
             search_xpath = f'//*[contains(@text, "{recipient_name}")]'
@@ -1716,15 +1838,28 @@ class NaverOrderWorker:
             for view in views:
                 try:
                     text = view.get_attribute("text") or ""
-                    # 사용자 요청: 수취인 이름이 포함된 요소면 일단 클릭 (전화번호나 '배송지명' 조건 완화)
-                    if recipient_name not in text:
+                    if not self._recipient_name_matches(text, recipient_name):
                         continue
 
                     self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
 
-                    # 배송지 목록 팝업 안의 요소들은 보통 '기본배송지', '주소' 형태이며 '배송지명' 문구가 없음.
-                    # '배송지명송주은...' 같이 '배송지명'이 포함되어 있으면 주문 화면 앞단의 단순 텍스트이므로 클릭하지 않고 건너뜀.
+                    # '배송지명박경아(박경아)' 형태 = 결제창 인라인 현재 배송지
+                    # 팝업('선택' 버튼)이 없으면 이미 선택된 상태로 성공 처리
                     if "배송지명" in text:
+                        popup_open = False
+                        try:
+                            popup_open = bool(self.driver.find_elements(
+                                By.XPATH,
+                                '//android.widget.Button[@text="선택" or @text="선택됨"]'
+                                ' | //android.widget.RadioButton[@text="선택"]'
+                            ))
+                        except Exception:
+                            pass
+                        if not popup_open:
+                            self._log(f"  ✅ 결제창 인라인 배송지명에 '{recipient_name}' 확인 → 이미 선택됨")
+                            return True
+                        # 팝업이 열려 있으면 뒤쪽 결제창 텍스트이므로 스킵
+                        self._log("  ℹ '배송지명' 인라인 텍스트는 팝업 뒤쪽 → 스킵")
                         continue
 
                     # 연락처(last4) 검증이 엄격해서 매칭을 놓치는 경우가 많으므로,
@@ -1898,7 +2033,7 @@ class NaverOrderWorker:
                                         # 이름 검증
                                         if not found_name:
                                             area_text = " ".join((e.get_attribute("text") or "") for e in els)
-                                            if recipient_name in area_text:
+                                            if self._recipient_name_matches(area_text, recipient_name):
                                                 found_name = True
                                         
                                         # 버튼 탐색
@@ -1955,11 +2090,24 @@ class NaverOrderWorker:
                             nv_text = nv.get_attribute("text") or ""
                             nv_desc = nv.get_attribute("content-desc") or ""
 
-                            # '배송지명' prefix가 붙은 경우는 방법 A에서 이미 처리했으므로 패스
+                            # '배송지명박경아(박경아)' = 결제창 인라인 → 팝업 없으면 이미 선택됨
                             if "배송지명" in nv_text:
+                                if self._recipient_name_matches(nv_text, recipient_name):
+                                    popup_open = False
+                                    try:
+                                        popup_open = bool(self.driver.find_elements(
+                                            By.XPATH,
+                                            '//android.widget.Button[@text="선택" or @text="선택됨"]'
+                                            ' | //android.widget.RadioButton[@text="선택"]'
+                                        ))
+                                    except Exception:
+                                        pass
+                                    if not popup_open:
+                                        self._log(f"  ✅ 결제창 배송지명에 '{recipient_name}' 확인 → 이미 선택됨")
+                                        return True
                                 continue
                             # 수취인명 매칭
-                            if recipient_name not in (nv_text + nv_desc):
+                            if not self._recipient_name_matches(nv_text + nv_desc, recipient_name):
                                 continue
 
                             # 전화번호 검증 (같은 View에 있는지 먼저 확인)
@@ -1987,8 +2135,8 @@ class NaverOrderWorker:
                                     if "***" in area_text:
                                         self._log(f"  ℹ 전화번호 마스킹 감지 → 이름만으로 클릭: '{nv_text[:40]}'")
                                     elif area_text and last4 not in area_text:
-                                        self._log(f"  ⚠ 전화 뒷4자리 '{last4}' 부모 영역에도 없음 → 스킵")
-                                        continue
+                                        self._log(f"  ℹ 전화 뒷4자리 '{last4}' 부모 영역에도 없음 → 이름만으로 클릭")
+                                    # 전화 미확인이어도 이름 매칭이면 클릭 진행 (스킵하지 않음)
 
                             self._log(f"  🎯 배송지 발견: '{nv_text[:50]}'")
                             if self._click_element_or_parent(nv):
@@ -2015,12 +2163,12 @@ class NaverOrderWorker:
                     container_text = " ".join(
                         (ce.get_attribute("text") or "") for ce in container_els
                     )
-                    if recipient_name not in container_text:
+                    if not self._recipient_name_matches(container_text, recipient_name):
                         continue
                     # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
+                    # 이름이 확실하면 전화 미확인이어도 클릭 허용
                     if last4 and "***" not in container_text and last4 not in container_text:
-                        self._log(f"  ⚠ RadioButton 블록 전화 '{last4}' 미매칭 → 스킵")
-                        continue
+                        self._log(f"  ℹ RadioButton 블록 전화 '{last4}' 미확인 → 이름만으로 클릭")
                     self._log(f"  🎯 RadioButton '선택' 클릭 - 수취인 '{recipient_name}' 매칭")
                     rb.click()
                     time.sleep(3)
@@ -2104,6 +2252,15 @@ class NaverOrderWorker:
                 self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
                 return True
             else:
+                # 클릭 직후 검증이 이미지/결제하기로 실패해도,
+                # 화면에 '배송지명{수취인}'이 보이면 이미 선택된 것으로 성공 처리
+                try:
+                    if self._check_current_delivery_address(recipient_name, phone):
+                        self._log("  ✅ 결제창 배송지명으로 수취인 재확인 성공 → 선택 완료")
+                        return True
+                except Exception:
+                    pass
+
                 self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (요소가 뒤쪽에 가려진 것으로 의심)")
                 self._log("  👉 살짝 스크롤 업해서 요소를 앞단으로 노출 후 재탐색/클릭 시도합니다.")
                 for _ in range(2):
@@ -2111,10 +2268,20 @@ class NaverOrderWorker:
                     time.sleep(0.8)
                 
                 self._log("  📋 스크롤 업 후 수취인 재탐색...")
+                # 스크롤 후에도 배송지명에 목표 수취인이 보이면 성공
+                try:
+                    if self._check_current_delivery_address(recipient_name, phone):
+                        self._log("  ✅ 스크롤 후 결제창 배송지명 매칭 → 선택 완료")
+                        return True
+                except Exception:
+                    pass
                 if self._find_recipient_on_screen(recipient_name, phone_digits):
                     time.sleep(3.0)
-                    # 재클릭 후에도 팝업이 닫혔는지 최종 확인
+                    # 재클릭/재확인: 배송지명 우선, 그다음 팝업 닫힘
                     try:
+                        if self._check_current_delivery_address(recipient_name, phone):
+                            self._log("  ✅ 재탐색 후 배송지명 매칭 확인")
+                            return True
                         if not self.driver.find_elements(
                                 By.XPATH, '//android.widget.Button[@text="선택"]'):
                             self._log("  ✅ 재클릭 후 배송지 목록 닫힘 확인")
