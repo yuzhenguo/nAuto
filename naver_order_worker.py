@@ -2242,13 +2242,18 @@ class NaverOrderWorker:
             else:
                 return False
 
-            self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
+            self._log("  ⏳ 클릭 후 결제창 복귀·수취인 확인 대기 (3초)...")
             time.sleep(3.0)
-            is_success = False
 
-            # ── 1차 검증: 배송지 목록 팝업이 실제로 닫혔는지 확인 ──
-            # (팝업이 열려있어도 뒤쪽 결제 화면의 '결제하기' 텍스트가 UI 트리에 남아있어
-            #  기존 텍스트 검증만으로는 오탐이 발생했음)
+            # 성공 조건: 반드시 결제 화면 '배송지명'이 목표 수취인과 일치해야 함.
+            # (팝업만 닫히거나 '결제하기' 텍스트만 보이면 SONG TAO 등 엉뚱한 배송지로
+            #  남아 있어도 Y 기록되던 오탐 방지)
+            def _recipient_confirmed() -> bool:
+                try:
+                    return bool(self._check_current_delivery_address(recipient_name, phone))
+                except Exception:
+                    return False
+
             popup_still_open = False
             try:
                 popup_still_open = bool(self.driver.find_elements(
@@ -2258,70 +2263,54 @@ class NaverOrderWorker:
 
             if popup_still_open:
                 self._log("  ⚠ 배송지 목록 팝업이 아직 열려있음 → 선택 미완료로 판단")
-            else:
-                # ── 2차 검증: 결제 화면 인라인 배송지가 목표 수취인으로 바뀌었는지 확인 ──
-                try:
-                    if self._check_current_delivery_address(recipient_name, phone):
-                        self._log("  ✅ 결제 화면 배송지가 목표 수취인으로 변경 확인됨")
-                        is_success = True
-                except Exception:
-                    pass
-
-                if not is_success:
-                    img_dest = os.path.join(_IMG_DIR, "배송지.png")
-                    if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
-                        is_success = True
-                    elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
-                        is_success = True
-                    else:
-                        try:
-                            if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
-                                is_success = True
-                        except Exception:
-                            pass
-
-            if is_success:
+            elif _recipient_confirmed():
+                self._log("  ✅ 결제 화면 배송지가 목표 수취인으로 변경 확인됨")
                 self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
                 return True
             else:
-                # 클릭 직후 검증이 이미지/결제하기로 실패해도,
-                # 화면에 '배송지명{수취인}'이 보이면 이미 선택된 것으로 성공 처리
+                # 결제창으로 돌아간 것처럼 보여도 수취인이 다르면 실패
                 try:
-                    if self._check_current_delivery_address(recipient_name, phone):
-                        self._log("  ✅ 결제창 배송지명으로 수취인 재확인 성공 → 선택 완료")
-                        return True
+                    views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
+                    shown = [(v.get_attribute("text") or "")[:60] for v in views[:5]]
+                    if shown:
+                        self._log(f"  ⚠ 목표 수취인 '{recipient_name}' 미확인. 현재 배송지명: {shown}")
                 except Exception:
                     pass
+                back_on_pay = False
+                try:
+                    img_dest = os.path.join(_IMG_DIR, "배송지.png")
+                    if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
+                        back_on_pay = True
+                    elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
+                        back_on_pay = True
+                    elif self.driver.find_elements(
+                            By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                        back_on_pay = True
+                except Exception:
+                    pass
+                if back_on_pay:
+                    self._log(
+                        f"  ❌ 결제창 복귀는 됐으나 수취인 '{recipient_name}' 미매칭 → 오선택으로 실패 처리"
+                    )
+                    return False
 
                 self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (요소가 뒤쪽에 가려진 것으로 의심)")
                 self._log("  👉 살짝 스크롤 업해서 요소를 앞단으로 노출 후 재탐색/클릭 시도합니다.")
                 for _ in range(2):
                     self._scroll_up(distance_ratio=0.12)
                     time.sleep(0.8)
-                
+
                 self._log("  📋 스크롤 업 후 수취인 재탐색...")
-                # 스크롤 후에도 배송지명에 목표 수취인이 보이면 성공
-                try:
-                    if self._check_current_delivery_address(recipient_name, phone):
-                        self._log("  ✅ 스크롤 후 결제창 배송지명 매칭 → 선택 완료")
-                        return True
-                except Exception:
-                    pass
+                if _recipient_confirmed():
+                    self._log("  ✅ 스크롤 후 결제창 배송지명 매칭 → 선택 완료")
+                    return True
                 if self._find_recipient_on_screen(recipient_name, phone_digits):
                     time.sleep(3.0)
-                    # 재클릭/재확인: 배송지명 우선, 그다음 팝업 닫힘
-                    try:
-                        if self._check_current_delivery_address(recipient_name, phone):
-                            self._log("  ✅ 재탐색 후 배송지명 매칭 확인")
-                            return True
-                        if not self.driver.find_elements(
-                                By.XPATH, '//android.widget.Button[@text="선택"]'):
-                            self._log("  ✅ 재클릭 후 배송지 목록 닫힘 확인")
-                            return True
-                        self._log("  ⚠ 재클릭 후에도 배송지 목록이 열려있음 → 실패 처리 (스크롤 후 재시도)")
-                        return False
-                    except Exception:
+                    if _recipient_confirmed():
+                        self._log("  ✅ 재탐색 후 배송지명 매칭 확인")
                         return True
+                    self._log("  ⚠ 재클릭 후에도 목표 수취인 미확인 → 실패 처리 (스크롤 후 재시도)")
+                    return False
             return False
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
