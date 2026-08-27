@@ -55,6 +55,7 @@ IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력
 IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력창 예비용
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
+IMG_CHECKBOX2     = os.path.join(_IMG_DIR, "체크박스2.png")
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
@@ -1110,6 +1111,9 @@ class NaverOrderWorker:
                         pass
 
                 self._log(f"  👉 ADB 좌표 탭: ({x}, {y})")
+                if not self._is_visible_coord(x, y):
+                    self._log(f"  ⏭ 화면 밖 좌표 클릭 생략: ({x}, {y})")
+                    return False
                 subprocess.run(
                     ["adb", "-s", self.device_id, "shell", "input", "tap",
                      str(x), str(y)],
@@ -1133,13 +1137,15 @@ class NaverOrderWorker:
                         y = rect['y'] + rect['height'] // 2
                 except Exception:
                     pass
-                if 150 <= y <= w_h - 200:
+                if self._is_visible_coord(x, y) and 150 <= y <= w_h - 200:
                     subprocess.run(
                         ["adb", "-s", self.device_id, "shell", "input", "tap",
                          str(x), str(y)],
                         capture_output=True, timeout=5
                     )
                     return True
+                self._log(f"  ⏭ 스크롤 후에도 화면 밖 ({x}, {y}) → 클릭 안 함")
+                return False
 
         except Exception as e:
             self._log(f"  ⚠ 안전 클릭 실패: {e}")
@@ -1192,66 +1198,69 @@ class NaverOrderWorker:
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
-    def _tap_option_at(self, x: int, y: int, w_w: int) -> None:
-        """옵션 시트(WebView) 클릭. Appium driver.tap 은 무시되는 경우가 많아 ADB 제자리 swipe 사용.
-        작은 체크박스 히트박스를 놓치지 않도록 같은 Y의 옵션 행(오른쪽 텍스트)도 이어서 탭한다."""
-        self._log(f"  👉 체크박스 ADB soft tap: ({x}, {y})")
-        self._soft_tap(x, y, duration_ms=160)
-        time.sleep(0.25)
-        row_x = min(x + int(w_w * 0.22), int(w_w * 0.48))
-        if abs(row_x - x) >= 40:
-            self._log(f"  👉 옵션 행 ADB soft tap: ({row_x}, {y})")
-            self._soft_tap(row_x, y, duration_ms=160)
+    def _score_template_in_region(self, template_path, screen_gray, screen_w, screen_h,
+                                  min_x, max_x, min_y, max_y):
+        """한 장의 그레이 스크린샷에서 템플릿 최고점/좌표. 영역 밖이면 무효.
+        returns (cx, cy, score) 또는 None"""
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return None
+        if not os.path.exists(template_path):
+            return None
+        template_bgr = cv2.imdecode(
+            np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        if template_bgr is None:
+            return None
+        template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+        t_h, t_w = template_gray.shape
+        roi = screen_gray.copy()
+        if min_y > 0:
+            roi[:min_y, :] = 0
+        if max_y < screen_h:
+            roi[max_y:, :] = 0
+        if min_x > 0:
+            roi[:, :min_x] = 0
+        if max_x < screen_w:
+            roi[:, max_x:] = 0
 
-    def _find_unchecked_checkbox(self, checkbox_imgs, min_y, max_y, max_x=None,
-                                 thresholds=None, near_y=None, y_tol=90):
-        """미체크 체크박스 이미지 좌표 탐색. 없으면 (None, None, None).
-        near_y 가 있으면 해당 Y 근처(±y_tol) 매칭만 인정 (옵션 헤더 오탐 방지)."""
-        if not checkbox_imgs:
-            return None, None, None
-        if thresholds is None:
-            thresholds = [0.75, 0.70, 0.65, 0.60]
-        for thr in thresholds:
-            for img_path in checkbox_imgs:
-                kwargs = dict(threshold=thr, min_y=min_y, max_y=max_y)
-                if max_x is not None:
-                    kwargs["min_x"] = 0
-                    kwargs["max_x"] = max_x
-                coords = self._find_image_coords(img_path, **kwargs)
-                if not coords:
-                    continue
-                if near_y is not None and abs(coords[1] - near_y) > y_tol:
-                    self._log(
-                        f"  ℹ {os.path.basename(img_path)} 매칭 y={coords[1]} 이 "
-                        f"기준 y={near_y}±{y_tol} 밖 → 오탐 무시"
-                    )
-                    continue
-                return coords, img_path, thr
-        return None, None, None
+        best_score, best_loc, best_tw, best_th = -1.0, None, t_w, t_h
+        for scale in np.linspace(0.55, 1.65, 12):
+            new_w, new_h = int(t_w * scale), int(t_h * scale)
+            if new_w >= screen_w or new_h >= screen_h or new_w < 8 or new_h < 8:
+                continue
+            resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            try:
+                r = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                if max_val > best_score:
+                    best_score, best_loc, best_tw, best_th = max_val, max_loc, new_w, new_h
+            except Exception:
+                continue
+        if best_loc is None:
+            return None
+        cx = best_loc[0] + best_tw // 2
+        cy = best_loc[1] + best_th // 2
+        if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+            return None
+        return cx, cy, float(best_score)
 
     def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 및 옵션 항목 클릭.
-        클릭 후 '클릭한 위치'의 미체크 이미지가 사라졌는지로 성공 판정 (다른 Y 오탐 무시)."""
+        """[단계 12] 체크박스2/4/원본 중 인식률이 가장 높은 것을,
+        옵션선택과 배송정보 사이(왼쪽 열)에서만 찾아 클릭."""
         self._set_status("체크박스/옵션 선택")
         self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
 
-        w_h = 2400
-        w_w = 1080
+        w_h, w_w = 2400, 1080
         try:
             size = self.driver.get_window_size()
-            w_h = size['height']
-            w_w = size['width']
+            w_h, w_w = size['height'], size['width']
         except Exception:
             pass
 
-        min_y_check = int(w_h * 0.38)   # 옵션 시트 영역
-        # 하단 구매바/네비(바로구매·장바구니)를 체크박스로 오인하지 않도록 하단 18%는 제외
-        max_y_check = int(w_h * 0.82)
-        max_x_check = int(w_w * 0.40)   # 옵션 체크박스는 화면 좌측
-
-        # ─── 0순위: 옵션선택.png ~ 배송정보.png 사이로 Y축 동적 설정 ─────────────
-        opt_y = None
-        del_y = None
+        opt_y = del_y = None
         if os.path.exists(IMG_OPTION_SELECT):
             opt_coords = self._find_image_coords(IMG_OPTION_SELECT, threshold=0.70)
             if opt_coords:
@@ -1261,166 +1270,150 @@ class NaverOrderWorker:
             if del_coords:
                 del_y = del_coords[1]
 
-        bar_limit = int(w_h * 0.82)
-        # '옵션 선택' / '◆ 옵션 필수 선택 ◆' 헤더·드롭다운 UI를 체크박스로 오인하지 않도록
-        # 옵션선택 라벨 아래 여백을 두고 탐색한다.
-        header_gap = max(100, int(w_h * 0.045))
+        # 옵션선택 라벨·'옵션 필수선택' 헤더를 건너뛴 뒤 ~ 배송정보 직전
+        # = 화살표가 가리키는 옵션 행 체크박스 간격
+        header_skip = max(85, int(w_h * 0.036))
         if opt_y and del_y and opt_y < del_y:
-            min_y_check = opt_y + header_gap
-            max_y_check = min(del_y - 20, bar_limit)
+            min_y_check = opt_y + header_skip
+            max_y_check = del_y - 45
             if min_y_check >= max_y_check:
-                min_y_check = opt_y
-                max_y_check = min(del_y, bar_limit)
+                min_y_check = opt_y + 50
+                max_y_check = del_y - 20
             self._log(
-                f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션+{header_gap}~배송정보): "
-                f"{min_y_check} ~ {max_y_check}"
+                f"  📌 체크박스 탐색 구간 (옵션선택~배송정보 사이): "
+                f"y={min_y_check}~{max_y_check}, 옵션y={opt_y}, 배송y={del_y}"
             )
         elif opt_y:
-            min_y_check = opt_y + header_gap
-            max_y_check = bar_limit
-            self._log(
-                f"  📌 체크박스 탐색 Y영역: 옵션선택+{header_gap}({min_y_check}) "
-                f"~ 하단바 제외({max_y_check})"
-            )
+            min_y_check = opt_y + header_skip
+            max_y_check = int(w_h * 0.82)
+            self._log(f"  📌 체크박스 탐색 구간: 옵션선택 아래 y={min_y_check}~{max_y_check}")
+        else:
+            min_y_check = int(w_h * 0.55)
+            max_y_check = int(w_h * 0.82)
+            self._log("  ⚠ 옵션선택 미검출 → 화면 하단 시트로 제한")
 
-        # 체크박스.png 우선 (인식률 높음). 체크박스4는 헤더 오탐이 많아 보조만 사용.
-        primary_imgs = [img for img in [IMG_CHECKBOX] if os.path.exists(img)]
-        secondary_imgs = [img for img in [IMG_CHECKBOX4] if os.path.exists(img)]
-        checkbox_imgs = primary_imgs + secondary_imgs
+        min_x_check = 0
+        max_x_check = int(w_w * 0.22)
 
-        def _still_unchecked_near(click_y: int, prefer_img: str = None) -> bool:
-            """클릭한 Y 근처에서 미체크 이미지가 남아있는지. 다른 Y 오탐은 무시."""
-            imgs = []
-            if prefer_img and os.path.exists(prefer_img):
-                imgs.append(prefer_img)
-            for img in checkbox_imgs:
-                if img not in imgs:
-                    imgs.append(img)
-            still, _, _ = self._find_unchecked_checkbox(
-                imgs, min_y_check, max_y_check, max_x_check,
-                thresholds=[0.78, 0.72], near_y=click_y, y_tol=90
-            )
-            return still is not None
+        checkbox_imgs = [
+            p for p in (IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX) if os.path.exists(p)
+        ]
+        if not checkbox_imgs:
+            self._log("  ⚠ 체크박스 템플릿 파일 없음")
+            return True
 
-        def _option_selected_near(click_y: int, prefer_img: str = None) -> bool:
-            return not _still_unchecked_near(click_y, prefer_img)
+        min_score = 0.78
 
-        # ─── 1순위: 체크박스.png 우선 매칭 후 ADB soft tap + '클릭 위치' 검증 ─────
-        if checkbox_imgs:
-            coords, img_path, thr = self._find_unchecked_checkbox(
-                primary_imgs or checkbox_imgs, min_y_check, max_y_check, max_x_check,
-                thresholds=[0.75, 0.70, 0.65]
-            )
-            if coords is None and secondary_imgs:
-                # 체크박스4는 threshold 더 높게 (오탐 억제)
-                coords, img_path, thr = self._find_unchecked_checkbox(
-                    secondary_imgs, min_y_check, max_y_check, max_x_check,
-                    thresholds=[0.85, 0.80]
+        def _pick_best():
+            try:
+                import cv2
+                import numpy as np
+                from PIL import Image
+                import io
+            except ImportError:
+                self._log("  [이미지 매칭] cv2/numpy/PIL 미설치")
+                return None
+            png = self._get_screenshot()
+            pil = Image.open(io.BytesIO(png))
+            screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            sh, sw = screen_gray.shape
+            ranked = []
+            for path in checkbox_imgs:
+                hit = self._score_template_in_region(
+                    path, screen_gray, sw, sh,
+                    min_x_check, max_x_check, min_y_check, max_y_check,
                 )
-            if coords is None:
-                coords, img_path, thr = self._find_unchecked_checkbox(
-                    primary_imgs or checkbox_imgs, min_y_check, max_y_check,
-                    max_x=None, thresholds=[0.60]
-                )
-            if coords:
-                img_name = os.path.basename(img_path)
-                click_y = coords[1]
-                for attempt in range(1, 4):
-                    self._log(f"  📌 {img_name} 클릭 시도 ({attempt}/3, threshold={thr}, y={click_y})")
-                    self._tap_option_at(coords[0], coords[1], w_w)
-                    time.sleep(1.2)
-                    if _option_selected_near(click_y, prefer_img=img_path):
-                        self._log(f"✅ {img_name} 옵션 선택 확인 완료 (클릭 y={click_y} 근처 미체크 소멸)")
-                        time.sleep(0.5)
-                        return True
-                    self._log(f"  ⚠ 클릭 y={click_y} 근처 미체크 잔존 → 같은 위치 재탐색")
-                    retry_coords, retry_img, retry_thr = self._find_unchecked_checkbox(
-                        [img_path] if img_path else checkbox_imgs,
-                        min_y_check, max_y_check, max_x_check,
-                        thresholds=[0.75, 0.70, 0.65], near_y=click_y, y_tol=90
+                name = os.path.basename(path)
+                if hit is None:
+                    self._log(f"  ℹ {name}: 구간 내 매칭 없음")
+                    continue
+                cx, cy, score = hit
+                if not self._is_visible_coord(cx, cy):
+                    self._log(
+                        f"  ⏭ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy}) 는 화면 밖 → 제외"
                     )
-                    if retry_coords is None:
-                        # 원래 이미지가 클릭 위치에서 사라짐 → 다른 템플릿 오탐과 무관하게 성공
-                        self._log(
-                            f"  ✅ 클릭 y={click_y} 근처에서 {img_name} 소멸 확인 "
-                            f"(다른 위치 오탐 무시) → 선택 완료"
-                        )
-                        return True
-                    coords, img_path, thr = retry_coords, retry_img, retry_thr
-                    img_name = os.path.basename(img_path)
-                    click_y = coords[1]
-                self._log("  ⚠ 이미지 클릭 후 체크 미확인 → XPath 폴백")
+                    continue
+                ranked.append((score, cx, cy, path))
+                self._log(f"  ℹ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy})")
+            if not ranked:
+                return None
+            ranked.sort(key=lambda t: t[0], reverse=True)
+            best = ranked[0]
+            self._log(
+                f"  🎯 최고 인식: {os.path.basename(best[3])} "
+                f"점수 {best[0]:.4f} @ ({best[1]}, {best[2]})"
+            )
+            if best[0] < min_score:
+                self._log(f"  ⚠ 최고점도 {best[0]:.4f} < {min_score} → 오탐 가능, 채택 안 함")
+                return None
+            return best
 
-        # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선) ──
+        best = _pick_best()
+        if best:
+            score, cx, cy, path = best
+            img_name = os.path.basename(path)
+            if not self._is_visible_coord(cx, cy):
+                self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
+            else:
+                self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
+                if not self._soft_tap(cx, cy, duration_ms=180):
+                    pass
+                else:
+                    time.sleep(1.2)
+                    again = _pick_best()
+                    if again is None:
+                        self._log(f"✅ {img_name} 클릭 후 구간 내 미체크 소멸 → 선택 완료")
+                        return True
+                    if again[3] == path and abs(again[2] - cy) <= 40 and again[0] >= min_score:
+                        self._log("  ⚠ 같은 위치 미체크 잔존 → 한 번 더 탭")
+                        self._soft_tap(cx, cy, duration_ms=180)
+                        time.sleep(0.8)
+                    else:
+                        self._log(f"✅ {img_name} 클릭 완료 (원래 위치 미체크 아님)")
+                    return True
+
         if product_name:
             import re
-            clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
-            keywords = [k.strip() for k in clean_prod.split() if len(k.strip()) >= 2]
-            for kw in keywords[:5]:
-                safe_kw = kw.replace('"', '').replace("'", "")
-                option_xpaths = [
-                    f'//android.view.View[contains(@text, "{safe_kw}")]',
-                    f'//android.widget.TextView[contains(@text, "{safe_kw}")]',
-                    f'//*[contains(@text, "{safe_kw}")]',
-                ]
-                for xpath in option_xpaths:
-                    if ah.element_exists(self.driver, xpath, timeout=1):
-                        try:
-                            els = self.driver.find_elements(By.XPATH, xpath)
-                            for el in els:
-                                rect = el.rect
-                                cx = rect['x'] + rect['width'] // 2
-                                cy = rect['y'] + rect['height'] // 2
-                                if min_y_check <= cy <= max_y_check:
-                                    self._log(f"  👉 옵션 텍스트 soft tap ({kw}, x={cx}, y={cy})")
-                                    self._tap_option_at(cx, cy, w_w)
-                                    time.sleep(1.2)
-                                    if not checkbox_imgs or _option_selected_near(cy):
-                                        self._log(f"  ✅ 옵션 상품 텍스트 클릭 확인 ({kw}): {xpath}")
-                                        return True
-                        except Exception:
-                            pass
-
-        # ─── 3순위: CheckBox / checkable / 옵션 키워드 XPath 폴백 (Y 범위 내) ─────
-        checkbox_xpaths = [
-            '//android.widget.CheckBox',
-            '//*[@checkable="true"]',
-            '//*[contains(@text, "박스")]',
-            '//*[contains(@text, "포")]',
-            '//*[contains(@text, "개")]',
-        ]
-        for xpath in checkbox_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=1):
+            hangul = re.sub(r'[^가-힣0-9]', ' ', product_name)
+            kws = [k for k in hangul.split() if len(k) >= 2][:4]
+            extra = []
+            for k in list(kws):
+                if len(k) >= 4:
+                    extra.append(k[:4])
+            for kw in kws + extra:
                 try:
-                    els = self.driver.find_elements(By.XPATH, xpath)
+                    els = self.driver.find_elements(
+                        By.XPATH, f'//*[contains(@text, "{kw}")]'
+                    )
                     for el in els:
+                        text = (el.get_attribute("text") or "")
+                        if any(s in text for s in ("옵션", "배송", "바로구매", "장바구니")):
+                            continue
                         rect = el.rect
-                        cx = rect['x'] + rect['width'] // 2
                         cy = rect['y'] + rect['height'] // 2
                         if min_y_check <= cy <= max_y_check:
-                            self._log(f"  👉 체크박스 XPath soft tap (x={cx}, y={cy}): {xpath}")
-                            self._tap_option_at(cx, cy, w_w)
-                            time.sleep(1.2)
-                            if not checkbox_imgs or _option_selected_near(cy):
-                                self._log(f"  ✅ 체크박스 XPath 클릭 확인 (x={cx}, y={cy})")
-                                return True
+                            tap_x = int(w_w * 0.11)
+                            if not self._is_visible_coord(tap_x, cy):
+                                self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
+                                continue
+                            self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
+                            self._soft_tap(tap_x, cy, duration_ms=180)
+                            time.sleep(0.8)
+                            return True
                 except Exception:
-                    pass
+                    continue
 
-        # ─── 4순위: 좌표 고정 ADB 탭 폴백 (옵션선택/배송정보 영역이 확실할 때만) ─────────────────
         if opt_y and del_y and opt_y < del_y:
-            fallback_x = int(w_w * 0.15)
-            # 헤더(옵션선택)와 배송정보 사이의 중하단 = 실제 옵션 행 위치
-            fallback_y = int(opt_y + (del_y - opt_y) * 0.65)
-            self._log(f"  ⚠ 이미지/XPath 미확인 -> 옵션 행 추정 탭 ({fallback_x}, {fallback_y})")
-            self._tap_option_at(fallback_x, fallback_y, w_w)
-            time.sleep(1.2)
-            if not checkbox_imgs or _option_selected_near(fallback_y):
-                self._log(f"  ✅ 좌표 고정 탭 후 옵션 선택 확인 ({fallback_x}, {fallback_y})")
+            tap_x = int(w_w * 0.11)
+            tap_y = (min_y_check + max_y_check) // 2
+            if not self._is_visible_coord(tap_x, tap_y):
+                self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
+            else:
+                self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
+                self._soft_tap(tap_x, tap_y, duration_ms=180)
+                time.sleep(0.8)
                 return True
-            self._log("  ⚠ 좌표 고정 탭 후에도 체크 미확인")
-        else:
-            self._log("  ⚠ 옵션선택~배송정보 기준점을 찾지 못해 임의 좌표 클릭을 생략합니다. (오작동 방지)")
 
         self._log("  ⚠ 체크박스 미발견 → 계속 진행")
         return True
@@ -1755,17 +1748,56 @@ class NaverOrderWorker:
             
         return False
 
-    def _soft_tap(self, x: int, y: int, duration_ms: int = 120) -> None:
+    def _visible_bounds(self):
+        """사용자가 실제로 보는 화면 좌표 범위 (상태바·하단 내비 제외). ADB tap 기준."""
+        w, h = self._get_window_size()
+        try:
+            import re as _re
+            res = _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "wm", "size"],
+                capture_output=True, timeout=3, text=True,
+            )
+            out = (res.stdout or "") + (res.stderr or "")
+            m = _re.search(r"(\d+)\s*x\s*(\d+)", out)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        left = 8
+        right = max(left + 1, w - 8)
+        top = max(48, int(h * 0.04))       # 상태바 아래
+        bottom = min(h - 12, int(h * 0.96))  # 제스처/내비 위
+        return left, top, right, bottom
+
+    def _is_visible_coord(self, x, y) -> bool:
+        """보이는 화면 안 좌표인지. 밖이면 클릭 금지."""
+        try:
+            x, y = int(x), int(y)
+        except Exception:
+            return False
+        left, top, right, bottom = self._visible_bounds()
+        return left <= x <= right and top <= y <= bottom
+
+    def _soft_tap(self, x: int, y: int, duration_ms: int = 120) -> bool:
         """
         제자리 짧은 swipe(꾹 눌렀다 떼기)로 부드러운 탭을 수행합니다.
         네이버 주문/결제 WebView에서는 순간적인 'input tap'이 무시되는 경우가 있어,
         약 120ms 동안 눌렀다 떼는 방식이 훨씬 안정적으로 클릭을 인식합니다.
+        사용자 가시 범위 밖 좌표는 클릭하지 않습니다.
         """
+        if not self._is_visible_coord(x, y):
+            left, top, right, bottom = self._visible_bounds()
+            self._log(
+                f"  ⏭ 화면 밖 좌표 클릭 생략: ({x}, {y}) "
+                f"가시범위 x={left}~{right} y={top}~{bottom}"
+            )
+            return False
         _run_cmd(
             ["adb", "-s", self.device_id, "shell", "input", "swipe",
-             str(x), str(y), str(x), str(y), str(duration_ms)],
+             str(int(x)), str(int(y)), str(int(x)), str(int(y)), str(duration_ms)],
             capture_output=True, timeout=5
         )
+        return True
 
     def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
         """
