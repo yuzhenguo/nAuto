@@ -1023,8 +1023,9 @@ class NaverOrderWorker:
 
             if scroll_cnt < scroll_max:
                 self._log(f"  ⬇ 스크롤 다운 ({scroll_cnt + 1}/{scroll_max})")
-                self._scroll_down()
-                time.sleep(1.0)
+                # 상품 리스트: 지문검증/재시도 없이 빠른 ADB 스와이프 (간격 단축)
+                self._scroll_down_fast(distance_ratio=0.28)
+                time.sleep(0.35)
 
         # 20회 스크롤 완료 후에도 완전 매칭이 없었던 경우 폴백 후보 사용
         if fallback_candidates:
@@ -1680,6 +1681,244 @@ class NaverOrderWorker:
                     return True
         return False
 
+    def _parse_element_bounds(self, el):
+        """요소 bounds → (x1,y1,x2,y2) 또는 None."""
+        import re as _re
+        try:
+            bs = el.get_attribute("bounds") or ""
+            mm = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bs)
+            if mm:
+                return tuple(map(int, mm.groups()))
+            rect = el.rect
+            return (rect["x"], rect["y"],
+                    rect["x"] + rect["width"], rect["y"] + rect["height"])
+        except Exception:
+            return None
+
+    def _iter_address_select_buttons(self):
+        """배송지 목록의 '선택'/'선택됨' 후보 (WebView에서 class가 비는 경우 대비)."""
+        seen = set()
+        xpaths = [
+            '//android.widget.Button[@text="선택" or @text="선택됨"]',
+            '//*[@text="선택" or @text="선택됨"]',
+        ]
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    t = (el.get_attribute("text") or "").strip()
+                    if t not in ("선택", "선택됨"):
+                        continue
+                    bb = self._parse_element_bounds(el)
+                    key = bb if bb else id(el)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield el
+                except Exception:
+                    continue
+
+    def _find_card_select_button(self, name_el, recipient_name: str):
+        """
+        수취인 이름 View를 덮는(같은 카드) '선택' 버튼 반환.
+
+        네이버 배송지 XML: 각 카드의 선택 버튼 bounds가 이름·전화·주소를 통째로 덮음.
+        → 이름 중심점이 들어있는 선택 버튼 중 면적이 가장 작은 것 = 해당 카드.
+        (리스트 전체가 아닌 카드 단위; 위쪽 다른 수취인 오선택 방지)
+        """
+        name_bb = self._parse_element_bounds(name_el)
+        if not name_bb:
+            return None
+        name_cx = (name_bb[0] + name_bb[2]) // 2
+        name_cy = (name_bb[1] + name_bb[3]) // 2
+
+        all_btns = list(self._iter_address_select_buttons())
+        if not all_btns:
+            self._log("  ℹ 화면에서 text='선택'/'선택됨' 버튼 0개")
+            return None
+
+        containing = []  # (area, dist, btn, bb)
+        named = []       # 이름 포함 확인된 후보
+        for btn in all_btns:
+            try:
+                bb = self._parse_element_bounds(btn)
+                if not bb:
+                    continue
+                # 이름 중심이 버튼(카드) 안에 있어야 동일 카드
+                if not (bb[0] - 8 <= name_cx <= bb[2] + 8 and bb[1] - 24 <= name_cy <= bb[3] + 24):
+                    continue
+                area = max(1, (bb[2] - bb[0]) * (bb[3] - bb[1]))
+                # 화면 전체/리스트 전체를 덮는 비정상적으로 큰 버튼 제외
+                if area > 1080 * 900:
+                    continue
+                btn_cy = (bb[1] + bb[3]) // 2
+                dist = abs(btn_cy - name_cy)
+                item = (area, dist, btn, bb)
+                containing.append(item)
+                # 조상에 목표 이름이 있으면 가점 후보
+                node = btn
+                has_name = False
+                for _ in range(4):
+                    try:
+                        node = node.find_element(By.XPATH, "..")
+                        area_txt = " ".join(
+                            (e.get_attribute("text") or "")
+                            for e in node.find_elements(By.XPATH, ".//*")
+                        )
+                        sel_cnt = sum(
+                            1 for e in node.find_elements(By.XPATH, ".//*")
+                            if (e.get_attribute("text") or "").strip() in ("선택", "선택됨")
+                        )
+                        if sel_cnt > 1:
+                            break
+                        if self._recipient_name_matches(area_txt, recipient_name):
+                            has_name = True
+                            break
+                    except Exception:
+                        break
+                if has_name:
+                    named.append(item)
+            except Exception:
+                continue
+
+        pool = named if named else containing
+        if not pool:
+            self._log(
+                f"  ℹ 선택 버튼 {len(all_btns)}개 중 이름 Y({name_cy})를 덮는 카드 없음"
+            )
+            # 최후: 세로만 겹치는 가장 가까운 버튼 (이름 X가 카드 밖인 경우)
+            nearest = None
+            for btn in all_btns:
+                bb = self._parse_element_bounds(btn)
+                if not bb:
+                    continue
+                if not (bb[1] - 24 <= name_cy <= bb[3] + 24):
+                    continue
+                area = max(1, (bb[2] - bb[0]) * (bb[3] - bb[1]))
+                if area > 1080 * 900:
+                    continue
+                dist = abs((bb[1] + bb[3]) // 2 - name_cy)
+                cand = (area, dist, btn, bb)
+                if nearest is None or cand[:2] < nearest[:2]:
+                    nearest = cand
+            if nearest is None:
+                return None
+            pool = [nearest]
+
+        pool.sort(key=lambda x: (x[0], x[1]))
+        best = pool[0][2]
+        self._log(
+            f"  🎯 이름 Y={name_cy} 덮는 선택 카드 채택 "
+            f"(후보 {len(pool)}/{len(all_btns)}, bounds={pool[0][3]})"
+        )
+        return best
+
+    def _tap_recipient_card_select(self, name_el, recipient_name: str):
+        """
+        이름 View → 동일 카드 '선택' 버튼 중앙 탭.
+        반환: True=탭 완료, False=스크롤 후 재탐색 필요, None=버튼 못 찾음
+        """
+        btn = self._find_card_select_button(name_el, recipient_name)
+        if btn is None:
+            self._log(f"  ⚠ 이름 '{recipient_name}' 동일 카드의 선택 버튼 미발견")
+            return None
+
+        bb = self._parse_element_bounds(btn)
+        if not bb:
+            self._log("  ⚠ 선택 버튼 bounds 파싱 실패")
+            return None
+
+        btn_h = bb[3] - bb[1]
+        if btn_h < 50:
+            self._log(f"  ⚠ 선택 버튼 높이 {btn_h}px 잘림 → 스크롤 후 재탐색")
+            if not self._scroll_address_list("down"):
+                self._scroll_down(distance_ratio=0.15)
+            time.sleep(0.5)
+            return False
+
+        tap_x = (bb[0] + bb[2]) // 2
+        tap_y = (bb[1] + bb[3]) // 2
+        btn_txt = (btn.get_attribute("text") or "").strip()
+
+        try:
+            scr_h = self.driver.get_window_size()["height"]
+        except Exception:
+            scr_h = 2400
+        safe_top = int(scr_h * 0.10)
+        safe_bottom = int(scr_h * 0.90)
+
+        if tap_y < safe_top:
+            self._log(f"  ⚠ 선택 버튼 Y={tap_y} 상단 밖 → 스크롤 다운")
+            if not self._scroll_address_list("down"):
+                self._scroll_down(distance_ratio=0.15)
+            time.sleep(0.5)
+            return False
+        if tap_y > safe_bottom:
+            self._log(f"  ⚠ 선택 버튼 Y={tap_y} 하단 밖 → 스크롤 업")
+            if not self._scroll_address_list("up"):
+                self._scroll_up(distance_ratio=0.18)
+            time.sleep(0.5)
+            return False
+
+        self._log(
+            f"  🎯 '{recipient_name}' 카드 '{btn_txt}' 탭 → ({tap_x}, {tap_y}) bounds={bb}"
+        )
+        self._soft_tap(tap_x, tap_y)
+        time.sleep(2.5)
+        return True
+
+    def _scroll_address_list(self, direction: str = "down") -> bool:
+        """배송지 목록 팝업 ListView 안에서만 스크롤. direction: down|up"""
+        try:
+            lists = self.driver.find_elements(By.XPATH, "//android.widget.ListView")
+            best = None
+            best_area = 0
+            for lv in lists:
+                has_sel = False
+                try:
+                    for e in lv.find_elements(By.XPATH, ".//*"):
+                        if (e.get_attribute("text") or "").strip() in ("선택", "선택됨"):
+                            has_sel = True
+                            break
+                except Exception:
+                    pass
+                if not has_sel:
+                    continue
+                bb = self._parse_element_bounds(lv)
+                if not bb:
+                    continue
+                area = (bb[2] - bb[0]) * (bb[3] - bb[1])
+                if area > best_area:
+                    best_area = area
+                    best = bb
+            if not best:
+                return False
+            x1, y1, x2, y2 = best
+            cx = (x1 + x2) // 2
+            if direction == "up":
+                y_from = int(y1 + (y2 - y1) * 0.35)
+                y_to = int(y1 + (y2 - y1) * 0.75)
+                arrow = "⬆"
+            else:
+                y_from = int(y1 + (y2 - y1) * 0.75)
+                y_to = int(y1 + (y2 - y1) * 0.35)
+                arrow = "⬇"
+            self._log(f"  {arrow} 배송지 ListView 스크롤 {direction}: ({cx},{y_from})→({cx},{y_to})")
+            _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                 str(cx), str(y_from), str(cx), str(y_to), "350"],
+                capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _scroll_address_list_up(self) -> bool:
+        return self._scroll_address_list("up")
+
     def _check_current_delivery_address(self, recipient_name: str, phone: str) -> bool:
         """
         현재 주문/결제 화면에 목표 배송지가 이미 선택되어 있는지 확인합니다.
@@ -1806,404 +2045,109 @@ class NaverOrderWorker:
         last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
         formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}" if len(phone_digits) >= 8 else ""
 
-        # ── 방법 1: 배송지 목록 팝업 ('선택' 또는 '선택됨' 버튼 우선 탐색) ──
-        # 팝업 리스트에서는 "선택", "선택됨" 텍스트를 가진 버튼을 찾는 것이 좌표 오차를 없애는 가장 확실한 방법입니다.
-        try:
-            sel_views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "선택")]')
-            for sv in sel_views:
-                try:
-                    sv_text = (sv.get_attribute("text") or "").strip()
-                    if sv_text not in ["선택", "선택됨"]:
-                        continue
-
-                    node = sv
-                    found_name = False
-                    # 조상 노드를 5단계까지 올라가며 동일 블록 안에 수취인명과 전화번호가 있는지 확인
-                    for _ in range(5):
-                        try:
-                            node = node.find_element(By.XPATH, "..")
-                            els = node.find_elements(By.XPATH, ".//*")
-                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
-
-                            if self._recipient_name_matches(area_text, recipient_name):
-                                # 전화번호 검증 (팝업은 마스킹 안됨, 하지만 혹시 모르니 확인)
-                                if (formatted_phone in area_text) or (last4 in area_text) or ("***" in area_text):
-                                    found_name = True
-                                    break
-                                elif not last4:
-                                    found_name = True
-                                    break
-                                # 이름만 확실하면 전화 미확인이어도 선택 버튼 클릭 허용
-                                found_name = True
-                                self._log(f"  ℹ 선택 블록에 '{recipient_name}' 확인 (전화 미확인 → 이름만으로 진행)")
-                                break
-                        except Exception:
-                            break
-                    
-                    if found_name:
-                        bounds_str = sv.get_attribute("bounds") or ""
-                        self._log(f"  🎯 팝업 매칭! '{recipient_name}' 그룹의 '{sv_text}' 버튼 클릭 시도")
-                        
-                        import re as _re
-                        m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                        if m:
-                            x1, y1, x2, y2 = map(int, m.groups())
-                            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                            self._log(f"  👉 '{sv_text}' 부드러운 탭(120ms): ({cx}, {cy})")
-                            self._soft_tap(cx, cy)
-                        else:
-                            self._log("  ⚠ 좌표 파싱 실패 -> 기본 클릭")
-                            self._safe_click_element(sv)
-                        
-                        time.sleep(3)
-                        return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 방법 2: 수취인 이름 기반 탐색 (팝업 폴백) ──
-        # 팝업에서 '선택' 버튼을 못 찾았을 경우, 이름 텍스트 뷰 자체를 클릭합니다.
+        # ── 방법 1: 수취인 이름 View → 동일 카드 형제 '선택' 버튼만 탭 ──
+        # XML: View[text=이름] 과 Button[text=선택] 이 같은 부모 아래 형제
+        # (전역 point-in-bounds / 전화 동일번호 카드 오선택 방지)
         try:
             search_xpath = f'//*[contains(@text, "{recipient_name}")]'
             views = self.driver.find_elements(By.XPATH, search_xpath)
             for view in views:
                 try:
-                    text = view.get_attribute("text") or ""
+                    text = (view.get_attribute("text") or "").strip()
                     if not self._recipient_name_matches(text, recipient_name):
                         continue
-
-                    self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
-
-                    # '배송지명박경아(박경아)' 형태 = 결제창 인라인 현재 배송지
-                    # 팝업('선택' 버튼)이 없으면 이미 선택된 상태로 성공 처리
+                    # 결제창 뒤쪽 '배송지명…' 스킵
                     if "배송지명" in text:
                         popup_open = False
                         try:
                             popup_open = bool(self.driver.find_elements(
                                 By.XPATH,
                                 '//android.widget.Button[@text="선택" or @text="선택됨"]'
-                                ' | //android.widget.RadioButton[@text="선택"]'
                             ))
                         except Exception:
                             pass
                         if not popup_open:
                             self._log(f"  ✅ 결제창 인라인 배송지명에 '{recipient_name}' 확인 → 이미 선택됨")
                             return True
-                        # 팝업이 열려 있으면 뒤쪽 결제창 텍스트이므로 스킵
                         self._log("  ℹ '배송지명' 인라인 텍스트는 팝업 뒤쪽 → 스킵")
                         continue
 
-                    # 연락처(last4) 검증이 엄격해서 매칭을 놓치는 경우가 많으므로,
-                    # 전화번호 뒷자리가 텍스트나 주변 뷰에 없더라도 이름이 확실히 포함되어 있으면 진행
-                    if last4:
-                        phone_ok = False
-                        try:
-                            parent = view.find_element(By.XPATH, "..")
-                            sibling_texts = []
-                            try:
-                                grand_parent = parent.find_element(By.XPATH, "..")
-                                area_views = grand_parent.find_elements(By.XPATH, ".//*")
-                                for av in area_views:
-                                    try:
-                                        at = av.get_attribute("text") or ""
-                                        if at: sibling_texts.append(at)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-
-                            area_text = " ".join(sibling_texts)
-                            if "***" in area_text:
-                                phone_ok = True
-                                self._log("  ℹ 전화번호 마스킹 감지 → 이름만으로 매칭")
-                            elif last4 in area_text:
-                                phone_ok = True
-                            elif "연락처" in area_text:
-                                for st in sibling_texts:
-                                    if "연락처" in st and last4 in st:
-                                        phone_ok = True
-                                        break
-                        except Exception:
-                            phone_ok = True
-                            self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 매칭 시도")
-
-                        # 전화번호 미매칭이라도 에러 로그만 남기고 클릭은 허용 (사용자 요청)
-                        if not phone_ok:
-                            self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 주변에 없지만, 이름('{recipient_name}') 포함되어 클릭 시도")
-
-                    self._log(f"  🎯 이름 패턴 매칭 성공: '{text[:60]}'")
-                    
-                    # ── 사용자 요청: 연락처(전화번호) View를 찾아 클릭 ──
-                    target_view = view
-                    if last4:
-                        try:
-                            parent = view.find_element(By.XPATH, "..")
-                            grand_parent = parent.find_element(By.XPATH, "..")
-                            search_xpath = f'.//*[contains(@text, "{formatted_phone}") or contains(@text, "{last4}")]'
-                            phone_views = grand_parent.find_elements(By.XPATH, search_xpath)
-                            for pv in phone_views:
-                                ptext = pv.get_attribute("text") or ""
-                                if "연락처" in ptext or formatted_phone in ptext or last4 in ptext:
-                                    target_view = pv
-                                    self._log(f"  👉 연락처 View로 클릭 대상 변경: {ptext[:30]}")
-                                    break
-                        except Exception:
-                            pass
-
-                    import re as _re
-
-                    def _parse_bounds(el):
-                        try:
-                            bs = el.get_attribute("bounds") or ""
-                            mm = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bs)
-                            if mm:
-                                return tuple(map(int, mm.groups()))
-                            rect = el.rect
-                            return (rect['x'], rect['y'],
-                                    rect['x'] + rect['width'], rect['y'] + rect['height'])
-                        except Exception:
-                            return None
-
-                    try:
-                        # ── 좌표 안정화: 스크롤 관성/재렌더링으로 bounds가 밀리는 것을 방지 ──
-                        # bounds가 두 번 연속 동일할 때까지 최대 3회 재측정 (최대 ~1.5초)
-                        bounds = _parse_bounds(target_view)
-                        for _ in range(3):
-                            time.sleep(0.5)
-                            new_bounds = _parse_bounds(target_view)
-                            if new_bounds is None or new_bounds == bounds:
-                                bounds = new_bounds or bounds
-                                break
-                            self._log(f"  ↕ 화면 이동 감지 → 좌표 재측정: {bounds} → {new_bounds}")
-                            bounds = new_bounds
-                        if not bounds:
-                            raise RuntimeError("bounds 파싱 실패")
-
-                        x1, y1, x2, y2 = bounds
-                        tap_x = (x1 + x2) // 2
-                        tap_y = (y1 + y2) // 2
-
-                        # ── 안전 영역 확인: 상하 끝에 몰려있으면 스크롤로 중앙에 위치시킨 후 탭 ──
-                        # 상단 20% 미만 또는 하단 20% 초과 시 잘못된 항목 클릭 방지를 위해 스크롤
-                        try:
-                            scr_h = self.driver.get_window_size()['height']
-                        except Exception:
-                            scr_h = 2400
-                        safe_top    = int(scr_h * 0.20)   # 상단 안전선
-                        safe_bottom = int(scr_h * 0.80)   # 하단 안전선
-
-                        if tap_y < safe_top:
-                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 상단 안전선({safe_top}) 위에 있음 → 살짝 스크롤 다운 후 재탐색")
-                            self._scroll_down(distance_ratio=0.12)
-                            time.sleep(0.8)
-                            return False   # _try_and_verify 에서 재시도하도록 False 반환
-                        elif tap_y > safe_bottom:
-                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 하단 안전선({safe_bottom}) 아래에 있음 → 살짝 스크롤 업 후 재탐색")
-                            self._scroll_up(distance_ratio=0.12)
-                            time.sleep(0.8)
-                            return False   # _try_and_verify 에서 재시도하도록 False 반환
-
-                        # ── 이름 텍스트(clickable=false) 대신, 같은 블록을 덮고 있는
-                        #    '선택' Button(실제 클릭 가능한 요소)의 중앙으로 탭 좌표 보정 ──
-                        try:
-                            for btn in self.driver.find_elements(
-                                    By.XPATH,
-                                    '//android.widget.Button[@text="선택" or @text="선택됨"]'):
-                                bb = _parse_bounds(btn)
-                                if bb and bb[0] <= tap_x <= bb[2] and bb[1] <= tap_y <= bb[3]:
-                                    tap_x = (bb[0] + bb[2]) // 2
-                                    tap_y = (bb[1] + bb[3]) // 2
-                                    self._log(f"  🎯 이름 블록을 덮는 '선택' 버튼 발견 → 버튼 중앙 ({tap_x}, {tap_y})으로 보정")
-                                    break
-                        except Exception:
-                            pass
-
-                        self._log(f"  👉 부드러운 탭(120ms): ({tap_x}, {tap_y})  [안전 영역 내]")
-                        self._soft_tap(tap_x, tap_y)
-                        time.sleep(3)
-                        return True
-                    except Exception as e:
-                        self._log(f"  ⚠ 좌표 클릭 실패: {e}")
-                        if self._safe_click_element(target_view):
-                            time.sleep(3)
-                            return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 방법 B: 배송지 목록 팝업 형태 (명확한 '선택' 버튼 좌표 클릭) ──
-        # 전략: 전화번호 View를 찾은 후, 동일 블록 내 수취인명과 "선택"(또는 "선택됨") 버튼을 확인하고,
-        # 버튼의 중앙 좌표(bounds 파싱)를 직접 계산하여 터치합니다. (엉뚱한 신규배송지 클릭 방지)
-        try:
-            if phone_digits and len(phone_digits) >= 8:
-                formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}"
-                phone_xpaths = [
-                    f'//*[contains(@text, "{formatted_phone}")]',
-                    f'//*[contains(@text, "{last4}")]'
-                ]
-                for px in phone_xpaths:
-                    try:
-                        p_views = self.driver.find_elements(By.XPATH, px)
-                        for pv in p_views:
-                            try:
-                                pv_text = pv.get_attribute("text") or ""
-                                if "연락처" in pv_text:
-                                    continue
-                                
-                                node = pv
-                                target_button = None
-                                found_name = False
-                                
-                                # 조상 노드를 5단계까지 올라가며 수취인명과 선택버튼 탐색
-                                for _ in range(5):
-                                    try:
-                                        node = node.find_element(By.XPATH, "..")
-                                        els = node.find_elements(By.XPATH, ".//*")
-                                        
-                                        # 이름 검증
-                                        if not found_name:
-                                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
-                                            if self._recipient_name_matches(area_text, recipient_name):
-                                                found_name = True
-                                        
-                                        # 버튼 탐색
-                                        if not target_button:
-                                            for e in els:
-                                                e_class = e.get_attribute("class") or ""
-                                                e_text = e.get_attribute("text") or ""
-                                                if "Button" in e_class and e_text in ["선택", "선택됨"]:
-                                                    target_button = e
-                                                    break
-                                                    
-                                        if found_name and target_button:
-                                            break
-                                    except Exception:
-                                        break
-                                
-                                if found_name and target_button:
-                                    btn_text = target_button.get_attribute("text")
-                                    bounds_str = target_button.get_attribute("bounds")
-                                    self._log(f"  🎯 팝업 매칭! '{pv_text}' 그룹의 '{btn_text}' 버튼 클릭 시도 (bounds: {bounds_str})")
-                                    
-                                    # 명시적으로 bounds 중앙을 파싱해 클릭
-                                    import re
-                                    match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                                    if match:
-                                        x1, y1, x2, y2 = map(int, match.groups())
-                                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                                        self._log(f"  👉 '{btn_text}' 버튼 정중앙 탭: X={cx}, Y={cy}")
-                                        self.driver.tap([(cx, cy)])
-                                    else:
-                                        self._log("  ⚠ 좌표 파싱 실패 -> 기본 요소 클릭 사용")
-                                        self._click_element_or_parent(target_button)
-                                        
-                                    time.sleep(3)
-                                    return True
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        # ── 방법 B-2: 이름으로 먼저 찾는 폴백 로직 (전화번호가 마스킹된 경우 대비) ──
-        try:
-            name_xpaths = [
-                f'//*[contains(@text, "{recipient_name}")]',
-                f'//*[contains(@content-desc, "{recipient_name}")]',
-            ]
-            for nxp in name_xpaths:
-                try:
-                    name_views = self.driver.find_elements(By.XPATH, nxp)
-                    for nv in name_views:
-                        try:
-                            nv_text = nv.get_attribute("text") or ""
-                            nv_desc = nv.get_attribute("content-desc") or ""
-
-                            # '배송지명박경아(박경아)' = 결제창 인라인 → 팝업 없으면 이미 선택됨
-                            if "배송지명" in nv_text:
-                                if self._recipient_name_matches(nv_text, recipient_name):
-                                    popup_open = False
-                                    try:
-                                        popup_open = bool(self.driver.find_elements(
-                                            By.XPATH,
-                                            '//android.widget.Button[@text="선택" or @text="선택됨"]'
-                                            ' | //android.widget.RadioButton[@text="선택"]'
-                                        ))
-                                    except Exception:
-                                        pass
-                                    if not popup_open:
-                                        self._log(f"  ✅ 결제창 배송지명에 '{recipient_name}' 확인 → 이미 선택됨")
-                                        return True
-                                continue
-                            # 수취인명 매칭
-                            if not self._recipient_name_matches(nv_text + nv_desc, recipient_name):
-                                continue
-
-                            # 전화번호 검증 (같은 View에 있는지 먼저 확인)
-                            if last4:
-                                combined = nv_text + " " + nv_desc
-                                if last4 in combined:
-                                    # 같은 View에 전화번호도 있으면 바로 클릭
-                                    self._log(f"  🎯 배송지 발견 (이름+전화 동일 View): '{nv_text[:50]}'")
-                                    if self._click_element_or_parent(nv):
-                                        time.sleep(3)
-                                        return True
-                                else:
-                                    # 같은 View에 없으면 부모 영역 탐색
-                                    area_text = ""
-                                    try:
-                                        parent = nv.find_element(By.XPATH, "..")
-                                        gparent = parent.find_element(By.XPATH, "..")
-                                        area_els = gparent.find_elements(By.XPATH, ".//*")
-                                        area_text = " ".join(
-                                            (ae.get_attribute("text") or "") for ae in area_els
-                                        )
-                                    except Exception:
-                                        pass
-                                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
-                                    if "***" in area_text:
-                                        self._log(f"  ℹ 전화번호 마스킹 감지 → 이름만으로 클릭: '{nv_text[:40]}'")
-                                    elif area_text and last4 not in area_text:
-                                        self._log(f"  ℹ 전화 뒷4자리 '{last4}' 부모 영역에도 없음 → 이름만으로 클릭")
-                                    # 전화 미확인이어도 이름 매칭이면 클릭 진행 (스킵하지 않음)
-
-                            self._log(f"  🎯 배송지 발견: '{nv_text[:50]}'")
-                            if self._click_element_or_parent(nv):
-                                time.sleep(3)
-                                return True
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 방법 C: RadioButton[text="선택"] 을 이름+전화가 매칭된 블록에서 직접 클릭 ──
-        # XML: <android.widget.RadioButton text="선택" resource-id="delivery_option_..."/>
-        try:
-            radio_buttons = self.driver.find_elements(
-                By.XPATH, '//android.widget.RadioButton[@text="선택"]'
-            )
-            for rb in radio_buttons:
-                try:
-                    # RadioButton의 부모 컨테이너에서 이름 탐색
-                    container = rb.find_element(By.XPATH, "..")
-                    container_els = container.find_elements(By.XPATH, ".//*")
-                    container_text = " ".join(
-                        (ce.get_attribute("text") or "") for ce in container_els
-                    )
-                    if not self._recipient_name_matches(container_text, recipient_name):
+                    # 잘린/비정상 이름 View 스킵 (상단 일부만 보임)
+                    nbb = self._parse_element_bounds(view)
+                    if nbb and (nbb[3] - nbb[1]) < 20:
+                        self._log(f"  ⏭ 잘린 이름 View 스킵: '{text[:40]}' h={nbb[3]-nbb[1]}")
                         continue
-                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
-                    # 이름이 확실하면 전화 미확인이어도 클릭 허용
-                    if last4 and "***" not in container_text and last4 not in container_text:
-                        self._log(f"  ℹ RadioButton 블록 전화 '{last4}' 미확인 → 이름만으로 클릭")
-                    self._log(f"  🎯 RadioButton '선택' 클릭 - 수취인 '{recipient_name}' 매칭")
-                    rb.click()
-                    time.sleep(3)
+
+                    self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
+                    # True=탭완료, False=스크롤후재시도, None=이 View 스킵
+                    tapped = self._tap_recipient_card_select(view, recipient_name)
+                    if tapped is True:
+                        return True
+                    if tapped is False:
+                        return False
+                    continue
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 방법 2: 선택 버튼 조상에 목표 이름이 있는 카드만 탭 ──
+        try:
+            sel_views = list(self._iter_address_select_buttons())
+            self._log(f"  ℹ 선택 버튼 후보 {len(sel_views)}개 (이름 매칭 폴백)")
+            for sv in sel_views:
+                try:
+                    bb = self._parse_element_bounds(sv)
+                    if not bb or (bb[3] - bb[1]) < 50:
+                        continue
+                    # 조상(최대 4단)에 목표 수취인 이름이 있고, 선택 버튼이 1개뿐인 카드만
+                    matched = False
+                    node = sv
+                    for _ in range(4):
+                        try:
+                            node = node.find_element(By.XPATH, "..")
+                            texts = []
+                            sel_cnt = 0
+                            for e in node.find_elements(By.XPATH, ".//*"):
+                                t = (e.get_attribute("text") or "").strip()
+                                if not t:
+                                    continue
+                                texts.append(t)
+                                if t in ("선택", "선택됨"):
+                                    sel_cnt += 1
+                            if sel_cnt > 1:
+                                break
+                            if self._recipient_name_matches(" ".join(texts), recipient_name):
+                                matched = True
+                                break
+                        except Exception:
+                            break
+                    if not matched:
+                        continue
+
+                    cx, cy = (bb[0] + bb[2]) // 2, (bb[1] + bb[3]) // 2
+                    try:
+                        scr_h = self.driver.get_window_size()["height"]
+                    except Exception:
+                        scr_h = 2400
+                    if cy < int(scr_h * 0.10):
+                        if not self._scroll_address_list("down"):
+                            self._scroll_down(distance_ratio=0.15)
+                        time.sleep(0.5)
+                        return False
+                    if cy > int(scr_h * 0.90):
+                        if not self._scroll_address_list("up"):
+                            self._scroll_up(distance_ratio=0.18)
+                        time.sleep(0.5)
+                        return False
+
+                    sv_text = (sv.get_attribute("text") or "").strip()
+                    self._log(
+                        f"  🎯 폴백 매칭! '{recipient_name}' 카드 '{sv_text}' "
+                        f"→ ({cx}, {cy}) bounds={bb}"
+                    )
+                    self._soft_tap(cx, cy)
+                    time.sleep(2.5)
                     return True
                 except Exception:
                     continue
@@ -2342,7 +2286,8 @@ class NaverOrderWorker:
         # ── 2단계: 없으면 스크롤하며 재탐색 ──
         for scroll_cnt in range(1, scroll_max + 1):
             self._log(f"  ⬇ 배송지 목록 스크롤 ({scroll_cnt}/{scroll_max})")
-            self._scroll_down()
+            if not self._scroll_address_list("down"):
+                self._scroll_down()
             time.sleep(1.0)
 
             self._log(f"  📋 스크롤 후 수취인 재탐색...")
@@ -3842,6 +3787,14 @@ class NaverOrderWorker:
         except Exception:
             pass
         return w, h
+
+    def _scroll_down_fast(self, distance_ratio: float = 0.28):
+        """상품 리스트용 빠른 스크롤 (지문 검증/재시도 생략)."""
+        w, h = self._get_window_size()
+        start_y = int(h * 0.72)
+        end_y = max(100, int(start_y - (h * distance_ratio)))
+        self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=280)
+        time.sleep(0.2)
 
     def _scroll_down(self, distance_ratio: float = 0.20):
         """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
