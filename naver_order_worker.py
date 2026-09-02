@@ -114,6 +114,66 @@ IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
 
+# 현대카드 결제 이미지 (단계 22)
+_HYUNDAI_NUM_DIR = os.path.join(_IMG_DIR, "현대숫자")
+IMG_HYUNDAI_NUMS = {
+    str(d): os.path.join(_HYUNDAI_NUM_DIR, f"{d}.png") for d in range(10)
+}
+HYUNDAI_PIN6 = "115080"  # 현대카드 1차 PIN (6자리, 개발리스트 22-8)
+IMG_HYUNDAI_CARDS = [
+    (os.path.join(_IMG_DIR, "카드를.png"), "카드를"),
+    (os.path.join(_IMG_DIR, "카드를1.png"), "카드를1"),
+    (os.path.join(_IMG_DIR, "카드를2.png"), "카드를2"),
+    (os.path.join(_IMG_DIR, "카드를3.png"), "카드를3"),
+    (os.path.join(_IMG_DIR, "카드를4.png"), "카드를4"),
+]
+IMG_HYUNDAI_BRAND = [
+    (os.path.join(_IMG_DIR, "현대1.png"), "현대1"),
+    (os.path.join(_IMG_DIR, "현대2.png"), "현대2"),
+    (os.path.join(_IMG_DIR, "현대3.png"), "현대3"),
+    (os.path.join(_IMG_DIR, "현대4.png"), "현대4"),
+]
+IMG_HYUNDAI_DO_PAY = [
+    (os.path.join(_IMG_DIR, "결재하기.png"), "결재하기"),
+    (os.path.join(_IMG_DIR, "결재하기1.png"), "결재하기1"),
+    (os.path.join(_IMG_DIR, "결재하기2.png"), "결재하기2"),
+    (os.path.join(_IMG_DIR, "결재하기3.png"), "결재하기3"),
+    (os.path.join(_IMG_DIR, "결재하기4.png"), "결재하기4"),
+]
+IMG_HYUNDAI_PIN_BTN = [
+    (os.path.join(_IMG_DIR, "현대핀1.png"), "현대핀1"),
+    (os.path.join(_IMG_DIR, "현대핀2.png"), "현대핀2"),
+    (os.path.join(_IMG_DIR, "현대핀3.png"), "현대핀3"),
+    (os.path.join(_IMG_DIR, "현대핀4.png"), "현대핀4"),
+    (os.path.join(_IMG_DIR, "현대핀5.png"), "현대핀5"),
+]
+IMG_HYUNDAI_PIN_INPUT = [
+    (os.path.join(_IMG_DIR, "핀입력1.png"), "핀입력1"),
+    (os.path.join(_IMG_DIR, "핀입력2.png"), "핀입력2"),
+    (os.path.join(_IMG_DIR, "핀입력3.png"), "핀입력3"),
+    (os.path.join(_IMG_DIR, "핀입력4.png"), "핀입력4"),
+    (os.path.join(_IMG_DIR, "핀입력5.png"), "핀입력5"),
+]
+IMG_HYUNDAI_CONFIRM = [
+    (os.path.join(_IMG_DIR, "현대확인1.png"), "현대확인1"),
+    (os.path.join(_IMG_DIR, "현대확인2.png"), "현대확인2"),
+    (os.path.join(_IMG_DIR, "현대확인3.png"), "현대확인3"),
+    (os.path.join(_IMG_DIR, "현대확인4.png"), "현대확인4"),
+]
+IMG_HYUNDAI_PAY_NOW = [
+    (os.path.join(_IMG_DIR, "현대결제하기1.png"), "현대결제하기1"),
+    (os.path.join(_IMG_DIR, "현대결제하기2.png"), "현대결제하기2"),
+    (os.path.join(_IMG_DIR, "현대결제하기3.png"), "현대결제하기3"),
+    (os.path.join(_IMG_DIR, "현대결제하기4.png"), "현대결제하기4"),
+]
+IMG_HYUNDAI_CARD_PW = [
+    (os.path.join(_IMG_DIR, "현대카드비번1.png"), "현대카드비번1"),
+    (os.path.join(_IMG_DIR, "현대카드비번2.png"), "현대카드비번2"),
+    (os.path.join(_IMG_DIR, "현대카드비번3.png"), "현대카드비번3"),
+    (os.path.join(_IMG_DIR, "현대카드비번4.png"), "현대카드비번4"),
+]
+ORDER_COMPLETE_XPATH = '//android.widget.TextView[@text="주문완료 되었습니다"]'
+
 # 비밀번호 숫자 이미지 (단계 19): p0.png ~ p9.png
 IMG_NUMS = {
     str(d): os.path.join(_NUM_DIR, f"p{d}.png") for d in range(10)
@@ -202,7 +262,7 @@ DELIVERY_LIST_WEBVIEW_XPATHS = [
 ]
 
 # 타임아웃
-TASK_TIMEOUT_SEC = 600  # 주문 1건 최대 10분
+TASK_TIMEOUT_SEC = 900  # 주문 1건 최대 15분 (현대카드 PIN 대기 포함)
 
 
 class NaverOrderWorker:
@@ -2767,6 +2827,28 @@ class NaverOrderWorker:
         self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
         return False
 
+    def _click_any_image_basic(self, images: list, threshold: float = 0.70,
+                               attempts: int = 5, wait_after: float = 2.0) -> bool:
+        """여러 이미지 중 하나라도 발견되면 스크롤 없이 클릭."""
+        names_str = " / ".join(n for _, n in images)
+        self._set_status(f"{names_str} 탐색 중")
+        valid = [(p, n) for p, n in images if os.path.exists(p)]
+        if not valid:
+            self._log(f"  ❌ [{names_str}] 템플릿 파일 없음")
+            return False
+        for attempt in range(1, attempts + 1):
+            for img_path, name in valid:
+                coords = self._find_image_coords(img_path, threshold=threshold)
+                if coords:
+                    self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(wait_after)
+                    return True
+            if attempt < attempts:
+                time.sleep(1.0)
+        self._log(f"  ❌ [{names_str}] 버튼 탐색 실패 (스크롤 없음, {attempts}회)")
+        return False
+
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 8) -> bool:
         """
         [무통장입금 클릭 후 판단]
@@ -3338,6 +3420,171 @@ class NaverOrderWorker:
             self._log("  ℹ 비밀번호 없음 → 건너뜀")
         return True
 
+    def _is_hyundai_card_payment(self, method: str) -> bool:
+        m = (method or "").replace(" ", "")
+        return any(k in m for k in ("현대카드", "현대하드", "현대"))
+
+    def _ensure_normal_pay_checked(self) -> bool:
+        """[22-2] 일반결재가 체크되어 있어야 함. 아니면 클릭."""
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ [22-2] '일반결재체크' 상태 확인")
+            return True
+        normal_pay_images = [
+            (IMG_NORMAL_PAY, "일반결재"),
+            (IMG_NORMAL_PAY3, "일반결재3"),
+        ]
+        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
+            self._log("✅ [22-2] 일반결재 클릭 완료")
+            return True
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ [22-2] '일반결재체크' 발견")
+            return True
+        self._log("❌ [22-2] 일반결재 미확인")
+        return False
+
+    def _input_hyundai_digits(self, password: str, expected_len: int) -> bool:
+        """현대숫자 폴더 0.png~9.png 로 PIN 입력."""
+        pwd_digits = ''.join(filter(str.isdigit, password or ""))
+        if expected_len and len(pwd_digits) != expected_len:
+            self._log(f"  ❌ 현대 PIN 자릿수 불일치: {len(pwd_digits)}자리 (기대 {expected_len}자리)")
+            return False
+        if not pwd_digits:
+            self._log("  ❌ 현대 PIN 값 없음")
+            return False
+
+        self._log(f"  🔐 현대 PIN 입력: {'*' * len(pwd_digits)}자리")
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+        min_y_keypad = int(w_h * 0.12)
+
+        self._log("  ⏳ 현대 키패드 표시 대기 (2초)...")
+        time.sleep(2.0)
+
+        MAX_DIGIT_RETRY = 3
+        RETRY_INTERVAL = 0.8
+        for idx, digit in enumerate(pwd_digits):
+            img_path = IMG_HYUNDAI_NUMS.get(digit)
+            if not img_path or not os.path.exists(img_path):
+                self._log(f"  ⚠ 현대숫자 이미지 없음: {digit}.png → 실패")
+                return False
+            self._log(f"  🔢 {idx + 1}번째 자리 '{digit}' 클릭 시도")
+            digit_ok = False
+            for retry in range(1, MAX_DIGIT_RETRY + 1):
+                coords = self._find_digit_coords(img_path, min_y_keypad)
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"    ✅ '{digit}' 클릭 완료 ({coords}) [시도 {retry}회]")
+                    digit_ok = True
+                    time.sleep(0.5)
+                    break
+                self._log(f"    ↩ '{digit}' 인식 실패 ({retry}/{MAX_DIGIT_RETRY})")
+                time.sleep(RETRY_INTERVAL)
+            if not digit_ok:
+                self._log(f"    ❌ '{digit}' 최종 인식 실패")
+                return False
+        self._log("  ✅ 현대 PIN 입력 완료")
+        return True
+
+    def _verify_hyundai_order_complete(self) -> bool:
+        """[22-14] 주문완료 되었습니다 존재 여부."""
+        xpaths = [
+            ORDER_COMPLETE_XPATH,
+            '//android.widget.TextView[contains(@text,"주문완료 되었습니다")]',
+            '//*[contains(@text,"주문완료 되었습니다")]',
+        ]
+        for xpath in xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    self._log(f"✅ [22-14] 주문완료 확인: {xpath}")
+                    return True
+            except Exception:
+                continue
+        self._log("❌ [22-14] '주문완료 되었습니다' 미발견 → 실패")
+        return False
+
+    def _process_hyundai_card_payment(self, second_password: str) -> bool:
+        """[단계 22] 현대카드 결제."""
+        self._log("💳 [현대카드 결제] 프로세스 시작")
+        if self._skip_final_order_click():
+            self._log("🖐 테스트/수동시작 모드 → 현대카드 결제 최종 단계 생략")
+            return True
+
+        # 22-1 다른결재 / 다른결재4 / 다른결재수단2
+        if not self._click_other_pay_button(max_scroll_attempts=8):
+            self._log("❌ [22-1] 다른결재 버튼 미발견")
+            return False
+
+        # 22-2 일반결재 체크
+        if not self._ensure_normal_pay_checked():
+            return False
+
+        # 22-3 카드를.png ~ 카드를4.png
+        if not self._click_any_image_with_scroll(IMG_HYUNDAI_CARDS, threshold=0.70, max_scroll_attempts=10):
+            self._log("❌ [22-3] '카드를' 이미지 미발견")
+            return False
+
+        # 22-4 현대1~4.png
+        if not self._click_any_image_with_scroll(IMG_HYUNDAI_BRAND, threshold=0.70, max_scroll_attempts=10):
+            self._log("❌ [22-4] 현대카드 브랜드 이미지 미발견")
+            return False
+
+        # 22-5 결재하기.png ~ 결재하기4.png
+        if not self._click_any_image_with_scroll(IMG_HYUNDAI_DO_PAY, threshold=0.70, max_scroll_attempts=8):
+            self._log("  ⚠ [22-5] 결재하기 이미지 미발견 → XPath 폴백")
+            if not self._click_pay_button():
+                self._log("❌ [22-5] 결재하기 클릭 실패")
+                return False
+
+        # 22-6 현대핀1~5.png, 6초 대기
+        if not self._click_any_image_basic(IMG_HYUNDAI_PIN_BTN, threshold=0.70, attempts=6, wait_after=6.0):
+            self._log("❌ [22-6] 현대핀 이미지 미발견")
+            return False
+
+        # 22-7 핀입력1~5.png, 5초 대기
+        if not self._click_any_image_basic(IMG_HYUNDAI_PIN_INPUT, threshold=0.70, attempts=6, wait_after=5.0):
+            self._log("❌ [22-7] 핀입력 이미지 미발견")
+            return False
+
+        # 22-8 현대숫자 6자리 PIN 115080
+        if not self._input_hyundai_digits(HYUNDAI_PIN6, expected_len=6):
+            self._log("❌ [22-8] 현대카드 6자리 PIN 입력 실패")
+            return False
+
+        # 22-9 현대확인1~4.png, 5초 대기
+        if not self._click_any_image_basic(IMG_HYUNDAI_CONFIRM, threshold=0.70, attempts=6, wait_after=5.0):
+            self._log("❌ [22-9] 현대확인 이미지 미발견")
+            return False
+
+        # 22-10 현대결제하기1~4.png
+        if not self._click_any_image_basic(IMG_HYUNDAI_PAY_NOW, threshold=0.70, attempts=6, wait_after=2.0):
+            if not self._click_any_image_with_scroll(IMG_HYUNDAI_PAY_NOW, threshold=0.70, max_scroll_attempts=6):
+                self._log("❌ [22-10] 현대결제하기 이미지 미발견")
+                return False
+
+        # 22-11 현대카드비번1~4.png
+        if not self._click_any_image_basic(IMG_HYUNDAI_CARD_PW, threshold=0.70, attempts=6, wait_after=2.0):
+            self._log("❌ [22-11] 현대카드비번 이미지 미발견")
+            return False
+
+        # 22-12 엑셀 2차비밀번호 4자리
+        pin4 = ''.join(filter(str.isdigit, second_password or ""))
+        if not self._input_hyundai_digits(pin4, expected_len=4):
+            self._log("❌ [22-12] 2차비밀번호 4자리 입력 실패")
+            return False
+
+        # 22-13 현대확인1~4.png, 5초 대기 후 7초 대기
+        if not self._click_any_image_basic(IMG_HYUNDAI_CONFIRM, threshold=0.70, attempts=6, wait_after=5.0):
+            self._log("❌ [22-13] 현대확인 이미지 미발견")
+            return False
+        self._log("  ⏳ [22-13] 추가 7초 대기...")
+        time.sleep(7.0)
+
+        # 22-14 주문완료 확인
+        return self._verify_hyundai_order_complete()
+
     # ─── 주문 루프 ────────────────────────────────────────────────────────────
 
     def _order_loop(self):
@@ -3370,30 +3617,16 @@ class NaverOrderWorker:
                 self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
                 break
 
-            self._log(f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, 폰ID={row.device_id!r}")
+            self._log(
+                f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
+                f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
+            )
             self._set_status(f"주문 중: {row.search_keyword}")
             self.has_dismissed_payment_benefit = False
 
             try:
-                success = False
-                max_retries = 3
-                for attempt in range(max_retries + 1):
-                    if self._stop_event.is_set():
-                        break
-                    
-                    if attempt > 0:
-                        self._log(f"  🔄 [{attempt}차 실패 재시도] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 진행...")
-                        try:
-                            ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
-                            time.sleep(2)
-                        except Exception:
-                            pass
-
-                    success = self._process_order_with_timeout(row)
-                    if success:
-                        if attempt > 0:
-                            self._log(f"  ✅ [재시도 성공!] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
-                        break
+                # 23. 실패 시 재작업하지 않음 (1회만 시도)
+                success = self._process_order_with_timeout(row)
             except Exception as fatal_err:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 치명적 오류: {fatal_err}")
@@ -3443,7 +3676,7 @@ class NaverOrderWorker:
                 time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패 (총 {max_retries + 1}회 시도 모두 실패): {row.search_keyword} → F 기록")
+                self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
                 import gc
                 gc.collect()
 
@@ -3551,7 +3784,12 @@ class NaverOrderWorker:
         self._handle_delivery_memo()
 
         # [단계 17] 전액사용 클릭 등 결제 방식 분기
-        if row.payment_method == "무통장":
+        if self._is_hyundai_card_payment(row.payment_method):
+            second_pw = getattr(row, "second_password", "") or ""
+            if not self._process_hyundai_card_payment(second_pw):
+                self._log("❌ 현대카드 결제 진행 실패")
+                return False
+        elif row.payment_method == "무통장":
             if not self._process_bank_transfer():
                 self._log("❌ 무통장 결제 진행 실패")
                 return False
