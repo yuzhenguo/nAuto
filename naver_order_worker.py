@@ -172,6 +172,34 @@ IMG_HYUNDAI_CARD_PW = [
     (os.path.join(_IMG_DIR, "현대카드비번3.png"), "현대카드비번3"),
     (os.path.join(_IMG_DIR, "현대카드비번4.png"), "현대카드비번4"),
 ]
+# 현대결제하기 클릭 후 안전/추가인증 팝업 감지
+IMG_HYUNDAI_SAFE_DETECT = [
+    (os.path.join(_IMG_DIR, "안전한.png"), "안전한"),
+    (os.path.join(_IMG_DIR, "안전한2.png"), "안전한2"),
+    (os.path.join(_IMG_DIR, "안전한3.png"), "안전한3"),
+    (os.path.join(_IMG_DIR, "안전결재.png"), "안전결재"),
+    (os.path.join(_IMG_DIR, "안전결재2.png"), "안전결재2"),
+    (os.path.join(_IMG_DIR, "추가인증.png"), "추가인증"),
+]
+# 팝업 본체(화이트 모달) — bbox 하단 = 확인 버튼
+IMG_HYUNDAI_SAFE_POPUP_BODY = [
+    (os.path.join(_IMG_DIR, "안전한3.png"), "안전한3"),
+    (os.path.join(_IMG_DIR, "안전결재.png"), "안전결재"),
+    (os.path.join(_IMG_DIR, "안전결재2.png"), "안전결재2"),
+]
+# 전체화면 참고 (안전결재3)
+IMG_HYUNDAI_SAFE_POPUP_FULL = os.path.join(_IMG_DIR, "안전결재3.png")
+# 팝업 닫기: 안전확인1~3 중 하나 클릭
+IMG_HYUNDAI_SAFE_CONFIRM = [
+    (os.path.join(_IMG_DIR, "안전확인1.png"), "안전확인1"),
+    (os.path.join(_IMG_DIR, "안전확인2.png"), "안전확인2"),
+    (os.path.join(_IMG_DIR, "안전확인3.png"), "안전확인3"),
+]
+SAFE_AUTH_TEXT_XPATHS = [
+    '//*[contains(@text,"안전한 결제를 위해")]',
+    '//*[contains(@text,"추가 인증을 진행합니다")]',
+    '//*[contains(@text,"추가 인증")]',
+]
 # 현대비번.png = 키패드 영역 템플릿 (인식 후 ROI 커팅 → 숫자 입력)
 IMG_HYUNDAI_PW_KEYPAD = os.path.join(_IMG_DIR, "현대비번.png")
 IMG_HYUNDAI_PW_CONFIRM_FULL = os.path.join(_IMG_DIR, "현대비번 확인.png")
@@ -2884,7 +2912,11 @@ class NaverOrderWorker:
         return False
 
     def _click_any_image_basic(self, images: list, threshold: float = 0.70,
-                               attempts: int = 5, wait_after: float = 2.0) -> bool:
+                               attempts: int = 5, wait_after: float = 2.0,
+                               min_y: Optional[int] = None,
+                               max_y: Optional[int] = None,
+                               min_x: Optional[int] = None,
+                               max_x: Optional[int] = None) -> bool:
         """여러 이미지 중 하나라도 발견되면 스크롤 없이 클릭."""
         names_str = " / ".join(n for _, n in images)
         self._set_status(f"{names_str} 탐색 중")
@@ -2894,7 +2926,10 @@ class NaverOrderWorker:
             return False
         for attempt in range(1, attempts + 1):
             for img_path, name in valid:
-                coords = self._find_image_coords(img_path, threshold=threshold)
+                coords = self._find_image_coords(
+                    img_path, threshold=threshold,
+                    min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+                )
                 if coords:
                     self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -2904,6 +2939,150 @@ class NaverOrderWorker:
                 time.sleep(1.0)
         self._log(f"  ❌ [{names_str}] 버튼 탐색 실패 (스크롤 없음, {attempts}회)")
         return False
+
+    def _click_hyundai_safe_confirm(self, attempts: int = 6, threshold: float = 0.60,
+                                    force_tap: bool = False) -> bool:
+        """
+        안전결재3 화면 기준: 중앙 화이트 팝업 하단 '확인' 클릭.
+        기대 좌표 ≈ (544, 1253). 상단(y=316) 오인 차단.
+        """
+        w, h = 1080, 2400
+        try:
+            size = self.driver.get_window_size()
+            w, h = size["width"], size["height"]
+        except Exception:
+            pass
+
+        # 팝업 확인 버튼 ROI (안전결재3 기준 중하단)
+        min_y = int(h * 0.42)
+        max_y = int(h * 0.72)
+        min_x = int(w * 0.20)
+        max_x = int(w * 0.80)
+        expect_x, expect_y = w // 2, int(h * 0.52)  # ≈544,1250 @1080x2400
+
+        # 1) 팝업 본체(안전결재/안전한3) bbox → 하단 중앙 탭 (확인 위치)
+        for img_path, name in IMG_HYUNDAI_SAFE_POPUP_BODY:
+            if not os.path.exists(img_path):
+                continue
+            box = self._find_image_bbox(
+                img_path, threshold=0.50, save_crop=True, crop_label=f"팝업_{name}"
+            )
+            if not box:
+                continue
+            # 확인은 모달 하단 ~85~92% 지점
+            tap_x = (box["x1"] + box["x2"]) // 2
+            tap_y = int(box["y1"] + (box["y2"] - box["y1"]) * 0.88)
+            if not (min_y - int(h * 0.05) <= tap_y <= max_y + int(h * 0.08)):
+                # bbox가 전체화면(안전결재 축소본)일 수 있음 → 기대좌표 사용
+                tap_x, tap_y = expect_x, expect_y
+            self._log(
+                f"  🎯 [안전확인] 팝업본체 '{name}' bbox → 확인 탭 ({tap_x},{tap_y})"
+            )
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            time.sleep(2.0)
+            return True
+
+        # 2) 안전확인1~3 이미지 (중하단 ROI만)
+        self._log(
+            f"  🔍 [안전확인] 중하단 ROI 탐색 "
+            f"x={min_x}~{max_x} y={min_y}~{max_y} (기대≈{expect_x},{expect_y})"
+        )
+        if self._click_any_image_basic(
+            IMG_HYUNDAI_SAFE_CONFIRM,
+            threshold=threshold,
+            attempts=attempts,
+            wait_after=2.0,
+            min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+        ):
+            return True
+
+        # 3) XPath: 팝업 문구 근처 / 중하단 '확인'
+        for xp in SAFE_AUTH_TEXT_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1):
+                    # 같은 계층/근처의 확인 버튼
+                    parent_xp = xp + '/ancestor::*[1]//*[contains(@text,"확인")]'
+                    for c_xp in [parent_xp, '//android.widget.Button[contains(@text,"확인")]',
+                                 '//*[contains(@text,"확인")]']:
+                        try:
+                            els = self.driver.find_elements(By.XPATH, c_xp)
+                            for el in els:
+                                loc = el.location
+                                sz = el.size
+                                cx = int(loc["x"] + sz["width"] / 2)
+                                cy = int(loc["y"] + sz["height"] / 2)
+                                if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+                                    self._log(f"  ↩ [안전확인] XPath 거부 ({cx},{cy})")
+                                    continue
+                                if self._safe_click_element(el):
+                                    self._log(f"  ✅ [안전확인] XPath 클릭 ({cx},{cy})")
+                                    time.sleep(2.0)
+                                    return True
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        # 4) 팝업이 확인된 경우에만 안전결재3 기준 강제 탭
+        if force_tap:
+            self._log(f"  ⚠ [안전확인] 인식 실패 → 안전결재3 기준 강제 탭 ({expect_x},{expect_y})")
+            ah.tap_by_coords(self.driver, expect_x, expect_y, self._log)
+            time.sleep(2.0)
+            return True
+        return False
+
+    def _hyundai_safe_detect_visible(self, threshold: float = 0.60) -> Optional[str]:
+        """안전한/안전결재/추가인증 또는 텍스트로 팝업 감지."""
+        for img_path, name in IMG_HYUNDAI_SAFE_DETECT:
+            if not os.path.exists(img_path):
+                continue
+            coords = self._find_image_coords(img_path, threshold=threshold)
+            if coords:
+                return name
+        # 전체화면 참고 템플릿
+        if os.path.exists(IMG_HYUNDAI_SAFE_POPUP_FULL):
+            box = self._find_image_bbox(
+                IMG_HYUNDAI_SAFE_POPUP_FULL, threshold=0.40, save_crop=False, crop_label="안전결재3"
+            )
+            if box and box.get("score", 0) >= 0.40:
+                return "안전결재3"
+        # 텍스트
+        for xp in SAFE_AUTH_TEXT_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    return "텍스트팝업"
+            except Exception:
+                continue
+        return None
+
+    def _handle_hyundai_safe_auth_popup(self) -> bool:
+        """
+        [22-10 이후] 현대결제하기 → 3초 대기 →
+        안전결재3 팝업 확인 1회 클릭 후 바로 현대카드비번 단계로 진행.
+        (잔존 감지/재시도 생략 — 안전한2 상단 오인으로 루프 방지)
+        """
+        self._log("  ⏳ [안전인증] 현대결제하기 후 3초 대기...")
+        time.sleep(3.0)
+
+        detect_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_DETECT) + " / 안전결재3"
+        confirm_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_CONFIRM)
+
+        detected = self._hyundai_safe_detect_visible(threshold=0.55)
+        if detected:
+            self._log(f"  🔒 [안전인증] 팝업 감지: '{detected}' → 확인 클릭")
+        else:
+            self._log(f"  🔍 [안전인증] 감지 미매칭 ({detect_names}) → 안전확인 1회 시도")
+
+        self._log(f"  🔍 [안전인증] 팝업닫기: {confirm_names}")
+        clicked = self._click_hyundai_safe_confirm(
+            attempts=5, threshold=0.58, force_tap=bool(detected)
+        )
+        if clicked:
+            self._log("  ✅ [안전인증] 확인 클릭 완료 → 현대카드비번 단계로 진행 (잔존검사 패스)")
+        else:
+            self._log("  ℹ [안전인증] 확인 미클릭/팝업없음 → 현대카드비번 단계로 진행")
+        time.sleep(1.0)
+        return True
 
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 8) -> bool:
         """
@@ -4192,6 +4371,11 @@ class NaverOrderWorker:
             if not self._click_any_image_with_scroll(IMG_HYUNDAI_PAY_NOW, threshold=0.70, max_scroll_attempts=6):
                 self._log("❌ [22-10] 현대결제하기 이미지 미발견")
                 return False
+
+        # 22-10.5 안전한/추가인증 팝업 → 안전확인1~2 클릭 후 카드비번 진행
+        if not self._handle_hyundai_safe_auth_popup():
+            self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
+            return False
 
         # 22-11 현대카드비번1~4.png 클릭 → 비번 입력창
         if not self._click_any_image_basic(IMG_HYUNDAI_CARD_PW, threshold=0.70, attempts=6, wait_after=2.0):
