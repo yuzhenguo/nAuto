@@ -3249,7 +3249,7 @@ class NaverOrderWorker:
 
             # 결제화면: 짧은·느린 안전스크롤 (앱 창밖 오버스크롤 방지)
             self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 안전스크롤 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down_safe(distance_ratio=0.10)
+            self._scroll_down_safe(distance_ratio=0.14)
             time.sleep(0.6)
 
         self._log("  ❌ [다른결재 버튼] 이미지 매칭 탐색 실패")
@@ -4472,9 +4472,8 @@ class NaverOrderWorker:
                     else:
                         self.order_manager.mark_failed(row.row_index)
                         self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
-                        self._log("⏳ [무통장 실패] 30초 대기 중...")
-                        time.sleep(30)
-                        continue
+                        self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
+                        break
                 else:
                     self.order_manager.mark_success(row.row_index)
                     if self.manual_mode:
@@ -4494,8 +4493,10 @@ class NaverOrderWorker:
             else:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
                 import gc
                 gc.collect()
+                break
 
         self._log("📋 주문 루프 종료")
 
@@ -4851,37 +4852,37 @@ class NaverOrderWorker:
         self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=280)
         time.sleep(0.2)
 
-    def _scroll_down_safe(self, distance_ratio: float = 0.10):
+    def _scroll_down_safe(self, distance_ratio: float = 0.14):
         """
         결제/주문 화면용 안전 스크롤.
-        - 웹뷰 콘텐츠 밴드(약 35%~58%)만 드래그 → 하단 네비/앱 밖으로 오버스크롤 방지
-        - 짧은 거리 + 느린 duration → fling/관성으로 창 밖 이탈 방지
+        - 웹뷰 콘텐츠 밴드(약 32%~62%)만 드래그 → 하단 네비/앱 밖으로 오버스크롤 방지
+        - 중간 거리 + 느린 duration → fling/관성으로 창 밖 이탈 방지
         - 지문 재시도(시작점 변경) 없음 → 과도한 연속 스와이프 방지
         """
         w, h = self._get_window_size()
-        # 콘텐츠 중앙 부근에서만 짧게 올림 (네이버 앱 WebView 내부)
-        start_y = int(h * 0.58)
-        end_y = max(int(h * 0.38), int(start_y - (h * max(0.06, min(0.14, distance_ratio)))))
+        # 콘텐츠 중앙 부근에서 조금 더 넓게 올림 (네이버 앱 WebView 내부)
+        start_y = int(h * 0.62)
+        end_y = max(int(h * 0.32), int(start_y - (h * max(0.08, min(0.18, distance_ratio)))))
         self._log(
             f"  ↕ [안전스크롤] down ({start_y}→{end_y}, ratio≈{distance_ratio:.2f})"
         )
         # 네이티브 제스처 우선 (느린 속도)
         try:
-            area_top = int(h * 0.35)
-            area_h = int(h * 0.30)
-            percent = max(0.12, min(0.35, (h * distance_ratio) / max(1, area_h)))
+            area_top = int(h * 0.32)
+            area_h = int(h * 0.36)
+            percent = max(0.18, min(0.48, (h * distance_ratio) / max(1, area_h)))
             self.driver.execute_script('mobile: scrollGesture', {
-                'left': int(w * 0.15),
+                'left': int(w * 0.12),
                 'top': area_top,
-                'width': int(w * 0.70),
+                'width': int(w * 0.76),
                 'height': area_h,
                 'direction': 'down',
                 'percent': percent,
-                'speed': 700,
+                'speed': 750,
             })
         except Exception:
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=1000)
-        time.sleep(0.9)
+            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=950)
+        time.sleep(0.85)
 
     def _scroll_down(self, distance_ratio: float = 0.20):
         """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
