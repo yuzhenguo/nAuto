@@ -3159,7 +3159,7 @@ class NaverOrderWorker:
         self._log(f"  ⚠ 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과). 무시하고 계속 진행합니다.")
         return True
 
-    def _click_other_pay_button(self, max_scroll_attempts: int = 8) -> bool:
+    def _click_other_pay_button(self, max_scroll_attempts: int = 20) -> bool:
         """
         다른결재 버튼을 3중 인식 방식으로 탐색 후 화면 중앙에 안착시켜 클릭합니다.
         0순위: 최우선 XPath (btn_payment_method_accordion 등)
@@ -3200,13 +3200,13 @@ class NaverOrderWorker:
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 스크롤 업")
-                self._scroll_up(distance_ratio=0.12)
+                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 안전스크롤 업")
+                self._scroll_up(distance_ratio=0.08)
                 time.sleep(1.0)
                 return False
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 스크롤 다운")
-                self._scroll_down(distance_ratio=0.12)
+                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 안전스크롤 다운")
+                self._scroll_down_safe(distance_ratio=0.08)
                 time.sleep(1.0)
                 return False
 
@@ -3232,10 +3232,10 @@ class NaverOrderWorker:
             return True
 
         for attempt in range(1, max_scroll_attempts + 1):
-            # ── 이미지 매칭 전용 탐색 (threshold 0.72) ──
+            # ── 이미지 매칭 (threshold 0.55: 로그상 0.50~0.61대 후보 허용) ──
             found_and_handled = False
             for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.72)
+                coords = self._find_image_coords(img_path, threshold=0.55)
                 if coords:
                     res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
                     if res is True:
@@ -3247,9 +3247,10 @@ class NaverOrderWorker:
             if found_and_handled:
                 continue
 
-            self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.20)
-            time.sleep(1.0)
+            # 결제화면: 짧은·느린 안전스크롤 (앱 창밖 오버스크롤 방지)
+            self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 안전스크롤 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down_safe(distance_ratio=0.10)
+            time.sleep(0.6)
 
         self._log("  ❌ [다른결재 버튼] 이미지 매칭 탐색 실패")
         return False
@@ -3344,7 +3345,7 @@ class NaverOrderWorker:
         self._log("💰 [무통장 결제] 프로세스 시작")
         self._ocr_payment_screen(label="무통장결제_화면진입")
             
-        if not self._click_other_pay_button(max_scroll_attempts=8):
+        if not self._click_other_pay_button(max_scroll_attempts=20):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
@@ -4274,7 +4275,7 @@ class NaverOrderWorker:
             return True
 
         # 22-1 다른결재 / 다른결재4 / 다른결재수단2
-        if not self._click_other_pay_button(max_scroll_attempts=8):
+        if not self._click_other_pay_button(max_scroll_attempts=20):
             self._log("❌ [22-1] 다른결재 버튼 미발견")
             return False
 
@@ -4849,6 +4850,38 @@ class NaverOrderWorker:
         end_y = max(100, int(start_y - (h * distance_ratio)))
         self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=280)
         time.sleep(0.2)
+
+    def _scroll_down_safe(self, distance_ratio: float = 0.10):
+        """
+        결제/주문 화면용 안전 스크롤.
+        - 웹뷰 콘텐츠 밴드(약 35%~58%)만 드래그 → 하단 네비/앱 밖으로 오버스크롤 방지
+        - 짧은 거리 + 느린 duration → fling/관성으로 창 밖 이탈 방지
+        - 지문 재시도(시작점 변경) 없음 → 과도한 연속 스와이프 방지
+        """
+        w, h = self._get_window_size()
+        # 콘텐츠 중앙 부근에서만 짧게 올림 (네이버 앱 WebView 내부)
+        start_y = int(h * 0.58)
+        end_y = max(int(h * 0.38), int(start_y - (h * max(0.06, min(0.14, distance_ratio)))))
+        self._log(
+            f"  ↕ [안전스크롤] down ({start_y}→{end_y}, ratio≈{distance_ratio:.2f})"
+        )
+        # 네이티브 제스처 우선 (느린 속도)
+        try:
+            area_top = int(h * 0.35)
+            area_h = int(h * 0.30)
+            percent = max(0.12, min(0.35, (h * distance_ratio) / max(1, area_h)))
+            self.driver.execute_script('mobile: scrollGesture', {
+                'left': int(w * 0.15),
+                'top': area_top,
+                'width': int(w * 0.70),
+                'height': area_h,
+                'direction': 'down',
+                'percent': percent,
+                'speed': 700,
+            })
+        except Exception:
+            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=1000)
+        time.sleep(0.9)
 
     def _scroll_down(self, distance_ratio: float = 0.20):
         """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
