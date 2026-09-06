@@ -133,6 +133,11 @@ IMG_HYUNDAI_BRAND = [
     (os.path.join(_IMG_DIR, "현대3.png"), "현대3"),
     (os.path.join(_IMG_DIR, "현대4.png"), "현대4"),
 ]
+# 국민카드 (결제방식=국민카드): kb국민1/2 선택 → 결재하기 후 종료
+IMG_KB_BRAND = [
+    (os.path.join(_IMG_DIR, "kb국민1.png"), "kb국민1"),
+    (os.path.join(_IMG_DIR, "kb국민2.png"), "kb국민2"),
+]
 IMG_HYUNDAI_DO_PAY = [
     (os.path.join(_IMG_DIR, "결재하기.png"), "결재하기"),
     (os.path.join(_IMG_DIR, "결재하기1.png"), "결재하기1"),
@@ -3658,7 +3663,19 @@ class NaverOrderWorker:
 
     def _is_hyundai_card_payment(self, method: str) -> bool:
         m = (method or "").replace(" ", "")
+        if self._is_kb_card_payment(method):
+            return False
         return any(k in m for k in ("현대카드", "현대하드", "현대"))
+
+    def _is_kb_card_payment(self, method: str) -> bool:
+        """결제방식: 국민카드 / kb국민 / 국만카드."""
+        m = (method or "").replace(" ", "")
+        m_lower = m.lower()
+        if any(k in m for k in ("국민카드", "국만카드", "KB국민", "kb국민")):
+            return True
+        if m_lower in ("kb", "kb국민카드") or m == "국민":
+            return True
+        return False
 
     def _ensure_normal_pay_checked(self) -> bool:
         """[22-2] 일반결재가 체크되어 있어야 함. 아니면 클릭."""
@@ -3719,11 +3736,15 @@ class NaverOrderWorker:
                 continue
         return False
 
-    def _open_card_select_dropdown(self) -> bool:
-        """[22-3] '카드를 선택해주세요' 드롭다운을 연다."""
+    def _open_card_select_dropdown(self, brand: str = "hyundai") -> bool:
+        """[22-3] '카드를 선택해주세요' 드롭다운을 연다. brand=hyundai|kb"""
         self._set_status("카드 선택 드롭다운")
-        self._log("🔍 [22-3] 카드 선택 드롭다운 열기")
-        if self._hyundai_card_selected():
+        self._log(f"🔍 [22-3] 카드 선택 드롭다운 열기 (brand={brand})")
+        if brand == "kb":
+            if self._kb_card_selected():
+                self._log("  ℹ 이미 국민카드(KB)가 선택되어 있음")
+                return True
+        elif self._hyundai_card_selected():
             self._log("  ℹ 이미 현대카드가 선택되어 있음")
             return True
 
@@ -3771,18 +3792,159 @@ class NaverOrderWorker:
 
             if clicked:
                 time.sleep(1.8)
-                if self._find_hyundai_list_target():
-                    self._log("  ✅ [22-3] 카드 목록에서 현대 항목 감지")
-                    return True
-                # 재클릭하면 드롭다운이 다시 닫힐 수 있음 → 목록 탐색은 22-4에 위임
-                self._log("  ℹ [22-3] 드롭다운 클릭 완료 → 목록에서 현대 탐색")
+                if brand == "kb":
+                    if self._find_kb_list_target():
+                        self._log("  ✅ [22-3] 카드 목록에서 KB국민 항목 감지")
+                        return True
+                    self._log("  ℹ [22-3] 드롭다운 클릭 완료 → 목록에서 KB국민 탐색")
+                else:
+                    if self._find_hyundai_list_target():
+                        self._log("  ✅ [22-3] 카드 목록에서 현대 항목 감지")
+                        return True
+                    self._log("  ℹ [22-3] 드롭다운 클릭 완료 → 목록에서 현대 탐색")
                 return True
             else:
                 self._log(f"  ⬇ [22-3] 드롭다운 미발견 → 스크롤 ({attempt}/6)")
-                self._scroll_down(distance_ratio=0.18)
+                self._scroll_down_safe(distance_ratio=0.10)
                 time.sleep(0.6)
 
         self._log("❌ [22-3] 카드 선택 드롭다운을 열지 못함")
+        return False
+
+    def _kb_card_selected(self) -> bool:
+        """카드 필드에 KB국민이 선택되었는지."""
+        if self._card_placeholder_visible():
+            return False
+        xpaths = [
+            '//*[contains(@text,"KB국민")]',
+            '//*[contains(@text,"kb국민")]',
+            '//*[contains(@text,"국민카드")]',
+        ]
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    t = (el.get_attribute("text") or "").strip()
+                    if not t:
+                        continue
+                    if "선택해주세요" in t:
+                        continue
+                    if any(k in t for k in ("KB국민", "kb국민", "국민카드", "국민")):
+                        bb = self._parse_element_bounds(el)
+                        if not bb:
+                            continue
+                        cy = (bb[1] + bb[3]) // 2
+                        if cy < 280:
+                            continue
+                        self._log(f"  ✅ 국민카드 선택 확인: '{t[:30]}' y={cy}")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _find_kb_list_target(self):
+        """카드 목록에서 클릭할 KB국민 항목 (x,y) 또는 None."""
+        w_h, w_w = 2400, 1080
+        try:
+            sz = self.driver.get_window_size()
+            w_h, w_w = sz["height"], sz["width"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        xpaths = [
+            '//*[contains(@text,"KB국민")]',
+            '//*[contains(@text,"kb국민")]',
+            '//*[contains(@text,"국민카드")]',
+            '//android.widget.TextView[contains(@text,"국민")]',
+            '//android.view.View[contains(@text,"국민")]',
+        ]
+        best = None
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    t = (el.get_attribute("text") or "").strip()
+                    if "선택해주세요" in t:
+                        continue
+                    if not any(k in t for k in ("KB국민", "kb국민", "국민카드", "국민")):
+                        continue
+                    if "현대" in t:
+                        continue
+                    bb = self._parse_element_bounds(el)
+                    if not bb:
+                        continue
+                    cy = (bb[1] + bb[3]) // 2
+                    cx = (bb[0] + bb[2]) // 2
+                    if not (min_y <= cy <= max_y):
+                        continue
+                    # KB국민 우선
+                    score = 2 if ("KB" in t or "kb" in t.lower()) else 1
+                    cand = (score, cx, cy, t)
+                    if best is None or cand[0] > best[0]:
+                        best = cand
+                except Exception:
+                    continue
+        if best:
+            return best[1], best[2]
+
+        for img_path, name in IMG_KB_BRAND:
+            if not os.path.exists(img_path):
+                continue
+            coords = self._find_image_coords(
+                img_path, threshold=0.70, min_y=min_y, max_y=max_y
+            )
+            if coords:
+                self._log(f"  🎯 KB목록 이미지 '{name}' @ {coords}")
+                return coords
+        return None
+
+    def _pick_kb_card(self) -> bool:
+        """목록에서 kb국민1/2 클릭."""
+        self._set_status("국민카드 선택")
+        self._log("🔍 [국민카드] kb국민1/2 선택 시도")
+        if self._kb_card_selected():
+            self._log("  ✅ 이미 국민카드 선택됨")
+            return True
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()["height"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        for attempt in range(1, 8):
+            target = self._find_kb_list_target()
+            if target:
+                self._soft_tap(target[0], target[1])
+                time.sleep(1.5)
+                if self._kb_card_selected() or not self._card_placeholder_visible():
+                    self._log("  ✅ [국민카드] 선택 확인")
+                    return True
+                self._log("  ⚠ 탭 후에도 플레이스홀더 잔존 → 재시도")
+
+            # 이미지 직접 클릭
+            if self._click_any_image_basic(
+                IMG_KB_BRAND, threshold=0.68, attempts=2, wait_after=1.5,
+                min_y=min_y, max_y=max_y,
+            ):
+                time.sleep(1.0)
+                if self._kb_card_selected() or not self._card_placeholder_visible():
+                    self._log("  ✅ [국민카드] 이미지 클릭 후 선택 확인")
+                    return True
+
+            # 드롭다운 재오픈
+            if self._card_placeholder_visible() or attempt % 2 == 0:
+                self._open_card_select_dropdown(brand="kb")
+            else:
+                self._scroll_down_safe(distance_ratio=0.10)
+            time.sleep(0.6)
+
+        self._log("❌ [국민카드] kb국민 선택 실패")
         return False
 
     def _find_hyundai_list_target(self):
@@ -3823,30 +3985,26 @@ class NaverOrderWorker:
                     cy = (bb[1] + bb[3]) // 2
                     cx = (bb[0] + bb[2]) // 2
                     if not (min_y <= cy <= max_y):
-                        self._log(f"  ⏭ 현대 오탐 스킵(영역밖): '{t[:20]}' y={cy}")
                         continue
-                    if not (20 <= cx <= w_w - 20):
-                        continue
-                    cand = (cx, cy, t, xp)
-                    # '현대카드' 우선
-                    if "현대카드" in t:
-                        return cand
-                    if best is None:
+                    score = 2 if "현대카드" in t else 1
+                    cand = (score, cx, cy, t)
+                    if best is None or cand[0] > best[0]:
                         best = cand
                 except Exception:
                     continue
         if best:
-            return best
+            # (cx, cy, label, src) — _pick_hyundai_card 호환
+            return best[1], best[2], best[3], "xpath"
 
-        # 이미지: 상단 제외 + 높은 점수만 (0.70은 헤더 오탐이 났음)
         for img_path, name in IMG_HYUNDAI_BRAND:
             if not os.path.exists(img_path):
                 continue
             coords = self._find_image_coords(
-                img_path, threshold=0.82, min_y=min_y, max_y=max_y,
+                img_path, threshold=0.70, min_y=min_y, max_y=max_y
             )
             if coords:
-                return (coords[0], coords[1], name, "image")
+                self._log(f"  🎯 현대목록 이미지 '{name}' @ {coords}")
+                return coords[0], coords[1], name, "image"
         return None
 
     def _pick_hyundai_card(self) -> bool:
@@ -3874,14 +4032,14 @@ class NaverOrderWorker:
                 self._log("  ⚠ [22-4] 탭 후에도 '카드를 선택해주세요' 유지 → 재시도")
                 if attempt in (3, 6) and self._card_placeholder_visible():
                     self._log("  🔄 [22-4] 드롭다운 다시 열기")
-                    self._open_card_select_dropdown()
+                    self._open_card_select_dropdown(brand="hyundai")
             else:
                 self._log(f"  ⬇ [22-4] 목록에서 현대 미발견 → 스크롤 ({attempt}/8)")
-                self._scroll_down(distance_ratio=0.18)
+                self._scroll_down_safe(distance_ratio=0.10)
                 time.sleep(0.6)
                 if attempt == 3 and self._card_placeholder_visible():
                     self._log("  🔄 [22-4] 목록 미검출 → 드롭다운 다시 열기")
-                    self._open_card_select_dropdown()
+                    self._open_card_select_dropdown(brand="hyundai")
 
         self._log("❌ [22-4] 현대카드 선택 실패")
         return False
@@ -4267,6 +4425,47 @@ class NaverOrderWorker:
         self._log("❌ [22-14] '주문완료 되었습니다' 미발견 → 실패")
         return False
 
+    def _process_kb_card_payment(self) -> bool:
+        """
+        국민카드 결제: 다른결재 → 일반결재 → 카드선택(kb국민1/2) → 결재하기
+        이후 PIN/비번 등 후속 작업 없이 종료 (성공 처리).
+        """
+        self._log("💳 [국민카드 결제] 프로세스 시작 (선택→결재하기 후 종료)")
+        if self._skip_final_order_click():
+            self._log("🖐 테스트/수동시작 모드 → 국민카드 결제 최종 단계 생략")
+            return True
+
+        # 1) 다른결재
+        if not self._click_other_pay_button(max_scroll_attempts=20):
+            self._log("❌ [국민카드] 다른결재 버튼 미발견")
+            return False
+
+        # 2) 일반결재 체크
+        if not self._ensure_normal_pay_checked():
+            return False
+
+        # 3) 카드 드롭다운
+        if not self._open_card_select_dropdown(brand="kb"):
+            return False
+
+        # 4) kb국민1/2 선택
+        if not self._pick_kb_card():
+            return False
+
+        if self._card_placeholder_visible():
+            self._log("❌ [국민카드] 카드가 아직 '카드를 선택해주세요' → 결재하기 클릭 안 함")
+            return False
+
+        # 5) 결재하기
+        if not self._click_any_image_with_scroll(IMG_HYUNDAI_DO_PAY, threshold=0.70, max_scroll_attempts=8):
+            self._log("  ⚠ [국민카드] 결재하기 이미지 미발견 → XPath 폴백")
+            if not self._click_pay_button():
+                self._log("❌ [국민카드] 결재하기 클릭 실패")
+                return False
+
+        self._log("✅ [국민카드] 결재하기 클릭 완료 → 후속 작업 없이 종료")
+        return True
+
     def _process_hyundai_card_payment(self, second_password: str) -> bool:
         """[단계 22] 현대카드 결제."""
         self._log("💳 [현대카드 결제] 프로세스 시작")
@@ -4602,7 +4801,11 @@ class NaverOrderWorker:
         self._handle_delivery_memo()
 
         # [단계 17] 전액사용 클릭 등 결제 방식 분기
-        if self._is_hyundai_card_payment(row.payment_method):
+        if self._is_kb_card_payment(row.payment_method):
+            if not self._process_kb_card_payment():
+                self._log("❌ 국민카드 결제 진행 실패")
+                return False
+        elif self._is_hyundai_card_payment(row.payment_method):
             second_pw = getattr(row, "second_password", "") or ""
             if not self._process_hyundai_card_payment(second_pw):
                 self._log("❌ 현대카드 결제 진행 실패")
