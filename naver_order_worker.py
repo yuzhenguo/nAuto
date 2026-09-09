@@ -45,6 +45,15 @@ try:
 except ImportError:
     import appium_helper as ah  # type: ignore
 
+# 구버전 모듈이 이미 sys.modules에 남아 stop_event 미지원인 경우 강제 재로딩
+try:
+    import importlib
+    import inspect as _inspect
+    if "stop_event" not in _inspect.signature(ah.create_driver).parameters:
+        ah = importlib.reload(ah)
+except Exception:
+    pass
+
 from order_manager import OrderManager, OrderRow
 
 # ─── 이미지 파일 경로 (개발문서 폴더) ───────────────────────────────────────
@@ -329,15 +338,61 @@ class NaverOrderWorker:
         self.manual_mode    = manual_mode
         self.driver         = None
         self._stop_event    = threading.Event()
+        self._ui_gen        = 0  # GUI 세대 (중지 후 재시작 시 stale done 무시)
 
     def _skip_final_order_click(self) -> bool:
         """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
         return bool(self.test_mode or self.manual_mode)
 
+    def _sleep_interruptible(self, seconds: float, slice_sec: float = 0.4) -> bool:
+        """중지 가능 대기. 중지되면 False."""
+        end = time.time() + max(0.0, seconds)
+        while time.time() < end:
+            if self._stop_event.is_set():
+                return False
+            time.sleep(min(slice_sec, max(0.05, end - time.time())))
+        return not self._stop_event.is_set()
+
+    def _create_driver(self):
+        """Appium 드라이버 생성 (stop_event 지원 여부와 무관하게 호환)."""
+        global ah
+        import inspect
+        import importlib
+
+        # GUI가 예전 모듈을 붙잡고 있어도 디스크의 최신 create_driver를 쓰도록 재로딩
+        try:
+            ah = importlib.reload(ah)
+        except Exception:
+            pass
+
+        kwargs = {
+            "device_id": self.device_id,
+            "appium_port": self.appium_port,
+            "log_callback": self._log,
+        }
+        try:
+            if "stop_event" in inspect.signature(ah.create_driver).parameters:
+                kwargs["stop_event"] = self._stop_event
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            return ah.create_driver(**kwargs)
+        except TypeError as e:
+            # 구버전 create_driver 호환
+            if "stop_event" in str(e):
+                kwargs.pop("stop_event", None)
+                return ah.create_driver(**kwargs)
+            raise
+
     # ─── 공개 메서드 ─────────────────────────────────────────────────────────
 
     def run(self) -> bool:
         """워커 메인 실행 (별도 스레드에서 호출)"""
+        if self._stop_event.is_set():
+            self._log("⏹ 중지 상태로 실행 요청됨 → 즉시 종료")
+            return False
+
         if self.manual_mode:
             self._log("🖐 수동시작 워커 시작 (배송지 선택까지 → Y 기록 후 종료)")
         else:
@@ -355,21 +410,33 @@ class NaverOrderWorker:
 
         for attempt in range(1, max_restarts + 1):
             if self._stop_event.is_set():
+                self._log("⏹ 중지 요청 → 연결 루프 종료")
                 break
 
             self._set_status(f"연결 중... ({attempt}/{max_restarts})")
 
             try:
-                self.driver = ah.create_driver(self.device_id, self.appium_port, self._log)
+                self.driver = self._create_driver()
+                if self._stop_event.is_set():
+                    self._log("⏹ 중지 요청 → 앱 재시작 생략")
+                    break
                 self._log("🔄 네이버 앱 재시작")
                 ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
             except Exception as e:
+                if self._stop_event.is_set() or "중지 요청" in str(e):
+                    self._log("⏹ 중지 요청으로 드라이버 연결 중단")
+                    break
                 self._log(f"❌ 드라이버 연결 실패: {e}")
                 self._set_status("연결 실패")
                 if attempt < max_restarts:
-                    time.sleep(10)
+                    if not self._sleep_interruptible(10):
+                        self._log("⏹ 중지 요청 → 재연결 대기 중단")
+                        break
                     continue
                 return False
+
+            if self._stop_event.is_set():
+                break
 
             success = False
             try:
@@ -381,8 +448,11 @@ class NaverOrderWorker:
                 success = True
 
             except Exception as e:
-                self._log(f"❌ 예기치 않은 오류: {e}")
-                self._set_status("오류 발생")
+                if self._stop_event.is_set():
+                    self._log("⏹ 중지 요청으로 작업 중단")
+                else:
+                    self._log(f"❌ 예기치 않은 오류: {e}")
+                    self._set_status("오류 발생")
             finally:
                 if self.driver:
                     try:
@@ -395,15 +465,26 @@ class NaverOrderWorker:
                 break
 
             self._log(f"🔄 오류 회복 재시작... ({attempt}/{max_restarts})")
-            time.sleep(5)
+            if not self._sleep_interruptible(5):
+                break
 
-        self._log("🏁 워커 종료")
-        self._set_status("완료")
+        if self._stop_event.is_set():
+            self._log("✅ 중지 완료")
+            self._set_status("중지됨")
+        else:
+            self._log("🏁 워커 종료")
+            self._set_status("완료")
         return True
 
     def stop(self):
         self._stop_event.set()
         self._log("⏹ 중지 요청됨")
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            pass
+        self.driver = None
 
     # ─── 단계 3~6: 메인 → 스토어 → 마이쇼핑 ─────────────────────────────────
 

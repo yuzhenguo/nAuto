@@ -51,12 +51,17 @@ CLR_NAVER     = "#03c75a"
 # ─── 기기 로그 패널 ───────────────────────────────────────────────────────────
 
 class DevicePanel(tk.Frame):
-    """기기 1대 실시간 로그 패널"""
+    """기기 1대 실시간 로그 패널 (+ 개별 시작/정지)"""
 
-    def __init__(self, parent, device_id: str, port: int, **kwargs):
+    def __init__(self, parent, device_id: str, port: int, remark: str = "",
+                 on_start=None, on_stop=None, **kwargs):
         super().__init__(parent, bg=CLR_SURFACE, **kwargs)
-        self.device_id = device_id
+        self.device_id = device_id  # 실제 ADB ID
         self.port = port
+        self.remark = remark or ""
+        self.on_start = on_start
+        self.on_stop = on_stop
+        self._running = False
         self._build_ui()
 
     def _build_ui(self):
@@ -67,13 +72,36 @@ class DevicePanel(tk.Frame):
                                    bg=CLR_SURFACE2, font=("Segoe UI", 11))
         self.status_dot.pack(side=tk.LEFT)
 
-        tk.Label(hdr, text=f"  {self.device_id}",
+        title = f"  {self.device_id}"
+        if self.remark:
+            title += f" ({self.remark})"
+        tk.Label(hdr, text=title,
                  fg=CLR_TEXT, bg=CLR_SURFACE2,
                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
 
+        # 개별 시작 / 정지
+        btn_wrap = tk.Frame(hdr, bg=CLR_SURFACE2)
+        btn_wrap.pack(side=tk.RIGHT, padx=(8, 0))
+
+        self.stop_btn = tk.Button(
+            btn_wrap, text="⏹ 정지", command=self._click_stop,
+            bg=CLR_ERROR, fg="#ffffff", font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            state=tk.DISABLED, activebackground="#da3633",
+        )
+        self.stop_btn.pack(side=tk.RIGHT, padx=2)
+
+        self.start_btn = tk.Button(
+            btn_wrap, text="▶ 시작", command=self._click_start,
+            bg=CLR_NAVER, fg="#ffffff", font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            activebackground="#02b350",
+        )
+        self.start_btn.pack(side=tk.RIGHT, padx=2)
+
         tk.Label(hdr, text=f"PORT:{self.port}",
                  fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2,
-                 font=("Segoe UI", 8)).pack(side=tk.RIGHT)
+                 font=("Segoe UI", 8)).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.status_label = tk.Label(
             self, text="대기 중", fg=CLR_TEXT_MUTE,
@@ -95,6 +123,27 @@ class DevicePanel(tk.Frame):
         self.log_box.tag_config("warning", foreground=CLR_WARNING)
         self.log_box.tag_config("info",    foreground=CLR_PRIMARY)
         self.log_box.tag_config("normal",  foreground=CLR_TEXT)
+
+    def _click_start(self):
+        if self.on_start and not self._running:
+            self.on_start(self.device_id)
+
+    def _click_stop(self):
+        if self.on_stop and self._running:
+            self.on_stop(self.device_id)
+
+    def set_running(self, running: bool):
+        """개별 시작/정지 버튼 상태 갱신"""
+        self._running = bool(running)
+        try:
+            if self._running:
+                self.start_btn.config(state=tk.DISABLED)
+                self.stop_btn.config(state=tk.NORMAL)
+            else:
+                self.start_btn.config(state=tk.NORMAL)
+                self.stop_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
     # 패널당 최대 로그 줄 수 (이 값 초과 시 오래된 줄부터 삭제 → 메모리 누수 방지)
     MAX_LOG_LINES = 500
@@ -140,6 +189,7 @@ class DevicePanel(tk.Frame):
     def set_idle(self):
         self.status_dot.config(fg=CLR_TEXT_MUTE)
         self.status_label.config(text="대기 중", fg=CLR_TEXT_MUTE)
+        self.set_running(False)
 
 
 # ─── 스크롤 가능 프레임 ───────────────────────────────────────────────────────
@@ -245,6 +295,7 @@ class MainApp(tk.Tk):
         self.order_manager: OrderManager = None
         self.workers: dict = {}
         self.worker_threads: dict = {}
+        self.worker_gen: dict = {}  # device_id -> 세대번호 (재시작 시 stale done 무시)
         self.device_panels: dict = {}
         self.running_ports: set = set()
         self.running: bool = False
@@ -518,7 +569,7 @@ class MainApp(tk.Tk):
         ctrl.pack(fill=tk.X, pady=(2, 0))
 
         tk.Label(ctrl,
-                 text="💡 좌측에서 작업할 기기를 선택하고 시작하세요.",
+                 text="💡 좌측에서 기기 선택 후 전체 시작, 또는 각 패널의 ▶시작 / ⏹정지로 개별 제어",
                  fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
                  font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=10)
 
@@ -716,11 +767,13 @@ class MainApp(tk.Tk):
         cols = min(count, 3)
         for i, did in enumerate(selected_devices):
             remark = self.devices_data.get(did, {}).get("remark", "")
-            display_name = f"{did} ({remark})" if remark else did
             port = self._get_port_for_device(i)
 
             panel = DevicePanel(
-                self.panels_frame, display_name, port,
+                self.panels_frame, did, port,
+                remark=remark,
+                on_start=self._start_device,
+                on_stop=self._stop_device,
                 relief=tk.FLAT,
                 highlightbackground=CLR_BORDER,
                 highlightthickness=1
@@ -729,6 +782,11 @@ class MainApp(tk.Tk):
             col = i % cols
             panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
             self.device_panels[did] = panel
+
+            # 이미 실행 중인 기기는 버튼 상태 반영
+            if self._is_device_running(did):
+                panel.set_running(True)
+                panel.set_status("실행 중")
 
             self.panels_frame.rowconfigure(row, weight=1)
             self.panels_frame.columnconfigure(col, weight=1)
@@ -745,16 +803,156 @@ class MainApp(tk.Tk):
     def _get_port_for_device(self, index: int) -> int:
         return APPIUM_PORT_MIN + index
 
+    def _is_device_running(self, device_id: str) -> bool:
+        t = self.worker_threads.get(device_id)
+        return bool(t and t.is_alive())
+
+    def _any_worker_running(self) -> bool:
+        return any(t.is_alive() for t in self.worker_threads.values() if t)
+
+    def _ensure_order_manager(self) -> bool:
+        """결재목록 OrderManager 준비. 실패 시 False."""
+        xlsx = self._xlsx_path
+        if not os.path.exists(xlsx):
+            messagebox.showerror("오류", f"결재목록.xlsx 파일을 찾을 수 없습니다:\n{xlsx}")
+            return False
+        try:
+            self.order_manager = OrderManager(xlsx)
+        except Exception as e:
+            messagebox.showerror("오류", f"결재목록 로드 실패:\n{e}")
+            return False
+        summary = self.order_manager.get_summary()
+        if summary["pending"] == 0:
+            messagebox.showinfo("알림", "처리할 미완료 주문이 없습니다.\n결재목록.xlsx를 확인하세요.")
+            return False
+        return True
+
+    def _machine_num_for_device(self, device_id: str) -> int:
+        selected = self._get_selected_devices()
+        try:
+            return selected.index(device_id) + 1
+        except ValueError:
+            return 1
+
     # ─── 작업 제어 ────────────────────────────────────────────────────────────
 
     def _start_manual(self):
         """수동시작: 배송지 선택(결제창 복귀)까지 진행 → 엑셀 Y 기록 후 종료"""
         self._start_all(manual_mode=True)
 
+    def _start_device(self, device_id: str, manual_mode: bool = False):
+        """개별 기기 시작"""
+        old_t = self.worker_threads.get(device_id)
+        old_w = self.workers.get(device_id)
+        if old_t and old_t.is_alive():
+            # 이미 중지 요청된 이전 워커면 짧게 기다린 뒤 강제 분리하고 재시작
+            if old_w is not None and old_w._stop_event.is_set():
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].append_log("⏳ 이전 워커 종료 대기 후 재시작...")
+                old_t.join(timeout=2.0)
+                if old_t.is_alive():
+                    if device_id in self.device_panels:
+                        self.device_panels[device_id].append_log("⚠ 이전 워커 강제 분리 후 새 시작")
+                self.workers.pop(device_id, None)
+                self.worker_threads.pop(device_id, None)
+            else:
+                messagebox.showinfo("알림", f"이미 실행 중입니다:\n{device_id}")
+                return
+
+        if device_id not in self._get_selected_devices():
+            messagebox.showwarning("경고", "좌측에서 해당 기기를 선택한 뒤 시작하세요.")
+            return
+
+        if not self.devices_data.get(device_id, {}).get("connected", False):
+            if not messagebox.askyesno("경고", f"{device_id}\nADB 미연결 상태입니다. 계속할까요?"):
+                return
+
+        if not self._ensure_order_manager():
+            return
+
+        exclude = list(self.running_ports) if hasattr(self, "running_ports") else []
+        for w in self.workers.values():
+            try:
+                exclude.append(int(w.appium_port))
+            except Exception:
+                pass
+        port = self._new_random_port(exclude)
+        machine_num = self._machine_num_for_device(device_id)
+
+        gen = self.worker_gen.get(device_id, 0) + 1
+        self.worker_gen[device_id] = gen
+
+        worker = NaverOrderWorker(
+            device_id=device_id,
+            appium_port=port,
+            order_manager=self.order_manager,
+            log_callback=self._on_worker_log,
+            status_callback=self._on_worker_status,
+            machine_num=machine_num,
+            test_mode=self.test_mode_var.get(),
+            manual_mode=manual_mode,
+        )
+        worker._ui_gen = gen
+        self.workers[device_id] = worker
+
+        t = threading.Thread(target=self._run_worker, args=(worker,), daemon=True)
+        self.worker_threads[device_id] = t
+        t.start()
+
+        self.running = True
+        self.stop_btn.config(state=tk.NORMAL)
+        if device_id in self.device_panels:
+            self.device_panels[device_id].set_running(True)
+            mode_tag = "수동시작" if manual_mode else "개별시작"
+            self.device_panels[device_id].append_log(f"🚀 워커 시작 ({mode_tag}, 포트: {port})")
+            self.device_panels[device_id].set_status("시작 중")
+        self._log_status(f"▶ 개별 시작: {device_id}")
+        self._refresh_summary()
+
+    def _stop_device(self, device_id: str):
+        """개별 기기 정지"""
+        worker = self.workers.get(device_id)
+        if not worker:
+            if device_id in self.device_panels:
+                self.device_panels[device_id].set_running(False)
+                self.device_panels[device_id].set_idle()
+                self.device_panels[device_id].append_log("✅ 중지 완료 → 다시 시작 가능")
+            return
+        try:
+            worker.stop()
+        except Exception:
+            pass
+        if device_id in self.device_panels:
+            self.device_panels[device_id].append_log("⏹ 개별 중지 요청됨 (종료 대기 중...)")
+            self.device_panels[device_id].set_status("중지 중...")
+            # 정지 버튼만 비활성 — 종료 완료 후 시작 가능
+            try:
+                self.device_panels[device_id].stop_btn.config(state=tk.DISABLED)
+            except Exception:
+                pass
+        self._log_status(f"⏹ 개별 중지: {device_id}")
+        # 최대 15초 후에도 스레드가 안 죽으면 UI만 풀어 재시작 허용
+        self.after(15000, lambda d=device_id, g=getattr(worker, "_ui_gen", None):
+                   self._force_unlock_device_if_stuck(d, g))
+
+    def _force_unlock_device_if_stuck(self, device_id: str, gen):
+        """중지 후 스레드가 너무 오래 살아있으면 시작 버튼만 다시 연다."""
+        if gen is not None and self.worker_gen.get(device_id) != gen:
+            return
+        t = self.worker_threads.get(device_id)
+        if t and t.is_alive():
+            if device_id in self.device_panels:
+                self.device_panels[device_id].set_running(False)
+                self.device_panels[device_id].append_log(
+                    "⚠ 종료 지연 → 시작 버튼 복구 (이전 워커는 백그라운드 정리 중)"
+                )
+                self.device_panels[device_id].set_status("대기 중 (재시작 가능)")
+            # gen은 올리지 않음: 이후 스레드 종료 시 done으로 정리되거나,
+            # 재시작 시 _start_device가 stop된 이전 워커를 분리함
+
+
     def _start_all(self, manual_mode: bool = False):
-        xlsx = self._xlsx_path
-        if not os.path.exists(xlsx):
-            messagebox.showerror("오류", f"결재목록.xlsx 파일을 찾을 수 없습니다:\n{xlsx}")
+        if not self._ensure_order_manager():
             return
 
         selected_devices = self._get_selected_devices()
@@ -773,12 +971,6 @@ class MainApp(tk.Tk):
             )
             if not confirm:
                 return
-
-        self.order_manager = OrderManager(xlsx)
-        summary = self.order_manager.get_summary()
-        if summary["pending"] == 0:
-            messagebox.showinfo("알림", "처리할 미완료 주문이 없습니다.\n결재목록.xlsx를 확인하세요.")
-            return
 
         if manual_mode:
             confirm = messagebox.askyesno(
@@ -804,10 +996,25 @@ class MainApp(tk.Tk):
         else:
             self._log_status("🚀 자동 주문 시작")
 
-        used_ports: set = set()
+        used_ports: set = set(self.running_ports) if hasattr(self, "running_ports") else set()
         for i, did in enumerate(selected_devices):
+            if self._is_device_running(did):
+                w = self.workers.get(did)
+                if w is not None and w._stop_event.is_set():
+                    # 중지 대기 중이면 분리 후 재시작
+                    self.workers.pop(did, None)
+                    self.worker_threads.pop(did, None)
+                else:
+                    if did in self.device_panels:
+                        self.device_panels[did].append_log("ℹ 이미 실행 중 → 건너뜀")
+                        self.device_panels[did].set_running(True)
+                    continue
+
             port = self._new_random_port(list(used_ports))
             used_ports.add(port)
+
+            gen = self.worker_gen.get(did, 0) + 1
+            self.worker_gen[did] = gen
 
             worker = NaverOrderWorker(
                 device_id      = did,
@@ -819,6 +1026,7 @@ class MainApp(tk.Tk):
                 test_mode      = self.test_mode_var.get(),
                 manual_mode    = manual_mode,
             )
+            worker._ui_gen = gen
             self.workers[did] = worker
 
             t = threading.Thread(target=self._run_worker, args=(worker,), daemon=True)
@@ -827,59 +1035,114 @@ class MainApp(tk.Tk):
 
             mode_tag = "수동시작" if manual_mode else "자동"
             if did in self.device_panels:
+                self.device_panels[did].set_running(True)
                 self.device_panels[did].append_log(f"🚀 워커 시작 ({mode_tag}, 포트: {port})")
 
-        threading.Thread(target=self._monitor_completion, daemon=True).start()
         self._refresh_summary()
+
+    def _sleep_worker_interruptible(self, worker: NaverOrderWorker, seconds: float) -> bool:
+        """중지 가능 대기. 중지되면 False."""
+        end = time.time() + max(0.0, seconds)
+        while time.time() < end:
+            if worker._stop_event.is_set():
+                return False
+            time.sleep(min(0.4, max(0.05, end - time.time())))
+        return not worker._stop_event.is_set()
 
     def _run_worker(self, worker: NaverOrderWorker):
         """워커 실행 래퍼 (스레드에서 호출) - 포트 재시도 포함"""
         did = worker.device_id
+        gen = getattr(worker, "_ui_gen", None)
         max_retries = 5
         tried_ports: list = []
 
         self._on_worker_log(did, "⏳ CPU 부하 방지: 실행 대기 중 (최대 8대 동시 실행 제한)")
-        with self.worker_semaphore:
-            for attempt in range(1, max_retries + 1):
+        try:
+            with self.worker_semaphore:
                 if worker._stop_event.is_set():
-                    self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
-                    break
+                    self._on_worker_log(did, "⏹ 중지 요청 - 세마포어 대기 후 즉시 종료")
+                else:
+                    for attempt in range(1, max_retries + 1):
+                        if worker._stop_event.is_set():
+                            self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
+                            break
 
-                port = self._new_random_port(tried_ports)
-                tried_ports.append(port)
-                worker.appium_port = port
+                        port = self._new_random_port(tried_ports)
+                        tried_ports.append(port)
+                        worker.appium_port = port
 
-                self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
+                        self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
 
-                try:
-                    self._start_appium_server(port)
-                    time.sleep(5)
+                        try:
+                            self._start_appium_server(port)
+                            if not self._sleep_worker_interruptible(worker, 5):
+                                self._on_worker_log(did, "⏹ 중지 요청 - Appium 대기 중단")
+                                break
 
-                    if worker.run():
-                        break
-                    else:
-                        self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
-                except Exception as e:
-                    self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
-                finally:
-                    self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
-                    self._kill_process_on_port(port)
-                    time.sleep(2)
+                            if worker.run():
+                                break
+                            else:
+                                if worker._stop_event.is_set():
+                                    break
+                                self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
+                        except Exception as e:
+                            self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
+                        finally:
+                            self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
+                            self._kill_process_on_port(port)
+                            self._sleep_worker_interruptible(worker, 1.0)
+        finally:
+            # 개별 기기 종료 UI 갱신 (세대번호로 stale done 무시)
+            self.after(0, lambda d=did, g=gen: self._on_device_worker_done(d, g))
+
+    def _on_device_worker_done(self, device_id: str, gen=None):
+        """한 기기 워커 스레드 종료 시 패널/전역 버튼 갱신"""
+        # 재시작으로 세대가 바뀌었으면 이전 워커의 done 무시
+        if gen is not None and self.worker_gen.get(device_id) != gen:
+            return
+
+        cur = self.workers.get(device_id)
+        if cur is not None and gen is not None and getattr(cur, "_ui_gen", None) != gen:
+            return
+
+        self.workers.pop(device_id, None)
+        self.worker_threads.pop(device_id, None)
+        if device_id in self.device_panels:
+            self.device_panels[device_id].set_running(False)
+            self.device_panels[device_id].set_idle()
+            self.device_panels[device_id].append_log("✅ 중지/작업 완료 → 다시 시작 가능")
+        self._refresh_summary()
+
+        if not self._any_worker_running():
+            self.running = False
+            self.start_btn.config(state=tk.NORMAL)
+            if hasattr(self, "manual_start_btn"):
+                self.manual_start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            self._draw_device_list()
+            self._log_status("✅ 실행 중인 기기 없음")
 
     def _stop_all(self):
-        self._log_status("⏹ 중지 요청 중...")
-        for worker in self.workers.values():
+        self._log_status("⏹ 전체 중지 요청 중...")
+        for did, worker in list(self.workers.items()):
             try:
                 worker.stop()
             except Exception:
                 pass
-
-    def _monitor_completion(self):
-        for t in self.worker_threads.values():
-            t.join()
-        self.after(0, self._on_all_done)
+            if did in self.device_panels:
+                self.device_panels[did].append_log("⏹ 중지 요청됨 (종료 대기 중...)")
+                self.device_panels[did].set_status("중지 중...")
+                try:
+                    self.device_panels[did].stop_btn.config(state=tk.DISABLED)
+                except Exception:
+                    pass
+            self.after(15000, lambda d=did, g=getattr(worker, "_ui_gen", None):
+                       self._force_unlock_device_if_stuck(d, g))
 
     def _on_all_done(self):
+        """레거시 호환 (전체 완료 팝업용 — 개별 종료는 _on_device_worker_done 사용)"""
+        if self._any_worker_running():
+            return
         self.running = False
         self.start_btn.config(state=tk.NORMAL)
         if hasattr(self, "manual_start_btn"):
@@ -887,6 +1150,9 @@ class MainApp(tk.Tk):
         self.stop_btn.config(state=tk.DISABLED)
         self.workers.clear()
         self.worker_threads.clear()
+        for panel in self.device_panels.values():
+            panel.set_running(False)
+            panel.set_idle()
         self._draw_device_list()
         self._log_status("✅ 모든 작업 완료")
         self._refresh_summary()

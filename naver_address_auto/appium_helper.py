@@ -67,21 +67,41 @@ def set_default_browser_to_chrome(device_id: str, log_callback=None):
         _log(log_callback, f"  ⚠️ [{device_id}] 기본 브라우저 설정 중 예외 발생: {e}")
 
 
-def reset_device_uiautomation(device_id: str, log_callback=None):
+def reset_device_uiautomation(device_id: str, log_callback=None, stop_event=None):
     """기기의 UiAutomation 상태 및 Appium 서버 패키지를 완전히 리셋 (자가 치유)"""
     import subprocess
+
+    def _stopped() -> bool:
+        return bool(stop_event is not None and stop_event.is_set())
+
     _log(log_callback, f"  🔄 [{device_id}] 기기 UiAutomation 상태 및 Appium 패키지 리셋 시도...")
     try:
+        if _stopped():
+            _log(log_callback, f"  ⏹ [{device_id}] 중지 요청 → 리셋 생략")
+            return
         # 1. accessibility_enabled 토글로 AccessibilityManager 초기화
         subprocess.run(["adb", "-s", device_id, "shell", "settings", "put", "secure", "accessibility_enabled", "0"], capture_output=True, timeout=5)
+        if _stopped():
+            return
         time.sleep(1.5)
+        if _stopped():
+            return
         subprocess.run(["adb", "-s", device_id, "shell", "settings", "put", "secure", "accessibility_enabled", "1"], capture_output=True, timeout=5)
+        if _stopped():
+            return
         time.sleep(1.5)
-        
+        if _stopped():
+            _log(log_callback, f"  ⏹ [{device_id}] 중지 요청 → 리셋 중단")
+            return
+
         # 2. uiautomator2 server 패키지 삭제 (재설치 유도)
         subprocess.run(["adb", "-s", device_id, "shell", "pm", "uninstall", "io.appium.uiautomator2.server"], capture_output=True, timeout=5)
+        if _stopped():
+            return
         subprocess.run(["adb", "-s", device_id, "shell", "pm", "uninstall", "io.appium.uiautomator2.server.test"], capture_output=True, timeout=5)
-        
+        if _stopped():
+            return
+
         # 3. uiautomator2 server 프로세스 강제 종료
         subprocess.run(["adb", "-s", device_id, "shell", "am", "force-stop", "io.appium.uiautomator2.server"], capture_output=True, timeout=5)
         subprocess.run(["adb", "-s", device_id, "shell", "am", "force-stop", "io.appium.uiautomator2.server.test"], capture_output=True, timeout=5)
@@ -138,7 +158,8 @@ def reboot_device_and_wait(device_id: str, log_callback=None) -> bool:
     return False
 
 
-def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdriver.Remote:
+def create_driver(device_id: str, appium_port: int, log_callback=None,
+                  stop_event=None) -> webdriver.Remote:
     """
     지정 기기와 Appium 포트로 드라이버 생성
 
@@ -146,11 +167,15 @@ def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdri
         device_id: adb 기기 ID
         appium_port: 해당 기기의 Appium 서버 포트
         log_callback: GUI 로그 함수 (선택)
+        stop_event: threading.Event — set 되면 연결 재시도 중단
 
     Returns:
         Appium WebDriver 인스턴스
     """
     import subprocess
+
+    def _stopped() -> bool:
+        return bool(stop_event is not None and stop_event.is_set())
 
     # 기본 브라우저 설정 (C:\appium_auto 로직 참고)
     set_default_browser_to_chrome(device_id, log_callback)
@@ -213,15 +238,21 @@ def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdri
 
     max_retries = 3
     for attempt in range(1, max_retries + 1):
+        if _stopped():
+            raise RuntimeError("중지 요청으로 드라이버 연결 중단")
         try:
             driver = webdriver.Remote(server_url, options=opts)
             _log(log_callback,
                  f"드라이버 연결 완료: {device_id} (포트 {appium_port}, systemPort {system_port})")
             return driver
         except Exception as e:
+            if _stopped():
+                raise RuntimeError("중지 요청으로 드라이버 연결 중단") from e
             err_msg = str(e)
             _log(log_callback, f"⚠️ [드라이버 연결 시도 {attempt}/{max_retries} 실패]: {err_msg[:200]}")
             if attempt < max_retries:
+                if _stopped():
+                    raise RuntimeError("중지 요청으로 드라이버 연결 중단")
                 _log(log_callback, "🔄 포트 및 ADB 포워딩 정리 후 재시도합니다 (대기 3초)...")
                 try:
                     _kill_port_process(system_port)
@@ -229,15 +260,26 @@ def create_driver(device_id: str, appium_port: int, log_callback=None) -> webdri
                         ["adb", "-s", device_id, "forward", "--remove", f"tcp:{system_port}"],
                         capture_output=True, timeout=3
                     )
-                    
+                    # 중지 요청 시 긴 리셋/재부팅 스킵
+                    if _stopped():
+                        raise RuntimeError("중지 요청으로 드라이버 연결 중단")
                     # 'UiAutomation not connected' 오류 발생 시 설비 강제 재부팅, 그 외에는 기존 리셋 수행
                     if "UiAutomation not connected" in err_msg:
+                        if _stopped():
+                            raise RuntimeError("중지 요청으로 드라이버 연결 중단")
                         reboot_device_and_wait(device_id, log_callback)
                     else:
-                        reset_device_uiautomation(device_id, log_callback)
+                        reset_device_uiautomation(device_id, log_callback, stop_event=stop_event)
+                        if _stopped():
+                            raise RuntimeError("중지 요청으로 드라이버 연결 중단")
+                except RuntimeError:
+                    raise
                 except Exception as clean_err:
                     _log(log_callback, f"  [정리 중 오류 발생]: {clean_err}")
-                time.sleep(3)
+                for _ in range(6):
+                    if _stopped():
+                        raise RuntimeError("중지 요청으로 드라이버 연결 중단")
+                    time.sleep(0.5)
             else:
                 raise e
 
