@@ -185,6 +185,15 @@ IMG_HYUNDAI_CARD_PW = [
     (os.path.join(_IMG_DIR, "현대카드비번2.png"), "현대카드비번2"),
     (os.path.join(_IMG_DIR, "현대카드비번3.png"), "현대카드비번3"),
     (os.path.join(_IMG_DIR, "현대카드비번4.png"), "현대카드비번4"),
+    (os.path.join(_IMG_DIR, "현대카드비번5.png"), "현대카드비번5"),
+    (os.path.join(_IMG_DIR, "현대카드비번6.png"), "현대카드비번6"),
+    (os.path.join(_IMG_DIR, "현대카드비번7.png"), "현대카드비번7"),
+]
+# 안전인증 후 2차비밀번호(본인인증) 페이지 진입 판별
+IMG_HYUNDAI_2ND_PAGE = [
+    (os.path.join(_IMG_DIR, "2차페이지1.png"), "2차페이지1"),
+    (os.path.join(_IMG_DIR, "2차페이지2.png"), "2차페이지2"),
+    (os.path.join(_IMG_DIR, "2차페이지3.png"), "2차페이지3"),
 ]
 # 현대결제하기 클릭 후 안전/추가인증 팝업 감지
 IMG_HYUNDAI_SAFE_DETECT = [
@@ -339,6 +348,9 @@ class NaverOrderWorker:
         self.driver         = None
         self._stop_event    = threading.Event()
         self._ui_gen        = 0  # GUI 세대 (중지 후 재시작 시 stale done 무시)
+        # 안전인증 후 '본인인증/카드비밀번호4자리' WebView 모드
+        self._hyundai_pw4_identity_mode = False
+        self._hyundai_pw4_field_xy = None
 
     def _skip_final_order_click(self) -> bool:
         """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
@@ -3742,21 +3754,41 @@ class NaverOrderWorker:
             self._log("  ℹ 비밀번호 없음 → 건너뜀")
         return True
 
+    def _normalize_payment_method(self, method: str) -> str:
+        """결제방식 문자열 정규화 (공백 제거)."""
+        return (method or "").replace(" ", "").strip()
+
+    def _is_bank_transfer_payment(self, method: str) -> bool:
+        """결제방식: 무통장 / 무통장입금 / 무통장 입금 등."""
+        m = self._normalize_payment_method(method)
+        return "무통장" in m
+
     def _is_hyundai_card_payment(self, method: str) -> bool:
-        m = (method or "").replace(" ", "")
+        """결제방식: 현대카드 / 현대카드(591*) / 현대하드 등."""
         if self._is_kb_card_payment(method):
             return False
-        return any(k in m for k in ("현대카드", "현대하드", "현대"))
+        m = self._normalize_payment_method(method)
+        return any(k in m for k in ("현대카드", "현대하드")) or m == "현대"
 
     def _is_kb_card_payment(self, method: str) -> bool:
-        """결제방식: 국민카드 / kb국민 / 국만카드."""
-        m = (method or "").replace(" ", "")
+        """결제방식: 국민카드 / 국민카드(2023) / kb국민 / 국만카드."""
+        m = self._normalize_payment_method(method)
         m_lower = m.lower()
         if any(k in m for k in ("국민카드", "국만카드", "KB국민", "kb국민")):
             return True
         if m_lower in ("kb", "kb국민카드") or m == "국민":
             return True
         return False
+
+    def _is_point_payment(self, method: str) -> bool:
+        """결제방식: 페이포인트 / 포인트."""
+        m = self._normalize_payment_method(method)
+        return ("페이포인트" in m) or ("포인트" in m)
+
+    def _is_money_payment(self, method: str) -> bool:
+        """결제방식: 머니."""
+        m = self._normalize_payment_method(method)
+        return m == "머니" or "머니" in m
 
     def _ensure_normal_pay_checked(self) -> bool:
         """[22-2] 일반결재가 체크되어 있어야 함. 아니면 클릭."""
@@ -4458,8 +4490,298 @@ class NaverOrderWorker:
         self._log("  ✅ 현대 PIN 입력 완료")
         return True
 
+    def _match_best_among_images(self, images: list, threshold: float = 0.48,
+                                 min_y: Optional[int] = None,
+                                 max_y: Optional[int] = None) -> Optional[tuple]:
+        """한 번 캡처로 여러 템플릿 중 최고 점수 매칭. (coords, name, score) 또는 None."""
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return None
+
+        valid = [(p, n) for p, n in images if os.path.exists(p)]
+        if not valid:
+            return None
+        try:
+            screenshot_png = self._get_screenshot()
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_h, screen_w = screen_gray.shape
+            if min_y is not None and min_y > 0:
+                screen_gray[:min_y, :] = 0
+            if max_y is not None and max_y < screen_h:
+                screen_gray[max_y:, :] = 0
+
+            best = None  # (score, cx, cy, name)
+            scales = np.linspace(0.50, 1.70, 13)
+            for img_path, name in valid:
+                template_bgr = cv2.imdecode(
+                    np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR
+                )
+                if template_bgr is None:
+                    continue
+                template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+                t_h, t_w = template_gray.shape
+                local_best = -1.0
+                local_loc = None
+                local_tw, local_th = t_w, t_h
+                for scale in scales:
+                    new_w = int(t_w * scale)
+                    new_h = int(t_h * scale)
+                    if new_w >= screen_w or new_h >= screen_h or new_w < 8 or new_h < 4:
+                        continue
+                    resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    try:
+                        r = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                        if max_val > local_best:
+                            local_best = float(max_val)
+                            local_loc = max_loc
+                            local_tw, local_th = new_w, new_h
+                    except Exception:
+                        continue
+                if local_loc is not None and local_best >= threshold:
+                    cx = local_loc[0] + local_tw // 2
+                    cy = local_loc[1] + local_th // 2
+                    if best is None or local_best > best[0]:
+                        best = (local_best, cx, cy, name)
+                else:
+                    self._log(f"  ℹ [{name}] 최고점수 {local_best:.4f} < {threshold}")
+
+            if not best:
+                return None
+            score, cx, cy, name = best
+            self._log(f"  🎯 [일괄매칭] 최고 '{name}' score={score:.4f} @ ({cx},{cy})")
+            return (cx, cy), name, score
+        except Exception as e:
+            self._log(f"  ⚠ [일괄매칭] 예외: {e}")
+            return None
+
+    def _is_hyundai_identity_auth_screen(self) -> bool:
+        """2차페이지(본인인증/카드비밀번호4자리) 화면인지."""
+        if getattr(self, "_hyundai_pw4_identity_mode", False):
+            return True
+        hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.50)
+        if hit:
+            return True
+        xps = [
+            '//*[contains(@text,"본인인증")]',
+            '//*[contains(@text,"본인 인증")]',
+            '//*[contains(@text,"비밀번호4자리")]',
+            '//*[contains(@text,"비밀번호 4자리")]',
+            '//*[@text="카드비밀번호"]',
+        ]
+        for xp in xps:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.4):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _focus_hyundai_card_pw4_field(self) -> bool:
+        """[22-11] 2차페이지1~3 중 하나 인식 → 2차페이지 진입 성공 → 입력란 포커스.
+
+        2차페이지1/3: 노란 '카드 비밀번호 4자리' 영역
+        2차페이지2: 본인인증 전체 화면(키패드 포함)
+        """
+        self._set_status("2차페이지 진입 확인")
+        self._log("  🔍 [22-11] 2차페이지1/2/3 탐색 (하나라도 인식되면 진입 성공)")
+        self._hyundai_pw4_identity_mode = False
+        self._hyundai_pw4_field_xy = None
+        time.sleep(1.2)
+
+        w, h = self._get_window_size()
+
+        for attempt in range(1, 8):
+            if self._stop_event.is_set():
+                return False
+            hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.50)
+            if not hit:
+                self._log(f"  ↩ [22-11] 2차페이지 미인식 (시도 {attempt}/7)")
+                time.sleep(1.0)
+                continue
+
+            (cx, cy), name, score = hit
+            self._log(
+                f"  ✅ [22-11] 2차페이지 진입 성공: '{name}' score={score:.4f} @ ({cx},{cy})"
+            )
+            self._hyundai_pw4_identity_mode = True
+
+            # 전체화면(2차페이지2)이면 입력란은 상단 노란 영역, 아니면 매칭 중심=입력란
+            if name == "2차페이지2":
+                fx, fy = w // 2, int(h * 0.28)
+            else:
+                fx, fy = cx, cy
+
+            self._hyundai_pw4_field_xy = (fx, fy)
+            self._log(f"  👉 [22-11] 카드비밀번호 입력란 탭 ({fx},{fy})")
+            ah.tap_by_coords(self.driver, fx, fy, self._log)
+            time.sleep(0.7)
+            ah.tap_by_coords(self.driver, fx, fy, self._log)
+            time.sleep(1.2)
+            return True
+
+        # 폴백: 예전 현대카드비번1~7 / 좌표
+        self._log("  ⚠ [22-11] 2차페이지1~3 미발견 → 현대카드비번/좌표 폴백")
+        hit = self._match_best_among_images(
+            IMG_HYUNDAI_CARD_PW, threshold=0.48,
+            min_y=int(h * 0.12), max_y=int(h * 0.45),
+        )
+        if hit:
+            (cx, cy), name, score = hit
+            self._log(f"  ✅ [22-11] 폴백 '{name}' 탭 score={score:.4f}")
+            ah.tap_by_coords(self.driver, cx, cy, self._log)
+            time.sleep(1.0)
+            self._hyundai_pw4_identity_mode = True
+            self._hyundai_pw4_field_xy = (cx, cy)
+            return True
+
+        fx, fy = w // 2, int(h * 0.28)
+        self._log(f"  ⚠ [22-11] 최종 좌표 폴백 탭 ({fx},{fy})")
+        ah.tap_by_coords(self.driver, fx, fy, self._log)
+        time.sleep(1.0)
+        self._hyundai_pw4_identity_mode = True
+        self._hyundai_pw4_field_xy = (fx, fy)
+        return True
+
+    def _input_hyundai_identity_pw4(self, pin4: str) -> bool:
+        """본인인증 화면: 입력란 포커스 후 현대숫자 키패드로 4자리 입력.
+
+        주의: 여기서 다시 현대카드비번1~7을 찾지 않는다.
+        ADB input text는 WebView/보안키패드에서 무시되는 경우가 많아 최후 수단.
+        """
+        digits = ''.join(filter(str.isdigit, pin4 or ""))
+        if len(digits) != 4:
+            self._log(f"  ❌ [22-12] 2차비밀번호 자릿수 불일치: {len(digits)}자리 (기대 4)")
+            return False
+
+        w, h = self._get_window_size()
+        fx, fy = getattr(self, "_hyundai_pw4_field_xy", (w // 2, int(h * 0.22)))
+
+        self._log(
+            f"  🔐 [22-12] 카드비밀번호 4자리 입력 시작 "
+            f"(입력란 재탐색 없음, 포커스={fx},{fy})"
+        )
+
+        # 입력란만 한 번 더 탭 → 하단 숫자 키패드 표시
+        ah.tap_by_coords(self.driver, fx, fy, self._log)
+        time.sleep(1.5)
+
+        # 방법1: 현대숫자 0~9.png 로 하단 키패드 클릭 (본인인증 핵심)
+        # 키패드는 화면 하단 — 상단 입력란(현대카드비번 텍스트)과 혼동 금지
+        keypad_roi = {
+            "min_x": int(w * 0.02),
+            "max_x": int(w * 0.98),
+            "min_y": int(h * 0.42),
+            "max_y": int(h * 0.96),
+            "cx": w // 2,
+            "cy": int(h * 0.70),
+            "score": 1.0,
+        }
+        self._log("  🔢 [22-12] 현대숫자 키패드로 4자리 클릭")
+        if self._input_hyundai_digits(digits, expected_len=4, roi=keypad_roi):
+            self._log("  ✅ [22-12] 현대숫자 키패드 입력 완료")
+            return True
+
+        self._log("  ⚠ [22-12] 현대숫자 키패드 실패 → keyevent 폴백")
+
+        # 방법2: ADB 숫자 keyevent (시스템 키보드)
+        ah.tap_by_coords(self.driver, fx, fy, self._log)
+        time.sleep(0.6)
+        try:
+            for ch in digits:
+                code = 7 + int(ch)  # KEYCODE_0=7
+                _run_cmd(
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", str(code)],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(0.25)
+            self._log("  ✅ [22-12] ADB keyevent 숫자 입력 완료")
+            return True
+        except Exception as e:
+            self._log(f"  ⚠ keyevent 실패: {e}")
+
+        # 방법3: send_keys / input text (최후)
+        for xp in ['//android.widget.EditText']:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1.0):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    el.click()
+                    el.send_keys(digits)
+                    self._log(f"  ✅ [22-12] send_keys 완료")
+                    return True
+            except Exception:
+                continue
+        try:
+            _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "input", "text", digits],
+                capture_output=True, timeout=8,
+            )
+            self._log("  ✅ [22-12] ADB input text 완료 (최후수단)")
+            return True
+        except Exception as e:
+            self._log(f"  ❌ [22-12] 4자리 입력 전부 실패: {e}")
+            return False
+
+    def _click_hyundai_identity_confirm(self) -> bool:
+        """2차페이지 확인/완료 버튼 클릭."""
+        time.sleep(0.5)
+
+        for attempt in range(1, 5):
+            # 키패드 '완료' (2차페이지2 기준)
+            for xp in [
+                '//*[@text="완료"]',
+                '//android.widget.Button[@text="완료"]',
+                '//*[contains(@text,"완료")]',
+                '//android.widget.Button[@text="확인"]',
+                '//*[@text="확인"]',
+                '//android.widget.Button[contains(@text,"확인")]',
+            ]:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=1.0):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        if self._safe_click_element(el):
+                            self._log(f"  ✅ [2차페이지] 확인/완료 클릭: {xp}")
+                            time.sleep(2.0)
+                            return True
+                except Exception:
+                    continue
+
+            w, h = self._get_window_size()
+            if self._click_any_image_basic(
+                IMG_HYUNDAI_CONFIRM, threshold=0.55, attempts=1, wait_after=1.5,
+                min_y=int(h * 0.18), max_y=int(h * 0.55),
+            ):
+                self._log("  ✅ [2차페이지] 현대확인 이미지 클릭")
+                return True
+
+            # 키패드 좌하단 '완료' 예상좌표 (2차페이지2)
+            if attempt >= 2:
+                tap_x, tap_y = int(w * 0.17), int(h * 0.88)
+                self._log(f"  ⚠ [2차페이지] 완료 예상좌표 탭 ({tap_x},{tap_y}) 시도 {attempt}/4")
+                ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+                time.sleep(1.5)
+                # 상단 확인도 한 번
+                ah.tap_by_coords(self.driver, w // 2, int(h * 0.32), self._log)
+                time.sleep(1.5)
+                return True
+            time.sleep(0.7)
+
+        return False
+
     def _click_hyundai_pw_confirm(self) -> bool:
-        """현대확인 이미지 클릭 (현대비번 확인 화면 감지 후)."""
+        """현대확인 이미지 클릭 (현대비번 확인 / 본인인증 확인)."""
+        # 본인인증 화면의 '확인'
+        if getattr(self, "_hyundai_pw4_identity_mode", False) or self._is_hyundai_identity_auth_screen():
+            if self._click_hyundai_identity_confirm():
+                self._hyundai_pw4_identity_mode = False
+                return True
+
         # 전체화면 템플릿은 클릭용이 아니라 화면 존재 확인용
         if os.path.exists(IMG_HYUNDAI_PW_CONFIRM_FULL):
             box = self._find_image_bbox(
@@ -4475,6 +4797,8 @@ class NaverOrderWorker:
             return True
         # XPath 폴백
         for xp in [
+            '//android.widget.Button[@text="확인"]',
+            '//*[@text="확인"]',
             '//*[contains(@text,"확인")]',
             '//android.widget.Button[contains(@text,"확인")]',
         ]:
@@ -4550,6 +4874,7 @@ class NaverOrderWorker:
     def _process_hyundai_card_payment(self, second_password: str) -> bool:
         """[단계 22] 현대카드 결제."""
         self._log("💳 [현대카드 결제] 프로세스 시작")
+        self._hyundai_pw4_identity_mode = False
         if self._skip_final_order_click():
             self._log("🖐 테스트/수동시작 모드 → 현대카드 결제 최종 단계 생략")
             return True
@@ -4658,23 +4983,23 @@ class NaverOrderWorker:
             self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
             return False
 
-        # 22-11 현대카드비번1~4.png 클릭 → 비번 입력창
-        if not self._click_any_image_basic(IMG_HYUNDAI_CARD_PW, threshold=0.70, attempts=6, wait_after=2.0):
-            self._log("❌ [22-11] 현대카드비번 이미지 미발견")
+        # 22-11 2차페이지1~3 인식 → 진입 성공 → 입력란 포커스
+        if not self._focus_hyundai_card_pw4_field():
+            self._log("❌ [22-11] 2차페이지 진입 실패 (2차페이지1/2/3 미인식)")
             return False
-        self._log("  ⏳ [22-11] 카드비번 키패드 표시 대기 (2초)...")
-        time.sleep(2.0)
+        self._log("  ⏳ [22-11] 2차비밀번호 입력 준비 (1초)...")
+        time.sleep(1.0)
 
-        # 22-12 현대비번.png 인식/커팅 → 2차비밀번호 4자리 입력
+        # 22-12 2차비밀번호 4자리 — 현대숫자 키패드
         pin4 = ''.join(filter(str.isdigit, second_password or ""))
-        self._log(f"  🔐 [22-12] 2차비밀번호 입력 (현대비번 ROI 커팅 강화)")
-        if not self._input_hyundai_digits_with_fallback(pin4, expected_len=4, use_keypad_crop=True):
+        self._log("  🔐 [22-12] 2차비밀번호 입력 (현대숫자 키패드 4자리)")
+        if not self._input_hyundai_identity_pw4(pin4):
             self._log("❌ [22-12] 2차비밀번호 4자리 입력 실패")
             return False
 
-        # 22-13 현대비번 확인 / 현대확인, 5초 + 7초 대기
+        # 22-13 본인인증 '확인' → 이후 주문완료 대기
         if not self._click_hyundai_pw_confirm():
-            self._log("❌ [22-13] 현대확인 이미지 미발견")
+            self._log("❌ [22-13] 확인 버튼 미발견")
             return False
         self._log("  ⏳ [22-13] 추가 7초 대기...")
         time.sleep(7.0)
@@ -4730,7 +5055,7 @@ class NaverOrderWorker:
                 raise
 
             if success:
-                if row.payment_method == "무통장":
+                if self._is_bank_transfer_payment(row.payment_method):
                     # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
                         if self._skip_final_order_click():
@@ -4881,26 +5206,40 @@ class NaverOrderWorker:
         # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)
         self._handle_delivery_memo()
 
-        # [단계 17] 전액사용 클릭 등 결제 방식 분기
-        if self._is_kb_card_payment(row.payment_method):
+        # [단계 17] 결제 방식 분기
+        #  - 국민카드(2023) 등 → 국민카드
+        #  - 현대카드(591*) 등 → 현대카드
+        #  - 무통장 / 무통장 입금 → 무통장
+        #  - 머니 → 머니
+        #  - 페이포인트 / 포인트 → 포인트(전액사용)
+        pm = row.payment_method or ""
+        if self._is_kb_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 국민카드 ({pm!r})")
             if not self._process_kb_card_payment():
                 self._log("❌ 국민카드 결제 진행 실패")
                 return False
-        elif self._is_hyundai_card_payment(row.payment_method):
+        elif self._is_hyundai_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r})")
             second_pw = getattr(row, "second_password", "") or ""
             if not self._process_hyundai_card_payment(second_pw):
                 self._log("❌ 현대카드 결제 진행 실패")
                 return False
-        elif row.payment_method == "무통장":
+        elif self._is_bank_transfer_payment(pm):
+            self._log(f"🏦 결제방식 분기: 무통장 ({pm!r})")
             if not self._process_bank_transfer():
                 self._log("❌ 무통장 결제 진행 실패")
                 return False
-        elif row.payment_method == "머니":
+        elif self._is_money_payment(pm):
+            self._log(f"💸 결제방식 분기: 머니 ({pm!r})")
             if not self._process_money_payment(row.password):
                 self._log("❌ 머니 결제 진행 실패")
                 return False
         else:
-            # 포인트 또는 기본 결제
+            # 페이포인트 / 포인트 / 기타 → 포인트(전액사용) 결제
+            if self._is_point_payment(pm):
+                self._log(f"🅿️ 결제방식 분기: 포인트/페이포인트 ({pm!r})")
+            else:
+                self._log(f"🅿️ 결제방식 분기: 기본(포인트/전액사용) ({pm!r})")
             if not self._click_full_use():
                 self._log("❌ 전액사용 버튼 클릭 실패")
                 return False

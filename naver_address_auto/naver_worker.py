@@ -1006,14 +1006,15 @@ class NaverWorker:
                 break
 
     def _navigate_to_delivery_mgmt(self) -> bool:
-        """[문서 25번 변경] 장바구니 → 상품 체크 → 주문하기 → 변경 버튼으로 배송지 목록 진입
+        """[문서 25번 변경] 장바구니 → 상품 체크 → 주문하기 → 계속주문하기 → 변경 버튼으로 배송지 목록 진입
 
         기존 [단계 7~8] '설정 → 배송지 관리' 경로 대신:
           1. 장바구니 버튼 클릭 (3초 대기)
           2. '하루 동안 보지 않기' 팝업 보이면 클릭 (2초 대기)
           3. CheckBox[@text="상품"] 체크 (미체크 → 주문하기 0개 / 체크완료 → 주문하기 1개)
           4. '주문하기 N 개의 상품' (N>=1) 버튼 클릭 (3초 대기)
-          5. '변경' 버튼 존재하면 클릭 (3초 대기)
+          5. 계속1~4.png 중 70% 이상 매칭 시 '계속 주문하기' 클릭
+          6. '변경' 버튼 존재하면 클릭 (3초 대기)
         이후 기존 [단계 9]부터 동일하게 진행됩니다.
         """
         self._log("🛒 [배송지 목록 진입] 장바구니 → 상품체크 → 주문하기 → 변경 경로 탐색 시작")
@@ -1112,6 +1113,9 @@ class NaverWorker:
         if not order_clicked:
             self._log("  ℹ 주문하기 버튼 미발견 → 건너뛰고 계속 진행")
 
+        # [25-3.5] '계속 주문하기' 팝업: 계속1~4.png 중 70% 이상 매칭 시 클릭
+        self._click_continue_order_image()
+
         # [25-4] '변경' 버튼 존재하면 클릭 (3초 대기)
         self._set_status("배송지 변경 클릭")
         change_xpaths = [
@@ -1131,6 +1135,45 @@ class NaverWorker:
 
         self._log("✅ 배송지 목록 화면 진입 (장바구니 → 상품체크 → 주문하기 → 변경 경로)")
         return True
+
+    def _click_continue_order_image(self) -> bool:
+        """주문하기 클릭 후 '계속 주문하기' 이미지(계속1~4.png) 인식 클릭.
+
+        매칭 점수 0.70 이상인 이미지를 클릭하고 True 반환.
+        미발견 시 False (다음 단계로 계속 진행).
+        """
+        self._set_status("계속 주문하기 확인")
+        self._log("🔍 [계속 주문하기] 계속1~4.png 이미지 탐색 중 (임계값 0.70)...")
+
+        base_dir = os.path.dirname(__file__)
+        img_names = ("계속1.png", "계속2.png", "계속3.png", "계속4.png")
+
+        for img_name in img_names:
+            img_path = os.path.join(base_dir, img_name)
+            if not os.path.exists(img_path):
+                self._log(f"  ℹ [{img_name}] 파일 없음 → 건너뜀")
+                continue
+            coords = self._find_image_coords(img_path, threshold=0.70)
+            if not coords:
+                continue
+            try:
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap",
+                     str(coords[0]), str(coords[1])],
+                    capture_output=True, timeout=5
+                )
+                self._log(
+                    f"  ✅ [계속 주문하기] {img_name} 매칭 클릭 "
+                    f"(좌표: {coords[0]},{coords[1]}) → 2초 대기"
+                )
+                time.sleep(2)
+                return True
+            except Exception as e:
+                self._log(f"  ⚠ [계속 주문하기] {img_name} 클릭 실패: {e}")
+                break
+
+        self._log("  ℹ [계속 주문하기] 계속1~4.png 미감지 → 다음 단계 진행")
+        return False
 
     def _ensure_cart_product_checked(self) -> bool:
         """장바구니에서 상품 체크박스를 선택합니다.
