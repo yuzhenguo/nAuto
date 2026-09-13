@@ -73,7 +73,9 @@ IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
 IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
 IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
+IMG_DELIVERY_MEMO2 = os.path.join(_IMG_DIR, "배송메모선택2.png")  # 배송메모 선택 팝업 타이틀
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
+IMG_MEMO_NO_SELECT2 = os.path.join(_IMG_DIR, "선택안함2.png")  # 배송메모 '선택안함' 옵션 (변형)
 IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
 
@@ -135,6 +137,8 @@ IMG_HYUNDAI_CARDS = [
     (os.path.join(_IMG_DIR, "카드를2.png"), "카드를2"),
     (os.path.join(_IMG_DIR, "카드를3.png"), "카드를3"),
     (os.path.join(_IMG_DIR, "카드를4.png"), "카드를4"),
+    (os.path.join(_IMG_DIR, "카드를6.png"), "카드를6"),
+    (os.path.join(_IMG_DIR, "카드를7.png"), "카드를7"),
 ]
 IMG_HYUNDAI_BRAND = [
     (os.path.join(_IMG_DIR, "현대1.png"), "현대1"),
@@ -2503,27 +2507,74 @@ class NaverOrderWorker:
     def _handle_delivery_memo(self) -> None:
         """
         [단계 16.5] 배송지 선택 직후 배송메모 처리:
-        '배송메모 선택' 팝업이 떠 있는 경우에만 '선택 안 함'(선택안함.png)을
-        이미지 인식으로 찾아 1회 클릭합니다.
-        (배송메모 필드를 직접 클릭해서 팝업을 여는 동작은 하지 않음)
+        '배송메모 선택' 팝업이 떠 있는 경우 '선택 안 함'을 찾아 클릭.
+        - 선택안함.png / 선택안함2.png 직접 인식 → 바로 클릭
+        - 배송메모선택2.png(팝업 타이틀) 인식 → 선택안함 찾아 클릭
         """
         self._set_status("배송메모 처리")
         self._log("🔍 [배송메모] '선택 안 함' 이미지 인식 시도...")
         time.sleep(1.0)
 
-        if not os.path.exists(IMG_MEMO_NO_SELECT):
-            self._log("  ℹ [배송메모] 선택안함.png 템플릿 없음 → 건너뛰고 다음 작업 진행")
+        # 인식할 '선택 안 함' 이미지 목록
+        no_select_imgs = []
+        for path, label in [
+            (IMG_MEMO_NO_SELECT, "선택안함"),
+            (IMG_MEMO_NO_SELECT2, "선택안함2"),
+        ]:
+            if os.path.exists(path):
+                no_select_imgs.append((path, label))
+
+        # 배송메모 팝업 타이틀 이미지
+        memo_popup_imgs = []
+        for path, label in [
+            (IMG_DELIVERY_MEMO, "배송메모"),
+            (IMG_DELIVERY_MEMO2, "배송메모선택2"),
+        ]:
+            if os.path.exists(path):
+                memo_popup_imgs.append((path, label))
+
+        if not no_select_imgs and not memo_popup_imgs:
+            self._log("  ℹ [배송메모] 템플릿 이미지 없음 → 건너뛰고 다음 작업 진행")
             return
 
-        # '선택 안 함' 이미지 인식 (최대 3회 재시도)
         for ns_try in range(1, 4):
-            ns_coords = self._find_image_coords(IMG_MEMO_NO_SELECT, threshold=0.60)
-            if ns_coords:
-                self._log(f"  🎯 [선택 안 함] 이미지 발견! 좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭")
-                ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
-                time.sleep(1.2)
-                self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
+            if self._stop_event.is_set():
                 return
+
+            # 1) '선택 안 함' 직접 인식 시도 (선택안함.png, 선택안함2.png)
+            for path, label in no_select_imgs:
+                ns_coords = self._find_image_coords(path, threshold=0.60)
+                if ns_coords:
+                    self._log(
+                        f"  🎯 [{label}] 이미지 발견! "
+                        f"좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭"
+                    )
+                    ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
+                    time.sleep(1.2)
+                    self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
+                    return
+
+            # 2) 배송메모 팝업 타이틀 인식 (배송메모.png, 배송메모선택2.png)
+            #    팝업이 열려있으면 → 아래쪽에 '선택 안 함' 항목이 있으므로
+            #    팝업 y좌표 아래 영역을 탭하여 닫기
+            for path, label in memo_popup_imgs:
+                memo_coords = self._find_image_coords(path, threshold=0.60)
+                if memo_coords:
+                    self._log(
+                        f"  🎯 [{label}] 팝업 감지! "
+                        f"좌표 ({memo_coords[0]}, {memo_coords[1]})"
+                    )
+                    # 팝업 바깥(상단)을 탭하여 닫기
+                    w, h = self._get_window_size()
+                    close_y = max(50, memo_coords[1] - int(h * 0.15))
+                    self._log(
+                        f"  👉 [배송메모] 팝업 닫기 탭 ({w // 2}, {close_y})"
+                    )
+                    ah.tap_by_coords(self.driver, w // 2, close_y, self._log)
+                    time.sleep(1.2)
+                    self._log("✅ [배송메모] 팝업 닫기 완료 → 다음 작업 진행")
+                    return
+
             if ns_try < 3:
                 time.sleep(1.0)
 
