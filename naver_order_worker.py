@@ -3505,6 +3505,23 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         self._ocr_payment_screen(label="무통장결제_화면진입")
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
             
         if not self._click_other_pay_button(max_scroll_attempts=20):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
@@ -3875,7 +3892,9 @@ class NaverOrderWorker:
         """드롭다운이 아직 '카드를 선택해주세요' 상태인지."""
         xpaths = [
             '//*[contains(@text,"카드를 선택해주세요")]',
+            '//*[contains(@content-desc,"카드를 선택해주세요")]',
             '//*[contains(@text,"카드를 선택")]',
+            '//*[contains(@content-desc,"카드를 선택")]',
         ]
         for xp in xpaths:
             try:
@@ -3933,8 +3952,11 @@ class NaverOrderWorker:
 
         xpaths = [
             '//*[contains(@text,"카드를 선택해주세요")]',
+            '//*[contains(@content-desc,"카드를 선택해주세요")]',
             '//android.widget.Button[contains(@text,"카드를 선택")]',
+            '//android.widget.Button[contains(@content-desc,"카드를 선택")]',
             '//android.view.View[contains(@text,"카드를 선택")]',
+            '//android.view.View[contains(@content-desc,"카드를 선택")]',
         ]
 
         for attempt in range(1, 7):
@@ -3961,7 +3983,7 @@ class NaverOrderWorker:
 
             if not clicked:
                 if self._click_any_image_with_scroll(
-                    IMG_HYUNDAI_CARDS, threshold=0.75, max_scroll_attempts=3,
+                    IMG_HYUNDAI_CARDS, threshold=0.60, max_scroll_attempts=3,
                     min_y=min_y, max_y=max_y,
                 ):
                     clicked = True
@@ -5070,6 +5092,24 @@ class NaverOrderWorker:
         이후 PIN/비번 등 후속 작업 없이 종료 (성공 처리).
         """
         self._log("💳 [국민카드 결제] 프로세스 시작 (선택→결재하기 후 종료)")
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
+                
         if self._skip_final_order_click():
             self._log("🖐 테스트/수동시작 모드 → 국민카드 결제 최종 단계 생략")
             return True
@@ -5109,6 +5149,24 @@ class NaverOrderWorker:
         """[단계 22] 현대카드 결제."""
         self._log("💳 [현대카드 결제] 프로세스 시작")
         self._hyundai_pw4_identity_mode = False
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
+                
         if self._skip_final_order_click():
             self._log("🖐 테스트/수동시작 모드 → 현대카드 결제 최종 단계 생략")
             return True
