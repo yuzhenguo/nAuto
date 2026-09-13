@@ -4700,8 +4700,9 @@ class NaverOrderWorker:
         )
         self._log(
             f"  📐 [2차페이지] 키맵 {src} "
-            f"1={keymap['1']} 4={keymap['4']} 7={keymap['7']} "
-            f"완료={keymap['완료']}"
+            f"1={keymap['1']} 2={keymap['2']} 3={keymap['3']} "
+            f"4={keymap['4']} 7={keymap['7']} "
+            f"완료={keymap['완료']} (dx={dx} dy={dy})"
         )
 
     def _key_map_from_2nd_page2_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
@@ -4713,26 +4714,45 @@ class NaverOrderWorker:
         }
 
     def _key_map_from_yellow_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
-        """노란바 bbox → 2차페이지2 실측 비율로 키 좌표."""
-        yw, yh = max(1, x2 - x1), max(1, y2 - y1)
+        """노란바 bbox → 화면 크기 기반 균일 스케일로 키 좌표 계산.
+
+        기존 버그: 노란바 높이(yh)로 행 스케일링 → 행간격 30px로 줄어듦.
+        수정: 화면 폭 기준 스케일을 사용해 가로·세로 동일 비율 적용.
+        """
+        w, h = self._get_window_size()
         yx1, yy1, yx2, yy2 = _HYUNDAI_2ND_YELLOW_TMPL
-        tw, th = yx2 - yx1, yy2 - yy1
-        cols = {
-            0: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["1"][0] - yx1) / tw),
-            1: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["2"][0] - yx1) / tw),
-            2: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["3"][0] - yx1) / tw),
-        }
-        rows = {}
-        for digit, row_i in (("1", 0), ("4", 1), ("7", 2), ("완료", 3)):
-            ty = _HYUNDAI_2ND_KEYS_TMPL[digit][1]
-            rows[row_i] = y2 + yh * ((ty - yy2) / th)
+        tmpl_w, tmpl_h = _HYUNDAI_2ND_TMPL_WH           # (454, 527)
+
+        # 화면 폭 ÷ 템플릿 폭 = 해상도 무관 균일 스케일
+        scale = w / tmpl_w
+
+        # 노란바 중심 = bbox 중심 (매칭된 위치 기준)
+        bbox_cx = (x1 + x2) / 2
+        bbox_cy = (y1 + y2) / 2
+        tmpl_yellow_cx = (yx1 + yx2) / 2
+        tmpl_yellow_cy = (yy1 + yy2) / 2
+
+        self._log(
+            f"  📐 [키맵계산] 화면={w}x{h} 스케일={scale:.3f} "
+            f"노란바중심=({bbox_cx:.0f},{bbox_cy:.0f})"
+        )
+
         layout = {
             "1": (0, 0), "2": (1, 0), "3": (2, 0),
             "4": (0, 1), "5": (1, 1), "6": (2, 1),
             "7": (0, 2), "8": (1, 2), "9": (2, 2),
             "완료": (0, 3), "0": (1, 3),
         }
-        return {d: (int(cols[c]), int(rows[r])) for d, (c, r) in layout.items()}
+        keymap = {}
+        for d in layout:
+            tx, ty = _HYUNDAI_2ND_KEYS_TMPL[d]
+            sx = int(bbox_cx + scale * (tx - tmpl_yellow_cx))
+            sy = int(bbox_cy + scale * (ty - tmpl_yellow_cy))
+            # 화면 범위 클램프
+            sx = max(5, min(w - 5, sx))
+            sy = max(5, min(h - 5, sy))
+            keymap[d] = (sx, sy)
+        return keymap
 
     def _build_2nd_page_key_map(self) -> bool:
         """본인인증 키패드 좌표: 2차페이지2 bbox 우선, 없으면 노란바 비율."""
@@ -4866,7 +4886,7 @@ class NaverOrderWorker:
                 return False
         self._log(f"    👉 키패드 '{digit}' 좌표탭 ({x},{y})")
         ah.tap_by_coords(self.driver, x, y, self._log)
-        time.sleep(0.45)
+        time.sleep(1.0)
         return True
 
     def _input_hyundai_identity_pw4(self, pin4: str) -> bool:
