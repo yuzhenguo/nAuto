@@ -195,6 +195,15 @@ IMG_HYUNDAI_2ND_PAGE = [
     (os.path.join(_IMG_DIR, "2차페이지2.png"), "2차페이지2"),
     (os.path.join(_IMG_DIR, "2차페이지3.png"), "2차페이지3"),
 ]
+# 2차페이지2.png (454x527) 실측 좌표 — 노란바 바로 아래 3x4 키패드
+_HYUNDAI_2ND_TMPL_WH = (454, 527)
+_HYUNDAI_2ND_KEYS_TMPL = {
+    "1": (81, 324), "2": (227, 324), "3": (372, 324),
+    "4": (81, 374), "5": (227, 374), "6": (372, 374),
+    "7": (81, 430), "8": (227, 430), "9": (372, 430),
+    "완료": (81, 484), "0": (227, 484),
+}
+_HYUNDAI_2ND_YELLOW_TMPL = (9, 231, 441, 282)  # x1,y1,x2,y2
 # 현대결제하기 클릭 후 안전/추가인증 팝업 감지
 IMG_HYUNDAI_SAFE_DETECT = [
     (os.path.join(_IMG_DIR, "안전한.png"), "안전한"),
@@ -351,6 +360,9 @@ class NaverOrderWorker:
         # 안전인증 후 '본인인증/카드비밀번호4자리' WebView 모드
         self._hyundai_pw4_identity_mode = False
         self._hyundai_pw4_field_xy = None
+        self._hyundai_pw4_keypad_box = None
+        self._hyundai_pw4_key_origin = None
+        self._hyundai_pw4_key_map = None
 
     def _skip_final_order_click(self) -> bool:
         """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
@@ -4550,7 +4562,8 @@ class NaverOrderWorker:
                     if best is None or local_best > best[0]:
                         best = (local_best, cx, cy, name)
                 else:
-                    self._log(f"  ℹ [{name}] 최고점수 {local_best:.4f} < {threshold}")
+                    # 실패 템플릿은 조용히 스킵 (로그 폭주/오해 방지)
+                    pass
 
             if not best:
                 return None
@@ -4562,18 +4575,35 @@ class NaverOrderWorker:
             return None
 
     def _is_hyundai_identity_auth_screen(self) -> bool:
-        """2차페이지(본인인증/카드비밀번호4자리) 화면인지."""
+        """2차페이지(본인인증) 화면인지 — 플래그 또는 확실한 XPath만 사용.
+
+        주의: 2차페이지1~3 이미지로 자동 판별하면 22-9(PIN확인) 화면에서 오탐남.
+        """
         if getattr(self, "_hyundai_pw4_identity_mode", False):
             return True
-        hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.50)
-        if hit:
-            return True
         xps = [
-            '//*[contains(@text,"본인인증")]',
-            '//*[contains(@text,"본인 인증")]',
-            '//*[contains(@text,"비밀번호4자리")]',
-            '//*[contains(@text,"비밀번호 4자리")]',
-            '//*[@text="카드비밀번호"]',
+            '//*[contains(@text,"본인 인증을 진행")]',
+            '//*[contains(@text,"본인인증을 진행")]',
+            '//*[@text="본인 인증"]',
+            '//*[@text="본인인증"]',
+        ]
+        for xp in xps:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.35):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _has_hyundai_2nd_page_markers(self) -> bool:
+        """본인인증(2차비번) 화면의 확실한 텍스트 마커."""
+        xps = [
+            '//*[contains(@text,"본인 인증을 진행")]',
+            '//*[contains(@text,"본인인증을 진행")]',
+            '//*[contains(@text,"본인인증을진행")]',
+            '//*[@text="본인 인증"]',
+            '//*[@text="본인인증"]',
+            '//*[@text="완료"]',
         ]
         for xp in xps:
             try:
@@ -4583,201 +4613,334 @@ class NaverOrderWorker:
                 continue
         return False
 
-    def _focus_hyundai_card_pw4_field(self) -> bool:
-        """[22-11] 2차페이지1~3 중 하나 인식 → 2차페이지 진입 성공 → 입력란 포커스.
-
-        2차페이지1/3: 노란 '카드 비밀번호 4자리' 영역
-        2차페이지2: 본인인증 전체 화면(키패드 포함)
-        """
-        self._set_status("2차페이지 진입 확인")
-        self._log("  🔍 [22-11] 2차페이지1/2/3 탐색 (하나라도 인식되면 진입 성공)")
+    def _click_hyundai_card_pw_entry(self) -> bool:
+        """[22-11a] 현대카드비번1~7 중 최고점만 클릭 (0.53 오탐 금지)."""
+        self._set_status("현대카드비번 클릭")
+        self._log("  🔍 [22-11a] 현대카드비번1~7 최고점 클릭 (임계값 0.65)")
         self._hyundai_pw4_identity_mode = False
         self._hyundai_pw4_field_xy = None
-        time.sleep(1.2)
+        self._hyundai_pw4_keypad_box = None
+        self._hyundai_pw4_key_origin = None
+        self._hyundai_pw4_key_map = None
 
         w, h = self._get_window_size()
+        min_y, max_y = int(h * 0.12), int(h * 0.58)
 
         for attempt in range(1, 8):
             if self._stop_event.is_set():
                 return False
-            hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.50)
-            if not hit:
-                self._log(f"  ↩ [22-11] 2차페이지 미인식 (시도 {attempt}/7)")
-                time.sleep(1.0)
+            hit = self._match_best_among_images(
+                IMG_HYUNDAI_CARD_PW, threshold=0.65, min_y=min_y, max_y=max_y
+            )
+            if hit:
+                (cx, cy), name, score = hit
+                self._log(
+                    f"  ✅ [22-11a] '{name}' 클릭 score={score:.4f} @ ({cx},{cy}) "
+                    f"(시도 {attempt}/7)"
+                )
+                ah.tap_by_coords(self.driver, cx, cy, self._log)
+                time.sleep(2.0)
+                return True
+            self._log(f"  ↩ [22-11a] 현대카드비번 미인식 (시도 {attempt}/7, 0.65 미만)")
+            time.sleep(1.0)
+
+        for xp in [
+            '//*[contains(@text,"카드 비밀번호 4자리")]',
+            '//*[contains(@text,"카드비밀번호4자리")]',
+            '//*[contains(@text,"비밀번호 4자리")]',
+            '//*[contains(@text,"비밀번호4자리")]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1.0):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ [22-11a] XPath 클릭: {xp}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
                 continue
 
-            (cx, cy), name, score = hit
+        self._log("❌ [22-11a] 현대카드비번 인식 실패 (0.65 이상 매칭 없음)")
+        return False
+
+    def _accept_2nd_page_hit(self, name: str, cy: int, score: float, h: int) -> bool:
+        """2차페이지3은 PIN확인 화면 y≈1131에서 오탐 → 노란바는 상단만 인정."""
+        if name == "2차페이지2":
+            return score >= 0.52
+        if not (int(h * 0.16) <= cy <= int(h * 0.42)):
             self._log(
-                f"  ✅ [22-11] 2차페이지 진입 성공: '{name}' score={score:.4f} @ ({cx},{cy})"
+                f"  ⚠ [22-11b] '{name}' y={cy} 는 PIN확인 오탐 → 무시 "
+                f"(허용 {int(h * 0.16)}~{int(h * 0.42)})"
             )
-            self._hyundai_pw4_identity_mode = True
+            return False
+        return score >= 0.58
 
-            # 전체화면(2차페이지2)이면 입력란은 상단 노란 영역, 아니면 매칭 중심=입력란
-            if name == "2차페이지2":
-                fx, fy = w // 2, int(h * 0.28)
-            else:
-                fx, fy = cx, cy
+    def _set_2nd_page_keypad_from_yellow(self, yellow_cx: int, yellow_cy: int):
+        """노란바 중심만 저장. 실제 키 좌표는 _build_2nd_page_key_map 에서 잡는다."""
+        w, h = self._get_window_size()
+        self._hyundai_pw4_field_xy = (yellow_cx, yellow_cy)
+        # 2차페이지2 기준: 노란바 직후 ~ 4행 키패드 (화면 높이의 약 20%)
+        top = min(h - 80, yellow_cy + int(h * 0.03))
+        bottom = min(h - 20, top + int(h * 0.20))
+        self._hyundai_pw4_keypad_box = (int(w * 0.02), top, int(w * 0.98), bottom)
+        self._log(f"  📐 [2차페이지] 입력란=({yellow_cx},{yellow_cy})")
 
-            self._hyundai_pw4_field_xy = (fx, fy)
-            self._log(f"  👉 [22-11] 카드비밀번호 입력란 탭 ({fx},{fy})")
-            ah.tap_by_coords(self.driver, fx, fy, self._log)
-            time.sleep(0.7)
-            ah.tap_by_coords(self.driver, fx, fy, self._log)
-            time.sleep(1.2)
-            return True
-
-        # 폴백: 예전 현대카드비번1~7 / 좌표
-        self._log("  ⚠ [22-11] 2차페이지1~3 미발견 → 현대카드비번/좌표 폴백")
-        hit = self._match_best_among_images(
-            IMG_HYUNDAI_CARD_PW, threshold=0.48,
-            min_y=int(h * 0.12), max_y=int(h * 0.45),
+    def _store_2nd_page_key_map(self, keymap: dict, src: str):
+        self._hyundai_pw4_key_map = keymap
+        x1, y1 = keymap["1"]
+        x2, _ = keymap["2"]
+        _, y4 = keymap["4"]
+        dx, dy = x2 - x1, y4 - y1
+        self._hyundai_pw4_key_origin = (x1, y1, dx, dy)
+        self._hyundai_pw4_keypad_box = (
+            keymap["1"][0] - max(20, dx // 2),
+            keymap["1"][1] - max(20, dy // 2),
+            keymap["3"][0] + max(20, dx // 2),
+            keymap["0"][1] + max(20, dy // 2),
         )
-        if hit:
-            (cx, cy), name, score = hit
-            self._log(f"  ✅ [22-11] 폴백 '{name}' 탭 score={score:.4f}")
-            ah.tap_by_coords(self.driver, cx, cy, self._log)
-            time.sleep(1.0)
-            self._hyundai_pw4_identity_mode = True
-            self._hyundai_pw4_field_xy = (cx, cy)
+        self._log(
+            f"  📐 [2차페이지] 키맵 {src} "
+            f"1={keymap['1']} 4={keymap['4']} 7={keymap['7']} "
+            f"완료={keymap['완료']}"
+        )
+
+    def _key_map_from_2nd_page2_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
+        tw, th = _HYUNDAI_2ND_TMPL_WH
+        bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+        return {
+            d: (int(x1 + tx * bw / tw), int(y1 + ty * bh / th))
+            for d, (tx, ty) in _HYUNDAI_2ND_KEYS_TMPL.items()
+        }
+
+    def _key_map_from_yellow_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
+        """노란바 bbox → 2차페이지2 실측 비율로 키 좌표."""
+        yw, yh = max(1, x2 - x1), max(1, y2 - y1)
+        yx1, yy1, yx2, yy2 = _HYUNDAI_2ND_YELLOW_TMPL
+        tw, th = yx2 - yx1, yy2 - yy1
+        cols = {
+            0: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["1"][0] - yx1) / tw),
+            1: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["2"][0] - yx1) / tw),
+            2: x1 + yw * ((_HYUNDAI_2ND_KEYS_TMPL["3"][0] - yx1) / tw),
+        }
+        rows = {}
+        for digit, row_i in (("1", 0), ("4", 1), ("7", 2), ("완료", 3)):
+            ty = _HYUNDAI_2ND_KEYS_TMPL[digit][1]
+            rows[row_i] = y2 + yh * ((ty - yy2) / th)
+        layout = {
+            "1": (0, 0), "2": (1, 0), "3": (2, 0),
+            "4": (0, 1), "5": (1, 1), "6": (2, 1),
+            "7": (0, 2), "8": (1, 2), "9": (2, 2),
+            "완료": (0, 3), "0": (1, 3),
+        }
+        return {d: (int(cols[c]), int(rows[r])) for d, (c, r) in layout.items()}
+
+    def _build_2nd_page_key_map(self) -> bool:
+        """본인인증 키패드 좌표: 2차페이지2 bbox 우선, 없으면 노란바 비율."""
+        page2 = IMG_HYUNDAI_2ND_PAGE[1][0]
+        box = self._find_image_bbox(
+            page2, threshold=0.42, save_crop=True, crop_label="2차페이지키패드"
+        )
+        if box and (box["y2"] - box["y1"]) >= 180:
+            self._store_2nd_page_key_map(
+                self._key_map_from_2nd_page2_box(box["x1"], box["y1"], box["x2"], box["y2"]),
+                "2차페이지2",
+            )
             return True
 
-        fx, fy = w // 2, int(h * 0.28)
-        self._log(f"  ⚠ [22-11] 최종 좌표 폴백 탭 ({fx},{fy})")
-        ah.tap_by_coords(self.driver, fx, fy, self._log)
+        w, h = self._get_window_size()
+        for path, name in (IMG_HYUNDAI_2ND_PAGE[0], IMG_HYUNDAI_2ND_PAGE[2]):
+            ybox = self._find_image_bbox(
+                path, threshold=0.58, save_crop=False, crop_label=name
+            )
+            if not ybox:
+                continue
+            cy = ybox["cy"]
+            if not (int(h * 0.16) <= cy <= int(h * 0.48)):
+                continue
+            self._store_2nd_page_key_map(
+                self._key_map_from_yellow_box(ybox["x1"], ybox["y1"], ybox["x2"], ybox["y2"]),
+                f"노란바/{name}",
+            )
+            return True
+
+        fx, fy = getattr(self, "_hyundai_pw4_field_xy", None) or (w // 2, int(h * 0.30))
+        yw, yh = int(w * 0.82), max(48, int(h * 0.044))
+        self._store_2nd_page_key_map(
+            self._key_map_from_yellow_box(fx - yw // 2, fy - yh // 2, fx + yw // 2, fy + yh // 2),
+            "노란바추정",
+        )
+        return True
+
+    def _calibrate_2nd_page_keypad(self) -> bool:
+        """호환용: 키맵 재계산."""
+        return self._build_2nd_page_key_map()
+
+    def _wait_hyundai_2nd_page_and_focus(self) -> bool:
+        """[22-11b] 본인인증 화면인지 확인한 뒤에만 진입 성공."""
+        self._set_status("2차페이지 진입 확인")
+        self._log("  🔍 [22-11b] 2차페이지1/2/3 + 본인인증 마커 확인")
+        w, h = self._get_window_size()
+
+        for attempt in range(1, 10):
+            if self._stop_event.is_set():
+                return False
+
+            text_ok = self._has_hyundai_2nd_page_markers()
+            hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.52)
+            accepted = False
+            name, score, cx, cy = "", 0.0, w // 2, int(h * 0.30)
+            if hit:
+                (cx, cy), name, score = hit
+                accepted = self._accept_2nd_page_hit(name, cy, score, h)
+
+            if accepted or text_ok:
+                if accepted:
+                    self._log(
+                        f"  ✅ [22-11b] 2차페이지 진입 성공: '{name}' "
+                        f"score={score:.4f} @ ({cx},{cy})"
+                    )
+                else:
+                    self._log("  ✅ [22-11b] 2차페이지 진입 성공: 본인인증 텍스트 마커")
+
+                self._hyundai_pw4_identity_mode = True
+                if name in ("2차페이지1", "2차페이지3") and accepted:
+                    fx, fy = cx, min(h - 10, cy + int(h * 0.015))
+                else:
+                    yellow = self._match_best_among_images(
+                        [IMG_HYUNDAI_2ND_PAGE[0], IMG_HYUNDAI_2ND_PAGE[2]],
+                        threshold=0.52,
+                        min_y=int(h * 0.16),
+                        max_y=int(h * 0.42),
+                    )
+                    if yellow:
+                        (fx, fy), yname, yscore = yellow
+                        self._log(f"  🎯 노란 입력란 '{yname}' score={yscore:.4f} @ ({fx},{fy})")
+                    else:
+                        fx, fy = w // 2, int(h * 0.30)
+
+                self._set_2nd_page_keypad_from_yellow(fx, fy)
+                self._log(f"  👉 [22-11b] 카드비밀번호 입력란 탭 ({fx},{fy})")
+                ah.tap_by_coords(self.driver, fx, fy, self._log)
+                time.sleep(0.8)
+                return True
+
+            self._log(f"  ↩ [22-11b] 본인인증 화면 아님 (시도 {attempt}/9)")
+            time.sleep(1.0)
+
+        self._log("❌ [22-11b] 2차비번 입력 화면 진입 실패")
+        return False
+
+    def _focus_hyundai_card_pw4_field(self) -> bool:
+        """[22-11] 현대카드비번 클릭 → 2차페이지 확인. 실패 시 1회 재시도."""
         time.sleep(1.0)
-        self._hyundai_pw4_identity_mode = True
-        self._hyundai_pw4_field_xy = (fx, fy)
+        for round_i in range(1, 3):
+            self._log(f"  🔁 [22-11] 진입 라운드 {round_i}/2")
+            if not self._click_hyundai_card_pw_entry():
+                continue
+            time.sleep(1.8)
+            if self._wait_hyundai_2nd_page_and_focus():
+                return True
+            self._log("  ⚠ [22-11] 클릭 후 2차페이지 미진입 → 현대카드비번 재클릭")
+        return False
+
+    def _tap_2nd_page_keypad_digit(self, digit: str) -> bool:
+        """본인인증 키패드: 2차페이지2 실측 키맵 우선."""
+        keymap = getattr(self, "_hyundai_pw4_key_map", None) or {}
+        if digit in keymap:
+            x, y = keymap[digit]
+        else:
+            origin = getattr(self, "_hyundai_pw4_key_origin", None)
+            layout = {
+                "1": (0, 0), "2": (1, 0), "3": (2, 0),
+                "4": (0, 1), "5": (1, 1), "6": (2, 1),
+                "7": (0, 2), "8": (1, 2), "9": (2, 2),
+                "0": (1, 3), "완료": (0, 3),
+            }
+            if digit not in layout:
+                return False
+            col, row = layout[digit]
+            if origin:
+                x1, y1, dx, dy = origin
+                x, y = x1 + col * dx, y1 + row * dy
+            else:
+                return False
+        self._log(f"    👉 키패드 '{digit}' 좌표탭 ({x},{y})")
+        ah.tap_by_coords(self.driver, x, y, self._log)
+        time.sleep(0.45)
         return True
 
     def _input_hyundai_identity_pw4(self, pin4: str) -> bool:
-        """본인인증 화면: 입력란 포커스 후 현대숫자 키패드로 4자리 입력.
-
-        주의: 여기서 다시 현대카드비번1~7을 찾지 않는다.
-        ADB input text는 WebView/보안키패드에서 무시되는 경우가 많아 최후 수단.
-        """
+        """2차페이지: 노란바 아래 실측 키패드로 4자리 입력."""
         digits = ''.join(filter(str.isdigit, pin4 or ""))
         if len(digits) != 4:
             self._log(f"  ❌ [22-12] 2차비밀번호 자릿수 불일치: {len(digits)}자리 (기대 4)")
             return False
 
         w, h = self._get_window_size()
-        fx, fy = getattr(self, "_hyundai_pw4_field_xy", (w // 2, int(h * 0.22)))
+        fx, fy = getattr(self, "_hyundai_pw4_field_xy", None) or (w // 2, int(h * 0.28))
 
-        self._log(
-            f"  🔐 [22-12] 카드비밀번호 4자리 입력 시작 "
-            f"(입력란 재탐색 없음, 포커스={fx},{fy})"
-        )
-
-        # 입력란만 한 번 더 탭 → 하단 숫자 키패드 표시
+        self._log(f"  🔐 [22-12] 2차비밀번호 4자리 — 본인인증 키패드 좌표 (포커스={fx},{fy})")
         ah.tap_by_coords(self.driver, fx, fy, self._log)
-        time.sleep(1.5)
+        time.sleep(1.0)
 
-        # 방법1: 현대숫자 0~9.png 로 하단 키패드 클릭 (본인인증 핵심)
-        # 키패드는 화면 하단 — 상단 입력란(현대카드비번 텍스트)과 혼동 금지
-        keypad_roi = {
-            "min_x": int(w * 0.02),
-            "max_x": int(w * 0.98),
-            "min_y": int(h * 0.42),
-            "max_y": int(h * 0.96),
-            "cx": w // 2,
-            "cy": int(h * 0.70),
-            "score": 1.0,
-        }
-        self._log("  🔢 [22-12] 현대숫자 키패드로 4자리 클릭")
-        if self._input_hyundai_digits(digits, expected_len=4, roi=keypad_roi):
-            self._log("  ✅ [22-12] 현대숫자 키패드 입력 완료")
+        if not self._build_2nd_page_key_map():
+            self._log("  ❌ [22-12] 키패드 좌표 계산 실패")
+            return False
+
+        ok = True
+        for i, ch in enumerate(digits):
+            self._log(f"  🔢 {i + 1}번째 자리 '{ch}'")
+            if not self._tap_2nd_page_keypad_digit(ch):
+                ok = False
+                break
+        if ok:
+            self._log("  ✅ [22-12] 본인인증 키패드 4자리 입력 완료")
             return True
 
-        self._log("  ⚠ [22-12] 현대숫자 키패드 실패 → keyevent 폴백")
-
-        # 방법2: ADB 숫자 keyevent (시스템 키보드)
-        ah.tap_by_coords(self.driver, fx, fy, self._log)
-        time.sleep(0.6)
+        self._log("  ⚠ [22-12] 키맵 탭 실패 → keyevent")
         try:
             for ch in digits:
-                code = 7 + int(ch)  # KEYCODE_0=7
                 _run_cmd(
-                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", str(code)],
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", str(7 + int(ch))],
                     capture_output=True, timeout=5,
                 )
                 time.sleep(0.25)
-            self._log("  ✅ [22-12] ADB keyevent 숫자 입력 완료")
+            self._log("  ✅ [22-12] ADB keyevent 입력 완료")
             return True
         except Exception as e:
-            self._log(f"  ⚠ keyevent 실패: {e}")
-
-        # 방법3: send_keys / input text (최후)
-        for xp in ['//android.widget.EditText']:
-            try:
-                if ah.element_exists(self.driver, xp, timeout=1.0):
-                    el = self.driver.find_element(By.XPATH, xp)
-                    el.click()
-                    el.send_keys(digits)
-                    self._log(f"  ✅ [22-12] send_keys 완료")
-                    return True
-            except Exception:
-                continue
-        try:
-            _run_cmd(
-                ["adb", "-s", self.device_id, "shell", "input", "text", digits],
-                capture_output=True, timeout=8,
-            )
-            self._log("  ✅ [22-12] ADB input text 완료 (최후수단)")
-            return True
-        except Exception as e:
-            self._log(f"  ❌ [22-12] 4자리 입력 전부 실패: {e}")
+            self._log(f"  ❌ [22-12] 4자리 입력 실패: {e}")
             return False
 
     def _click_hyundai_identity_confirm(self) -> bool:
-        """2차페이지 확인/완료 버튼 클릭."""
-        time.sleep(0.5)
+        """2차페이지: 키패드 좌하단 '완료' (PIN확인 현대확인 과 혼동 금지)."""
+        time.sleep(0.4)
+        if not getattr(self, "_hyundai_pw4_key_map", None):
+            self._build_2nd_page_key_map()
+        self._log("  👉 [22-13] 키패드 '완료' 좌표 탭")
+        if self._tap_2nd_page_keypad_digit("완료"):
+            time.sleep(1.5)
 
-        for attempt in range(1, 5):
-            # 키패드 '완료' (2차페이지2 기준)
-            for xp in [
-                '//*[@text="완료"]',
-                '//android.widget.Button[@text="완료"]',
-                '//*[contains(@text,"완료")]',
-                '//android.widget.Button[@text="확인"]',
-                '//*[@text="확인"]',
-                '//android.widget.Button[contains(@text,"확인")]',
-            ]:
-                try:
-                    if ah.element_exists(self.driver, xp, timeout=1.0):
-                        el = self.driver.find_element(By.XPATH, xp)
-                        if self._safe_click_element(el):
-                            self._log(f"  ✅ [2차페이지] 확인/완료 클릭: {xp}")
-                            time.sleep(2.0)
-                            return True
-                except Exception:
-                    continue
-
-            w, h = self._get_window_size()
-            if self._click_any_image_basic(
-                IMG_HYUNDAI_CONFIRM, threshold=0.55, attempts=1, wait_after=1.5,
-                min_y=int(h * 0.18), max_y=int(h * 0.55),
-            ):
-                self._log("  ✅ [2차페이지] 현대확인 이미지 클릭")
-                return True
-
-            # 키패드 좌하단 '완료' 예상좌표 (2차페이지2)
-            if attempt >= 2:
-                tap_x, tap_y = int(w * 0.17), int(h * 0.88)
-                self._log(f"  ⚠ [2차페이지] 완료 예상좌표 탭 ({tap_x},{tap_y}) 시도 {attempt}/4")
-                ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-                time.sleep(1.5)
-                # 상단 확인도 한 번
-                ah.tap_by_coords(self.driver, w // 2, int(h * 0.32), self._log)
-                time.sleep(1.5)
-                return True
-            time.sleep(0.7)
-
-        return False
+        for xp in [
+            '//*[@text="완료"]',
+            '//android.widget.Button[@text="완료"]',
+            '//android.widget.Button[@text="확인"]',
+            '//*[@text="확인"]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ [2차페이지] 완료/확인 클릭: {xp}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
+                continue
+        return True
 
     def _click_hyundai_pw_confirm(self) -> bool:
-        """현대확인 이미지 클릭 (현대비번 확인 / 본인인증 확인)."""
-        # 본인인증 화면의 '확인'
-        if getattr(self, "_hyundai_pw4_identity_mode", False) or self._is_hyundai_identity_auth_screen():
+        """현대확인 이미지 클릭 (현대비번 확인 / 2차페이지 완료)."""
+        # 2차페이지 모드에서만 완료/확인(본인인증) 경로 사용 — 22-9 PIN확인과 혼동 금지
+        if getattr(self, "_hyundai_pw4_identity_mode", False):
             if self._click_hyundai_identity_confirm():
                 self._hyundai_pw4_identity_mode = False
                 return True
@@ -4983,23 +5146,23 @@ class NaverOrderWorker:
             self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
             return False
 
-        # 22-11 2차페이지1~3 인식 → 진입 성공 → 입력란 포커스
+        # 22-11a 현대카드비번1~7 클릭 → 22-11b 2차페이지1~3 인식 → 입력란 포커스
         if not self._focus_hyundai_card_pw4_field():
-            self._log("❌ [22-11] 2차페이지 진입 실패 (2차페이지1/2/3 미인식)")
+            self._log("❌ [22-11] 현대카드비번 클릭 또는 2차페이지 진입 실패")
             return False
         self._log("  ⏳ [22-11] 2차비밀번호 입력 준비 (1초)...")
         time.sleep(1.0)
 
-        # 22-12 2차비밀번호 4자리 — 현대숫자 키패드
+        # 22-12 2차비밀번호 4자리
         pin4 = ''.join(filter(str.isdigit, second_password or ""))
-        self._log("  🔐 [22-12] 2차비밀번호 입력 (현대숫자 키패드 4자리)")
+        self._log("  🔐 [22-12] 2차비밀번호 입력 (키패드 4자리)")
         if not self._input_hyundai_identity_pw4(pin4):
             self._log("❌ [22-12] 2차비밀번호 4자리 입력 실패")
             return False
 
-        # 22-13 본인인증 '확인' → 이후 주문완료 대기
+        # 22-13 완료/확인
         if not self._click_hyundai_pw_confirm():
-            self._log("❌ [22-13] 확인 버튼 미발견")
+            self._log("❌ [22-13] 완료/확인 버튼 미발견")
             return False
         self._log("  ⏳ [22-13] 추가 7초 대기...")
         time.sleep(7.0)
