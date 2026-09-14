@@ -3013,11 +3013,12 @@ class NaverOrderWorker:
         
     def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15,
                                      min_x: Optional[int] = None, max_x: Optional[int] = None,
-                                     min_y: Optional[int] = None, max_y: Optional[int] = None) -> bool:
-        """여러 이미지 중 하나라도 발견되면 미세 스크롤 조정 후 클릭"""
+                                     min_y: Optional[int] = None, max_y: Optional[int] = None,
+                                     allow_scroll_up: bool = False) -> bool:
+        """여러 이미지 중 하나라도 발견되면 클릭 (기본 allow_scroll_up=False 로 위로 스크롤 방지)"""
         names_str = " / ".join(n for _, n in images)
         self._set_status(f"{names_str} 탐색 중")
-        self._log(f"🔍 [{names_str}] 중 하나 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
+        self._log(f"🔍 [{names_str}] 중 하나 탐색 시작 (스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
 
         w_h = 2400
         try:
@@ -3026,7 +3027,7 @@ class NaverOrderWorker:
             pass
 
         mid_top    = int(w_h * 0.35)
-        mid_bottom = int(w_h * 0.65)
+        mid_bottom = int(w_h * 0.70)
 
         for attempt in range(1, max_scroll_attempts + 1):
             for img_path, name in images:
@@ -3034,17 +3035,27 @@ class NaverOrderWorker:
                     coords = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                     if coords:
                         if coords[1] < mid_top:
-                            self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
-                            self._scroll_up(distance_ratio=0.18)
+                            if allow_scroll_up:
+                                self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
+                                self._scroll_up(distance_ratio=0.18)
+                                time.sleep(1.0)
+                                adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
+                                if adj:
+                                    coords = adj
+                                else:
+                                    continue
+                            else:
+                                self._log(f"  ⚠ {name} 상단 치우침(y={coords[1]} < {mid_top}) -> 위로 스크롤 금지/오탐 방지 (무시하고 아래로 계속 탐색)")
+                                continue
+                        elif coords[1] > int(w_h * 0.94):
+                            self._log(f"  📌 {name} 하단 끝 치우침(y={coords[1]}) -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.12)
                             time.sleep(1.0)
                             adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
-                            if adj: coords = adj
-                        elif coords[1] > mid_bottom:
-                            self._log(f"  📌 {name} 하단 치우침(y={coords[1]}) -> 미세 스크롤 다운")
-                            self._scroll_down(distance_ratio=0.18)
-                            time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
-                            if adj: coords = adj
+                            if adj:
+                                coords = adj
+                            else:
+                                continue
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -3056,6 +3067,51 @@ class NaverOrderWorker:
             time.sleep(0.8)
         self._log(f"  ❌ [{names_str}] 버튼 모두 탐색 실패")
         return False
+
+    def _click_do_pay_button_down_only(self, max_scroll_attempts: int = 8) -> bool:
+        """
+        [결재하기 전용] 카드 선택 후 결재하기 버튼을 아래 방향으로만 탐색하여 클릭.
+        - 화면 상단 45% 오탐 제외 (min_y = int(h * 0.45))
+        - 위로 스크롤 절대 금지 (allow_scroll_up=False)
+        - 우측 여백 안전 스크롤 사용으로 화면 내 요소 클릭 방지
+        """
+        self._set_status("결재하기 탐색 중")
+        self._log(f"🔍 [결재하기] 탐색 시작 (위로 스크롤 금지, 아래로만 최대 {max_scroll_attempts}회 탐색)")
+
+        w, h = self._get_window_size()
+        min_y = int(h * 0.45)  # 화면 상단 45%는 결재하기 위치 불가 (오탐 원천 차단)
+
+        for attempt in range(1, max_scroll_attempts + 1):
+            for img_path, name in IMG_HYUNDAI_DO_PAY:
+                if os.path.exists(img_path):
+                    coords = self._find_image_coords(img_path, threshold=0.70, min_y=min_y)
+                    if coords:
+                        cx, cy = coords
+                        if cy < min_y:
+                            self._log(f"  ⚠ {name} 상단 영역(y={cy} < {min_y}) 감지 -> 결재하기 위치 부적합(오탐 방지), 무시")
+                            continue
+
+                        if cy > int(h * 0.95):
+                            self._log(f"  📌 {name} 하단 끝(y={cy}) -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.10)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=0.70, min_y=min_y)
+                            if adj:
+                                cx, cy = adj
+                            else:
+                                continue
+
+                        self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({cx}, {cy}) -> 결재하기 탭 클릭")
+                        ah.tap_by_coords(self.driver, cx, cy, self._log)
+                        time.sleep(3.0)
+                        return True
+
+            self._log(f"  ⬇ [결재하기] 미발견 -> 밑으로 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
+            time.sleep(0.8)
+
+        self._log("  ⚠ [결재하기] 이미지 모두 미발견 → XPath / 하단 고정바 폴백 시도")
+        return self._click_pay_button()
 
     def _click_image_basic(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
         """지정된 이미지를 스크롤 없이 한 번만 찾아서 클릭 (또는 짧게 대기하며 재시도)"""
@@ -5135,12 +5191,10 @@ class NaverOrderWorker:
             self._log("❌ [국민카드] 카드가 아직 '카드를 선택해주세요' → 결재하기 클릭 안 함")
             return False
 
-        # 5) 결재하기
-        if not self._click_any_image_with_scroll(IMG_HYUNDAI_DO_PAY, threshold=0.70, max_scroll_attempts=8):
-            self._log("  ⚠ [국민카드] 결재하기 이미지 미발견 → XPath 폴백")
-            if not self._click_pay_button():
-                self._log("❌ [국민카드] 결재하기 클릭 실패")
-                return False
+        # 5) 결재하기 (위로 스크롤 금지, 아래로만 탐색)
+        if not self._click_do_pay_button_down_only(max_scroll_attempts=8):
+            self._log("❌ [국민카드] 결재하기 클릭 실패")
+            return False
 
         self._log("✅ [국민카드] 결재하기 클릭 완료 → 후속 작업 없이 종료")
         return True
@@ -5192,12 +5246,10 @@ class NaverOrderWorker:
             self._log("❌ [22-4] 카드가 아직 '카드를 선택해주세요' → 결제하기 클릭 안 함")
             return False
 
-        # 22-5 결재하기.png ~ 결재하기4.png
-        if not self._click_any_image_with_scroll(IMG_HYUNDAI_DO_PAY, threshold=0.70, max_scroll_attempts=8):
-            self._log("  ⚠ [22-5] 결재하기 이미지 미발견 → XPath 폴백")
-            if not self._click_pay_button():
-                self._log("❌ [22-5] 결재하기 클릭 실패")
-                return False
+        # 22-5 결재하기.png ~ 결재하기4.png (위로 스크롤 금지, 아래로만 탐색)
+        if not self._click_do_pay_button_down_only(max_scroll_attempts=8):
+            self._log("❌ [22-5] 결재하기 클릭 실패")
+            return False
 
         # 22-6 현대핀1~5.png 클릭 (PIN번호 결제 버튼), 이후 최대 8초 대기
         pin_btn_clicked = self._click_any_image_basic(IMG_HYUNDAI_PIN_BTN, threshold=0.70, attempts=6, wait_after=2.0)
@@ -5713,34 +5765,32 @@ class NaverOrderWorker:
     def _scroll_gesture(self, direction: str, distance_ratio: float) -> bool:
         """UiAutomator2 네이티브 'mobile: scrollGesture' 수행.
 
-        시스템 제스처 라이브러리를 사용하므로 터치 슬롭이 보장되어
-        스크롤 도중 요소 클릭/롱클릭이 절대 발생하지 않습니다.
-        화면 중앙 밴드(세로 25%~75%)에서만 제스처를 수행하여
-        상단 헤더/하단 고정 결제바를 건드리지 않습니다.
+        화면 우측 안전 여백(가로 72%~92%, 세로 28%~72%)에서 수행하여
+        화면 중앙/좌측의 라디오버튼, 체크박스, 링크 클릭을 원천 방지합니다.
 
         Returns:
             제스처 수행 성공 여부 (드라이버 미지원/오류 시 False)
         """
         try:
             w, h = self._get_window_size()
-            top = int(h * 0.25)
-            area_h = int(h * 0.50)
-            percent = max(0.15, min(1.0, (h * distance_ratio) / area_h))
+            top = int(h * 0.28)
+            area_h = int(h * 0.44)
+            percent = max(0.15, min(0.85, (h * distance_ratio) / max(1, area_h)))
             self.driver.execute_script('mobile: scrollGesture', {
-                'left': int(w * 0.10),
+                'left': int(w * 0.72),
                 'top': top,
-                'width': int(w * 0.80),
+                'width': int(w * 0.20),
                 'height': area_h,
                 'direction': direction,
                 'percent': percent,
-                'speed': 1200,  # px/s. 낮은 속도 = 관성(fling) 없는 부드러운 드래그
+                'speed': 800,  # 낮은 속도 = 관성(fling) 없는 부드러운 드래그
             })
             return True
         except Exception:
             return False
 
-    def _adb_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 500):
-        """ADB input swipe (긴 duration = 관성 없는 드래그 스크롤)"""
+    def _adb_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 800):
+        """ADB input swipe (충분한 duration = 탭/클릭 오인 없는 순수 드래그 스크롤)"""
         try:
             _run_cmd(
                 ["adb", "-s", self.device_id, "shell", "input", "swipe",
@@ -5760,65 +5810,62 @@ class NaverOrderWorker:
         return w, h
 
     def _scroll_down_fast(self, distance_ratio: float = 0.28):
-        """상품 리스트용 빠른 스크롤 (지문 검증/재시도 생략)."""
+        """상품 리스트용 빠른 스크롤 (우측 여백 드래그)."""
         w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
         start_y = int(h * 0.72)
         end_y = max(100, int(start_y - (h * distance_ratio)))
-        self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=280)
+        self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=350)
         time.sleep(0.2)
 
     def _scroll_down_safe(self, distance_ratio: float = 0.14):
         """
         결제/주문 화면용 안전 스크롤.
+        - 화면 우측 여백 밴드(약 72%~92%)에서만 드래그 → 중앙 라디오/체크박스 클릭 방지
         - 웹뷰 콘텐츠 밴드(약 32%~62%)만 드래그 → 하단 네비/앱 밖으로 오버스크롤 방지
         - 중간 거리 + 느린 duration → fling/관성으로 창 밖 이탈 방지
-        - 지문 재시도(시작점 변경) 없음 → 과도한 연속 스와이프 방지
         """
         w, h = self._get_window_size()
-        # 콘텐츠 중앙 부근에서 조금 더 넓게 올림 (네이버 앱 WebView 내부)
+        safe_x = int(w * 0.88)
         start_y = int(h * 0.62)
         end_y = max(int(h * 0.32), int(start_y - (h * max(0.08, min(0.18, distance_ratio)))))
         self._log(
             f"  ↕ [안전스크롤] down ({start_y}→{end_y}, ratio≈{distance_ratio:.2f})"
         )
-        # 네이티브 제스처 우선 (느린 속도)
+        # 네이티브 제스처 우선 (우측 여백 영역)
         try:
             area_top = int(h * 0.32)
             area_h = int(h * 0.36)
             percent = max(0.18, min(0.48, (h * distance_ratio) / max(1, area_h)))
             self.driver.execute_script('mobile: scrollGesture', {
-                'left': int(w * 0.12),
+                'left': int(w * 0.72),
                 'top': area_top,
-                'width': int(w * 0.76),
+                'width': int(w * 0.20),
                 'height': area_h,
                 'direction': 'down',
                 'percent': percent,
                 'speed': 750,
             })
         except Exception:
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=950)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=850)
         time.sleep(0.85)
 
     def _scroll_down(self, distance_ratio: float = 0.20):
-        """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
+        """아래로 미세 스크롤 (요소 클릭 방지: 우측 안전 여백 드래그).
 
-        1차: UiAutomator2 네이티브 scrollGesture (클릭 이벤트 미발생 보장)
-        폴백/재시도: ADB 장거리 저속 드래그 (이동 거리가 터치 슬롭을 크게
-        초과하므로 클릭으로 인식되지 않음)
-
-        스크롤 후 화면 지문을 비교하여 실제로 화면이 움직였는지 검증하고,
-        변화가 없으면 시작점(Y)을 바꿔 재시도합니다.
-        (결제화면의 가로 스크롤 카드영역/드롭다운 오버레이 등이 세로 스와이프를
-        가로채 스크롤이 무시되는 현상 대응)
+        1차: UiAutomator2 네이티브 scrollGesture (우측 안전 여백)
+        폴백/재시도: ADB 장거리 저속 드래그 (우측 여백 safe_x = int(w * 0.88),
+        duration=800ms로 탭/클릭 오인 원천 차단)
         """
         w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
         before = self._capture_screen_fingerprint()
 
         # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
         if not self._scroll_gesture("down", distance_ratio):
             start_y = int(h * 0.72)
             end_y = max(100, int(start_y - (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
 
         if before is None:
             return
@@ -5827,12 +5874,12 @@ class NaverOrderWorker:
         if after is None or self._fingerprints_differ(before, after):
             return
 
-        # 화면 무변화 → 시작점을 바꿔 ADB 드래그 스와이프로 재시도
+        # 화면 무변화 → 시작점을 바꿔 ADB 드래그 스와이프로 재시도 (우측 여백 유지)
         for retry_idx, start_ratio in enumerate((0.60, 0.50), start=1):
             self._log(f"  ⚠ [스크롤 다운] 화면 변화 없음 → 시작점 변경 재시도 ({retry_idx}/2, y={int(start_ratio*100)}%)")
             start_y = int(h * start_ratio)
             end_y = max(100, int(start_y - (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
             time.sleep(0.7)
             after = self._capture_screen_fingerprint()
             if after is None or self._fingerprints_differ(before, after):
@@ -5842,15 +5889,16 @@ class NaverOrderWorker:
         self._log("  ⚠ [스크롤 다운] 재시도에도 화면이 움직이지 않음 (페이지 끝 또는 스크롤 불가 상태)")
 
     def _scroll_up(self, distance_ratio: float = 0.4):
-        """위로 스크롤 (화면을 아래로 내림). 요소 클릭 미발생 방식 + 무변화 시 재시도"""
+        """위로 스크롤 (화면을 아래로 내림). 요소 클릭 방지: 우측 안전 여백 드래그"""
         w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
         before = self._capture_screen_fingerprint()
 
-        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
+        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그 (우측 여백)
         if not self._scroll_gesture("up", distance_ratio):
             start_y = int(h * 0.3)
             end_y = min(h - 100, int(start_y + (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
 
         if before is None:
             return
@@ -5863,7 +5911,7 @@ class NaverOrderWorker:
             self._log(f"  ⚠ [스크롤 업] 화면 변화 없음 → 시작점 변경 재시도 ({retry_idx}/2, y={int(start_ratio*100)}%)")
             start_y = int(h * start_ratio)
             end_y = min(h - 100, int(start_y + (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
             time.sleep(0.7)
             after = self._capture_screen_fingerprint()
             if after is None or self._fingerprints_differ(before, after):
