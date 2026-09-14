@@ -70,6 +70,13 @@ class DevicePanel(tk.Frame):
                  fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2,
                  font=("Segoe UI", 8)).pack(side=tk.RIGHT)
 
+        self.task_count_label = tk.Label(
+            hdr, text="총 0 / 잔여 0",
+            fg=CLR_PRIMARY, bg=CLR_SURFACE2,
+            font=("Segoe UI", 8, "bold")
+        )
+        self.task_count_label.pack(side=tk.RIGHT, padx=(0, 8))
+
         # 상태 텍스트
         self.status_label = tk.Label(
             self, text="대기 중", fg=CLR_TEXT_MUTE,
@@ -135,6 +142,11 @@ class DevicePanel(tk.Frame):
     def set_idle(self):
         self.status_dot.config(fg=CLR_TEXT_MUTE)
         self.status_label.config(text="대기 중", fg=CLR_TEXT_MUTE)
+
+    def set_task_counts(self, total: int, pending: int):
+        """총작업수 및 잔여수 표시 업데이트"""
+        color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
+        self.task_count_label.config(text=f"총 {total} / 잔여 {pending}", fg=color)
 
 
 class ScrollableFrame(tk.Frame):
@@ -365,6 +377,13 @@ class MainApp(tk.Tk):
             w.destroy()
 
         self.device_check_vars = {}
+        self.device_task_labels = {}
+
+        device_counts = {}
+        try:
+            device_counts = self.address_manager.get_all_devices_task_counts()
+        except Exception:
+            pass
 
         is_desc = getattr(self, "sort_desc", False)
         sorted_devices = sorted(
@@ -423,8 +442,20 @@ class MainApp(tk.Tk):
             status_color = CLR_SUCCESS if info.get("connected") else CLR_TEXT_MUTE
             tk.Label(
                 row_frame, text=status_text, fg=status_color, bg=row_bg,
-                font=("Segoe UI", 9), width=8, anchor="center"
+                font=("Segoe UI", 9), width=7, anchor="center"
             ).pack(side=tk.LEFT)
+
+            # 기기별 작업수 (총작업 / 잔여수)
+            dev_cnt = device_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+            t_cnt, p_cnt = dev_cnt.get("total", 0), dev_cnt.get("pending", 0)
+            cnt_color = CLR_SUCCESS if p_cnt == 0 and t_cnt > 0 else (CLR_PRIMARY if p_cnt > 0 else CLR_TEXT_MUTE)
+            cnt_lbl = tk.Label(
+                row_frame, text=f"총 {t_cnt} / 잔여 {p_cnt}",
+                fg=cnt_color, bg=row_bg,
+                font=("Segoe UI", 8, "bold"), width=13, anchor="center"
+            )
+            cnt_lbl.pack(side=tk.LEFT, padx=(2, 4))
+            self.device_task_labels[did] = cnt_lbl
 
             # 테더링 여부 체크박스 (시안/스카이블루 고대비 색상 적용)
             tether_var = tk.BooleanVar(value=info.get("tethering", True))
@@ -540,7 +571,7 @@ class MainApp(tk.Tk):
 
         # 좌측: 기기 설정 패널
         self.dev_list_frame = tk.Frame(
-            self.body_frame, bg=CLR_SURFACE, width=430,
+            self.body_frame, bg=CLR_SURFACE, width=540,
             relief=tk.FLAT,
             highlightbackground=CLR_BORDER, highlightthickness=1
         )
@@ -567,9 +598,11 @@ class MainApp(tk.Tk):
         )
         self.select_all_chk.pack(side=tk.LEFT, anchor="center", padx=(10, 15))
         tk.Label(headers_frame, text="기기 ID", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-                 font=("Segoe UI", 9, "bold"), width=19, anchor="w").pack(side=tk.LEFT)
+                 font=("Segoe UI", 9, "bold"), width=16, anchor="w").pack(side=tk.LEFT)
         tk.Label(headers_frame, text="상태", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-                 font=("Segoe UI", 9, "bold"), width=8, anchor="center").pack(side=tk.LEFT)
+                 font=("Segoe UI", 9, "bold"), width=7, anchor="center").pack(side=tk.LEFT)
+        tk.Label(headers_frame, text="작업(총/잔여)", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
+                 font=("Segoe UI", 9, "bold"), width=13, anchor="center").pack(side=tk.LEFT)
         sort_icon = " ▼" if getattr(self, "sort_desc", False) else " ▲"
         lbl_remark = tk.Label(headers_frame, text=f"비고 (메모){sort_icon}", fg=CLR_PRIMARY, bg=CLR_SURFACE,
                               font=("Segoe UI", 9, "bold"), cursor="hand2", anchor="w")
@@ -650,12 +683,14 @@ class MainApp(tk.Tk):
         cols = min(count, 3)
         for i, did in enumerate(selected_devices):
             remark = self.devices_data.get(did, {}).get("remark", "")
-            display_name = f"{did} ({remark})" if remark else did
+            display_name = remark if remark else did
 
             panel = DevicePanel(self.panels_frame, display_name, 0,
                                 relief=tk.FLAT,
                                 highlightbackground=CLR_BORDER,
                                 highlightthickness=1)
+            c = self.address_manager.get_device_task_counts(did)
+            panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
             row = i // cols
             col = i % cols
             panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
@@ -1120,12 +1155,33 @@ class MainApp(tk.Tk):
     # ─── 요약 갱신 ────────────────────────────────────────────────────────────
 
     def _refresh_summary(self):
+        if hasattr(self, "_summary_timer") and self._summary_timer:
+            try:
+                self.after_cancel(self._summary_timer)
+            except Exception:
+                pass
+            self._summary_timer = None
+
         try:
             summary = self.address_manager.get_all_rows_summary()
             for key, lbl in self.summary_labels.items():
                 lbl.config(text=str(summary.get(key, 0)))
+
+            dev_counts = self.address_manager.get_all_devices_task_counts()
+            if hasattr(self, "device_panels"):
+                for did, panel in self.device_panels.items():
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
+            if hasattr(self, "device_task_labels"):
+                for did, lbl in self.device_task_labels.items():
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    t, p = c.get("total", 0), c.get("pending", 0)
+                    color = CLR_SUCCESS if p == 0 and t > 0 else (CLR_PRIMARY if p > 0 else CLR_TEXT_MUTE)
+                    lbl.config(text=f"총 {t} / 잔여 {p}", fg=color)
         except Exception:
             pass
+
+        self._summary_timer = self.after(5000, self._refresh_summary)
 
     def _log_status(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")

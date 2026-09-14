@@ -174,3 +174,48 @@ class AddressManager:
             except Exception as e:
                 print(f"[AddressManager] 현황 조회 오류: {e}")
             return summary
+
+    def get_all_devices_task_counts(self) -> dict:
+        """
+        기기ID별 작업 현황 집계 반환 (스레드 안전)
+        반환 예: { "R3CR302DWEH": {"total": 10, "pending": 4, "done": 5, "failed": 1}, ... }
+        """
+        with self._lock:
+            counts = {}
+            try:
+                wb = openpyxl.load_workbook(self.xlsx_path)
+                ws = wb.active
+                for row_idx in range(2, ws.max_row + 1):
+                    name = ws.cell(row_idx, 1).value
+                    if not name or str(name).strip() == "":
+                        break
+
+                    status = ws.cell(row_idx, 6).value
+                    status_str = str(status).strip().upper() if status else ""
+                    dev = ws.cell(row_idx, 7).value
+                    dev_key = str(dev).strip().upper() if dev else ""
+
+                    if dev_key not in counts:
+                        counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0}
+
+                    counts[dev_key]["total"] += 1
+                    if status_str == "Y":
+                        counts[dev_key]["done"] += 1
+                    elif status_str == "F":
+                        counts[dev_key]["failed"] += 1
+                    else:
+                        counts[dev_key]["pending"] += 1
+            except Exception as e:
+                print(f"[AddressManager] 기기별 현황 집계 오류: {e}")
+            return counts
+
+    def get_device_task_counts(self, device_id: str) -> dict:
+        """특정 기기ID의 {total, pending, done, failed} 반환"""
+        norm_id = str(device_id).strip().upper() if device_id else ""
+        all_counts = self.get_all_devices_task_counts()
+        if norm_id in all_counts:
+            return all_counts[norm_id]
+        for k, v in all_counts.items():
+            if k == norm_id:
+                return v
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0}

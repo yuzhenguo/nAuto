@@ -1540,33 +1540,29 @@ class NaverWorker:
 
         """
 
-        self._log("📋 주소 등록 루프 시작")
-
-
+        counts = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+        self._log(f"📋 주소 등록 루프 시작 (기기: {self.device_id}, 총 {counts.get('total', 0)}건, 잔여 {counts.get('pending', 0)}건)")
 
         while not self._stop_event.is_set():
-
             row = self.address_manager.get_next_pending_row(self.device_id)
 
+            counts = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+            t_cnt = counts.get('total', 0)
+            p_cnt = counts.get('pending', 0)
+
             if not row:
-
-                self._log("✅ 모든 주소 처리 완료")
-
+                self._log(f"✅ 모든 주소 처리 완료 (기기: {self.device_id}, 총 {t_cnt}건, 잔여 {p_cnt}건)")
+                self._set_status(f"완료 (총 {t_cnt} / 잔여 {p_cnt})")
                 break
-                
+
             # 폰 ID(기기 ID) 명시적 확인 (자신의 기기에 할당된 작업만 수행)
             if row.device_id != self.device_id:
                 self._log(f"⏭ [건너뜀] 기기 ID 불일치 (내 기기: {self.device_id}, 할당: {row.device_id})")
                 self.address_manager.mark_failed(row.row_index)
                 continue
 
-
-
-            self._log(f"📌 처리 중: row={row.row_index}, name={row.name}")
-
-            self._set_status(f"등록 중: {row.name}")
-
-
+            self._log(f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, name={row.name}")
+            self._set_status(f"등록 중: {row.name} (총 {t_cnt} / 잔여 {p_cnt})")
 
             try:
                 success = False
@@ -1605,7 +1601,8 @@ class NaverWorker:
                 self.address_manager.mark_failed(row.row_index)
                 self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
 
-
+            counts_after = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+            self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
 
         self._log("📋 등록 루프 종료")
 

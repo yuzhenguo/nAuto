@@ -5355,7 +5355,8 @@ class NaverOrderWorker:
 
     def _order_loop(self):
         """[단계 2~19] 결재목록 루프 주문 처리"""
-        self._log(f"📋 주문 루프 시작 (폰ID 필터: {self.device_id})")
+        init_counts = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+        self._log(f"📋 주문 루프 시작 (기기: {self.device_id}, 총 {init_counts.get('total', 0)}건, 잔여 {init_counts.get('pending', 0)}건)")
         try:
             extra = self.order_manager.describe_pending_filter(self.device_id)
             self._log(f"  ℹ {extra}")
@@ -5374,20 +5375,26 @@ class NaverOrderWorker:
                     rows = self.order_manager.get_pending_rows()
                     rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
                 row = rows[0] if rows else None
+
+            counts = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+            t_cnt = counts.get('total', 0)
+            p_cnt = counts.get('pending', 0)
+
             if not row:
                 try:
                     extra = self.order_manager.describe_pending_filter(self.device_id)
                     self._log(f"⚠ 해당 기기 미처리 행 없음 ({extra})")
                 except Exception:
                     pass
-                self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
+                self._log(f"✅ 모든 주문 처리 완료 (기기: {self.device_id}, 총 {t_cnt}건, 잔여 {p_cnt}건)")
+                self._set_status(f"완료 (총 {t_cnt} / 잔여 {p_cnt})")
                 break
 
             self._log(
-                f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
+                f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
                 f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
             )
-            self._set_status(f"주문 중: {row.search_keyword}")
+            self._set_status(f"주문 중: {row.search_keyword} (총 {t_cnt} / 잔여 {p_cnt})")
             self.has_dismissed_payment_benefit = False
 
             try:
@@ -5430,6 +5437,10 @@ class NaverOrderWorker:
                     else:
                         self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
+                # 작업 완료 후 잔여수 갱신 로그
+                counts_after = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+                self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
+
                 # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
                 if self.manual_mode:
                     self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
@@ -5442,6 +5453,8 @@ class NaverOrderWorker:
             else:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                counts_after = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+                self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
                 self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
                 import gc
                 gc.collect()

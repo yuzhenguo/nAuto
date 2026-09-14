@@ -314,3 +314,58 @@ class OrderManager:
             except Exception as e:
                 print(f"[OrderManager] 현황 조회 오류: {e}")
             return summary
+
+    def get_all_devices_task_counts(self) -> dict:
+        """
+        엑셀 전체를 1회 순회하여 기기ID별 작업수 집계 반환 (스레드 안전)
+        반환: {
+            "R5CX533JADN": {"total": 9, "pending": 9, "done": 0, "failed": 0},
+            ...
+        }
+        """
+        with self._lock:
+            counts = {}
+            try:
+                wb = openpyxl.load_workbook(self.xlsx_path)
+                ws = wb.active
+                cm = self._get_col_map(ws)
+                start_row = 2
+                first_cell = ws.cell(1, cm["search_keyword"]).value
+                if first_cell and str(first_cell).strip().isdigit():
+                    start_row = 1
+
+                for row_idx in range(start_row, ws.max_row + 1):
+                    kw = ws.cell(row_idx, cm["search_keyword"]).value
+                    if not kw or self._str(kw) == "":
+                        break
+
+                    st = self._str(ws.cell(row_idx, cm["status"]).value).upper()
+                    dev_raw = ""
+                    if "device_id" in cm:
+                        dev_raw = self._str(ws.cell(row_idx, cm["device_id"]).value)
+                    dev_key = _norm_device_id(dev_raw)
+
+                    if dev_key not in counts:
+                        counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0}
+
+                    counts[dev_key]["total"] += 1
+                    if st == "Y":
+                        counts[dev_key]["done"] += 1
+                    elif st == "F":
+                        counts[dev_key]["failed"] += 1
+                    else:
+                        counts[dev_key]["pending"] += 1
+            except Exception as e:
+                print(f"[OrderManager] 기기별 현황 집계 오류: {e}")
+            return counts
+
+    def get_device_task_counts(self, device_id: str) -> dict:
+        """특정 기기ID의 {total, pending, done, failed} 반환"""
+        norm_id = _norm_device_id(device_id)
+        all_counts = self.get_all_devices_task_counts()
+        if norm_id in all_counts:
+            return all_counts[norm_id]
+        for k, v in all_counts.items():
+            if _device_ids_match(k, device_id):
+                return v
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0}
