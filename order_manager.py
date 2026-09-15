@@ -10,6 +10,7 @@ order_manager.py
   전화번호    : 수취인 전화번호
   비밀번호    : 결제 비밀번호 (숫자, 예: 123456)
   2차비밀번호 : 현대카드 2차 비밀번호 (4자리)
+  순번        : 장바구니 묶음 번호 (같은 수취인+순번+로그인아이디 = 한 번에 결제)
   완료여부    : 공백=미처리, Y=완료, F=실패
 
 헤더가 없거나 컬럼명이 다를 경우 컬럼 인덱스로 직접 지정 가능 (아래 COL_* 상수 참고)
@@ -49,6 +50,7 @@ HEADER_KEYWORDS = {
     "device_id":      ["폰id", "기기id", "단말기id", "deviceid", "device_id"],
     "login_id":       ["로그인아이디", "로그인id", "loginid", "login_id"],
     "second_password": ["2차비밀번호", "2차암호", "2차비번", "secondarypassword"],
+    "seq_no":         ["순번", "그룹", "묶음", "seq", "batch"],
 }
 
 
@@ -80,7 +82,8 @@ class OrderRow:
                  payment_method: str = "",
                  device_id: str = "",
                  login_id: str = "",
-                 second_password: str = ""):
+                 second_password: str = "",
+                 seq_no: str = ""):
         self.row_index      = row_index         # 엑셀 실제 행 번호 (1-based)
         self.search_keyword = search_keyword    # 검색어
         self.seller_name    = seller_name       # 판매자명
@@ -93,6 +96,15 @@ class OrderRow:
         self.device_id      = str(device_id).strip() if device_id else ""  # 폰ID
         self.login_id       = str(login_id).strip() if login_id else "" # 로그인아이디
         self.second_password = str(second_password).strip() if second_password else ""  # 2차비밀번호
+        self.seq_no = str(seq_no).strip() if seq_no else ""  # 장바구니 묶음 순번
+
+    def cart_group_key(self) -> tuple:
+        """같은 수취인 + 순번 + 로그인아이디 = 장바구니 한 번에 결제."""
+        return (
+            (self.recipient_name or "").strip(),
+            (self.seq_no or "").strip(),
+            (self.login_id or "").strip().lower(),
+        )
 
     def get_phone_digits(self) -> str:
         """전화번호에서 숫자만 추출"""
@@ -110,7 +122,7 @@ class OrderRow:
         return (f"OrderRow(row={self.row_index}, keyword={self.search_keyword!r}, "
                 f"seller={self.seller_name!r}, product={self.product_name!r}, "
                 f"recipient={self.recipient_name!r}, status={self.status!r}, "
-                f"device_id={self.device_id!r}, login_id={self.login_id!r})")
+                f"device_id={self.device_id!r}, login_id={self.login_id!r}, seq_no={self.seq_no!r})")
 
 
 def _detect_columns(ws) -> dict:
@@ -133,6 +145,7 @@ def _detect_columns(ws) -> dict:
         "second_password": COL_SECOND_PASSWORD,
     }
     scores = {k: -1 for k in mapping}
+    scores["seq_no"] = -1
 
     for col_idx in range(1, ws.max_column + 1):
         cell_val = ws.cell(1, col_idx).value
@@ -246,6 +259,7 @@ class OrderManager:
                         device_id      = row_device_id,
                         login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
                         second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
+                        seq_no = self._str(ws.cell(row_idx, cm["seq_no"]).value) if cm.get("seq_no") else "",
                     ))
             except Exception as e:
                 print(f"[OrderManager] 엑셀 읽기 오류: {e}")
@@ -255,6 +269,11 @@ class OrderManager:
         """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상."""
         rows = self.get_pending_rows(device_id=device_id)
         return rows[0] if rows else None
+
+    def get_cart_batch(self, row: OrderRow, device_id: str = "") -> List[OrderRow]:
+        """같은 수취인+순번+로그인아이디 미처리 행을 엑셀 순서대로 묶는다."""
+        key = row.cart_group_key()
+        return [r for r in self.get_pending_rows(device_id=device_id) if r.cart_group_key() == key]
 
     def describe_pending_filter(self, device_id: str) -> str:
         """기기 필터로 0건일 때 원인 파악용 요약 문자열"""

@@ -15,8 +15,8 @@ naver_order_worker.py
 9     검색아이콘.png 이미지 인식 클릭, 5초 대기
 10    상품 리스트에서 판매자명 + 상품명 매칭 클릭, 5초 대기
 11    구매하기 버튼 클릭, 5초 대기
-12    체크박스.png 이미지 인식 클릭, 2초 대기
-13    바로구매.png / 바로구매2/3/4 이미지 인식 클릭, 8초 대기
+12    옵션 체크박스 최대 5개 + 화살표.png 펼친 뒤 2~5번째 체크
+13    장바구니1/2/3 담기 → 같은 수취인/순번/아이디 묶음 후 장바구니에서 주문하기
 14    변경 버튼 클릭, 3초 대기
 15    스크롤 다운
 16    배송지 목록에서 수취인/전화번호 매칭 클릭, 5초 대기
@@ -66,12 +66,28 @@ IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아�
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
 IMG_CHECKBOX2     = os.path.join(_IMG_DIR, "체크박스2.png")
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
+IMG_CHECKBOX5     = os.path.join(_IMG_DIR, "체크5.png")
+IMG_CHECKBOX6     = os.path.join(_IMG_DIR, "체크6.png")
+IMG_CHECKBOX_TEMPLATES = [
+    IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX, IMG_CHECKBOX5, IMG_CHECKBOX6,
+]
+# 미체크 박스는 #F5F7FA 연한 회색 → 흰 배경과 대비 약함. 0.78은 놓치기 쉬워 0.70~0.80 사용
+CHECKBOX_MATCH_THRESHOLDS = (0.80, 0.75, 0.70)
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
 IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
 IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
 IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
+IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기
+IMG_CART1         = os.path.join(_IMG_DIR, "장바구니1.png")  # 장바구니 담기
+IMG_CART2         = os.path.join(_IMG_DIR, "장바구니2.png")
+IMG_CART3         = os.path.join(_IMG_DIR, "장바구니3.png")
+IMG_CART_ADD = [
+    (IMG_CART1, "장바구니1"),
+    (IMG_CART2, "장바구니2"),
+    (IMG_CART3, "장바구니3"),
+]
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
 IMG_DELIVERY_MEMO2 = os.path.join(_IMG_DIR, "배송메모선택2.png")  # 배송메모 선택 팝업 타이틀
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
@@ -314,6 +330,23 @@ SEARCH_BTN_IN_MY_XPATH = '//android.widget.Button[@text="검색"]'
 
 # 구매하기 버튼 (단계 11)
 BUY_BTN_XPATH = '//android.widget.Button[@text="구매하기"]'
+
+# 상품페이지 GNB
+STORE_HOME_XPATHS = [
+    '//android.view.View[@content-desc="네이버플러스 스토어 홈"]/android.widget.Image',
+    '//android.view.View[@content-desc="네이버플러스 스토어 홈"]',
+    '//*[@content-desc="네이버플러스 스토어 홈"]',
+]
+CART_ICON_XPATHS = [
+    '//android.view.View[contains(@content-desc,"장바구니")]/android.widget.Image',
+    '//android.view.View[starts-with(@content-desc,"장바구니")]',
+    '//*[contains(@content-desc,"장바구니") and not(contains(@content-desc,"전체메뉴"))]',
+]
+CART_ORDER_BTN_XPATHS = [
+    '//android.widget.Button[contains(@text,"주문하기")]',
+    '//*[contains(@text,"주문하기") and contains(@text,"상품")]',
+]
+SEARCH_INPUT_TEXT_XPATH = '//android.widget.EditText[@resource-id="input_text"]'
 
 # 변경 버튼 (단계 14)
 CHANGE_BTN_XPATH = '//android.widget.Button[@text="변경"]'
@@ -990,6 +1023,8 @@ class NaverOrderWorker:
         # 3순위: EditText XPath
         if not tap_coords:
             search_xpaths = [
+                SEARCH_INPUT_TEXT_XPATH,
+                '//android.widget.EditText[@resource-id="input_text"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
                 '//android.widget.EditText[@hint="검색어 입력"]',
                 '//android.widget.EditText[@hint="상품, 브랜드, 쇼핑몰 검색"]',
@@ -1453,12 +1488,8 @@ class NaverOrderWorker:
             return None
         return cx, cy, float(best_score)
 
-    def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 체크박스2/4/원본 중 인식률이 가장 높은 것을,
-        옵션선택과 배송정보 사이(왼쪽 열)에서만 찾아 클릭."""
-        self._set_status("체크박스/옵션 선택")
-        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
-
+    def _option_checkbox_region(self):
+        """옵션선택~배송정보 사이 체크박스 탐색 영역."""
         w_h, w_w = 2400, 1080
         try:
             size = self.driver.get_window_size()
@@ -1476,8 +1507,6 @@ class NaverOrderWorker:
             if del_coords:
                 del_y = del_coords[1]
 
-        # 옵션선택 라벨·'옵션 필수선택' 헤더를 건너뛴 뒤 ~ 배송정보 직전
-        # = 화살표가 가리키는 옵션 행 체크박스 간격
         header_skip = max(85, int(w_h * 0.036))
         if opt_y and del_y and opt_y < del_y:
             min_y_check = opt_y + header_skip
@@ -1498,133 +1527,174 @@ class NaverOrderWorker:
             max_y_check = int(w_h * 0.82)
             self._log("  ⚠ 옵션선택 미검출 → 화면 하단 시트로 제한")
 
-        min_x_check = 0
-        max_x_check = int(w_w * 0.22)
+        return {
+            "w": w_w, "h": w_h,
+            "min_x": 0, "max_x": int(w_w * 0.22),
+            "min_y": min_y_check, "max_y": max_y_check,
+            "opt_y": opt_y, "del_y": del_y,
+        }
 
-        checkbox_imgs = [
-            p for p in (IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX) if os.path.exists(p)
-        ]
+    def _find_all_checkbox_hits(self, region: dict, max_n: int = 5, min_score: float = 0.70):
+        """구간 내 체크박스를 위에서부터 최대 max_n개 반환 [(cx,cy,score), ...].
+
+        미체크 박스는 #F5F7FA 계열 연한 회색이라 흰 배경에서 그레이스케일 대비가 약하다.
+        그레이 + 컬러 매칭을 함께 쓰고, threshold는 0.70~0.80.
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return []
+
+        checkbox_imgs = [p for p in IMG_CHECKBOX_TEMPLATES if os.path.exists(p)]
         if not checkbox_imgs:
-            self._log("  ⚠ 체크박스 템플릿 파일 없음")
-            return True
+            return []
 
-        min_score = 0.78
+        png = self._get_screenshot()
+        pil = Image.open(io.BytesIO(png))
+        screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+        sh, sw = screen_gray.shape
+        min_x, max_x = region["min_x"], region["max_x"]
+        min_y, max_y = region["min_y"], region["max_y"]
 
-        def _pick_best():
-            try:
-                import cv2
-                import numpy as np
-                from PIL import Image
-                import io
-            except ImportError:
-                self._log("  [이미지 매칭] cv2/numpy/PIL 미설치")
-                return None
-            png = self._get_screenshot()
-            pil = Image.open(io.BytesIO(png))
-            screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
-            sh, sw = screen_gray.shape
-            ranked = []
-            for path in checkbox_imgs:
-                hit = self._score_template_in_region(
-                    path, screen_gray, sw, sh,
-                    min_x_check, max_x_check, min_y_check, max_y_check,
-                )
-                name = os.path.basename(path)
-                if hit is None:
-                    self._log(f"  ℹ {name}: 구간 내 매칭 없음")
-                    continue
-                cx, cy, score = hit
-                if not self._is_visible_coord(cx, cy):
-                    self._log(
-                        f"  ⏭ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy}) 는 화면 밖 → 제외"
-                    )
-                    continue
-                ranked.append((score, cx, cy, path))
-                self._log(f"  ℹ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy})")
-            if not ranked:
-                return None
-            ranked.sort(key=lambda t: t[0], reverse=True)
-            best = ranked[0]
-            self._log(
-                f"  🎯 최고 인식: {os.path.basename(best[3])} "
-                f"점수 {best[0]:.4f} @ ({best[1]}, {best[2]})"
+        def _mask_roi(img):
+            roi = img.copy()
+            if min_y > 0:
+                roi[:min_y, ...] = 0
+            if max_y < sh:
+                roi[max_y:, ...] = 0
+            if min_x > 0:
+                roi[:, :min_x, ...] = 0
+            if max_x < sw:
+                roi[:, max_x:, ...] = 0
+            return roi
+
+        roi_gray = _mask_roi(screen_gray)
+        roi_bgr = _mask_roi(screen_bgr)
+
+        raw = []
+        for path in checkbox_imgs:
+            template_bgr = cv2.imdecode(
+                np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR
             )
-            if best[0] < min_score:
-                self._log(f"  ⚠ 최고점도 {best[0]:.4f} < {min_score} → 오탐 가능, 채택 안 함")
-                return None
-            return best
+            if template_bgr is None:
+                continue
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            t_h, t_w = template_gray.shape
 
-        best = _pick_best()
-        if best:
-            score, cx, cy, path = best
-            img_name = os.path.basename(path)
-            if not self._is_visible_coord(cx, cy):
-                self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
-            else:
-                self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
-                if not self._soft_tap(cx, cy, duration_ms=180):
-                    pass
-                else:
-                    time.sleep(1.2)
-                    again = _pick_best()
-                    if again is None:
-                        self._log(f"✅ {img_name} 클릭 후 구간 내 미체크 소멸 → 선택 완료")
-                        return True
-                    if again[3] == path and abs(again[2] - cy) <= 40 and again[0] >= min_score:
-                        self._log("  ⚠ 같은 위치 미체크 잔존 → 한 번 더 탭")
-                        self._soft_tap(cx, cy, duration_ms=180)
-                        time.sleep(0.8)
-                    else:
-                        self._log(f"✅ {img_name} 클릭 완료 (원래 위치 미체크 아님)")
-                    return True
-
-        if product_name:
-            import re
-            hangul = re.sub(r'[^가-힣0-9]', ' ', product_name)
-            kws = [k for k in hangul.split() if len(k) >= 2][:4]
-            extra = []
-            for k in list(kws):
-                if len(k) >= 4:
-                    extra.append(k[:4])
-            for kw in kws + extra:
-                try:
-                    els = self.driver.find_elements(
-                        By.XPATH, f'//*[contains(@text, "{kw}")]'
-                    )
-                    for el in els:
-                        text = (el.get_attribute("text") or "")
-                        if any(s in text for s in ("옵션", "배송", "바로구매", "장바구니")):
-                            continue
-                        rect = el.rect
-                        cy = rect['y'] + rect['height'] // 2
-                        if min_y_check <= cy <= max_y_check:
-                            tap_x = int(w_w * 0.11)
-                            if not self._is_visible_coord(tap_x, cy):
-                                self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
-                                continue
-                            self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
-                            self._soft_tap(tap_x, cy, duration_ms=180)
-                            time.sleep(0.8)
-                            return True
-                except Exception:
+            for use_color, roi, templ in (
+                (False, roi_gray, template_gray),
+                (True, roi_bgr, template_bgr),
+            ):
+                best_score, best_r = -1.0, None
+                best_tw, best_th = t_w, t_h
+                for scale in np.linspace(0.55, 1.65, 12):
+                    new_w, new_h = int(t_w * scale), int(t_h * scale)
+                    if new_w >= sw or new_h >= sh or new_w < 8 or new_h < 8:
+                        continue
+                    resized = cv2.resize(templ, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    try:
+                        r = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                    except Exception:
+                        continue
+                    _, max_val, _, _ = cv2.minMaxLoc(r)
+                    if max_val > best_score:
+                        best_score, best_r, best_tw, best_th = (
+                            float(max_val), r, new_w, new_h
+                        )
+                if best_r is None or best_score < min_score:
                     continue
+                work = best_r.copy()
+                for _ in range(max_n + 2):
+                    _, val, _, loc = cv2.minMaxLoc(work)
+                    if val < min_score:
+                        break
+                    cx = int(loc[0] + best_tw // 2)
+                    cy = int(loc[1] + best_th // 2)
+                    if min_x <= cx <= max_x and min_y <= cy <= max_y and self._is_visible_coord(cx, cy):
+                        raw.append((cx, cy, float(val)))
+                    y1 = max(0, loc[1] - 25)
+                    y2 = min(work.shape[0], loc[1] + best_th + 25)
+                    x1 = max(0, loc[0] - 25)
+                    x2 = min(work.shape[1], loc[0] + best_tw + 25)
+                    work[y1:y2, x1:x2] = 0
 
-        if opt_y and del_y and opt_y < del_y:
-            tap_x = int(w_w * 0.11)
-            tap_y = (min_y_check + max_y_check) // 2
-            if not self._is_visible_coord(tap_x, tap_y):
-                self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
+        merged = []
+        for cx, cy, score in sorted(raw, key=lambda t: t[2], reverse=True):
+            if any(abs(cx - mx) < 45 and abs(cy - my) < 40 for mx, my, _ in merged):
+                continue
+            merged.append((cx, cy, score))
+        merged.sort(key=lambda t: t[1])
+        return merged[:max_n]
+
+    def _click_checkbox(self, product_name: str = "") -> bool:
+        """[단계 12] 옵션 체크박스 최대 5개. 2번째부터는 화살표.png 있으면 펼친 뒤 클릭."""
+        self._set_status("체크박스/옵션 선택")
+        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (최대 5개, threshold 0.80→0.70)")
+
+        region = self._option_checkbox_region()
+        boxes = []
+        used_thr = CHECKBOX_MATCH_THRESHOLDS[-1]
+        for thr in CHECKBOX_MATCH_THRESHOLDS:
+            boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+            if boxes:
+                used_thr = thr
+                self._log(f"  ℹ threshold={thr:.2f} 에서 체크박스 {len(boxes)}개 인식")
+                break
+            if thr != CHECKBOX_MATCH_THRESHOLDS[-1]:
+                self._log(f"  ℹ threshold={thr:.2f} 미검출 (연한 회색 #F5F7FA) → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
             else:
-                self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
-                self._soft_tap(tap_x, tap_y, duration_ms=180)
-                time.sleep(0.8)
-                return True
+                self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
+        if boxes:
+            self._log(f"  ℹ 인식된 체크박스 {len(boxes)}개: " +
+                      ", ".join(f"{i+1}=({x},{y}) {s:.3f}" for i, (x, y, s) in enumerate(boxes)))
+            # 1) 위에서부터 보이는 체크박스 전부 클릭 (최대 5)
+            for i, (cx, cy, score) in enumerate(boxes):
+                self._log(f"  👉 {i + 1}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._soft_tap(cx, cy, duration_ms=180)
+                time.sleep(1.0)
 
-        self._log("  ⚠ 체크박스 미발견 → 계속 진행")
+        # 2~5) 화살표가 있으면 펼치고, 위에서 n번째 체크박스 클릭
+        for n in range(2, 6):
+            if self._stop_event.is_set():
+                return False
+            region = self._option_checkbox_region()
+            arrow = None
+            if os.path.exists(IMG_ARROW):
+                arrow = self._find_image_coords(
+                    IMG_ARROW, threshold=0.70,
+                    min_x=int(region["w"] * 0.20),
+                    max_x=int(region["w"] * 0.98),
+                    min_y=region["min_y"],
+                    max_y=region["max_y"],
+                )
+            if not arrow:
+                self._log(f"  ℹ 화살표 미감지 → {n}번째 이후 옵션 펼치기 종료")
+                break
+            self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]}) → {n}번째 체크박스")
+            ah.tap_by_coords(self.driver, arrow[0], arrow[1], self._log)
+            time.sleep(1.2)
+            region = self._option_checkbox_region()
+            boxes = []
+            for thr in CHECKBOX_MATCH_THRESHOLDS:
+                boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+                if boxes:
+                    break
+            if len(boxes) < n:
+                self._log(f"  ⚠ 펼친 뒤 체크박스 {len(boxes)}개 < {n}번째 → 중단")
+                break
+            cx, cy, score = boxes[n - 1]
+            self._log(f"  👉 위에서 {n}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+            self._soft_tap(cx, cy, duration_ms=180)
+            time.sleep(1.0)
+
+        self._log("✅ 옵션 체크박스 처리 완료")
         return True
 
-    # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
+    # ─── 단계 13: 바로구매 / 장바구니 ──────────────────────────────────
 
     def _click_bottom_cta(self, min_y: int, max_y: int, min_x: int = 0) -> bool:
         """옵션 시트 하단 CTA(바로구매 / 바로 구매 / 구매하기)를 XPath로 클릭"""
@@ -1798,6 +1868,245 @@ class NaverOrderWorker:
             self._log("  ✅ 주문/결제 화면 확인됨 → 바로구매 성공으로 간주")
             return True
         return False
+
+    def _click_add_to_cart(self) -> bool:
+        """옵션 시트에서 장바구니1/2/3 클릭 (바로구매 대신)."""
+        self._set_status("장바구니 담기")
+        time.sleep(0.8)
+        w_h, w_w = 2400, 1080
+        try:
+            size = self.driver.get_window_size()
+            w_h, w_w = size["height"], size["width"]
+        except Exception:
+            pass
+        min_y = int(w_h * 0.70)
+        max_y = int(w_h * 0.98)
+
+        cart_xps = [
+            '//android.widget.Button[contains(@text,"장바구니")]',
+            '//android.widget.Button[@text="장바구니"]',
+            '//*[contains(@text,"장바구니") and contains(@text,"담")]',
+        ]
+        for xp in cart_xps:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    rect = el.rect
+                    cy = rect["y"] + rect["height"] // 2
+                    if cy < min_y:
+                        continue
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ 장바구니 XPath 클릭: {xp} y={cy}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
+                continue
+
+        if self._click_any_image_basic(
+            IMG_CART_ADD, threshold=0.62, attempts=4, wait_after=2.0,
+            min_y=min_y, max_y=max_y,
+        ):
+            self._log("✅ 장바구니 이미지 클릭 완료")
+            return True
+
+        self._log("❌ 장바구니 담기 버튼 미발견")
+        return False
+
+    def _click_store_home(self) -> bool:
+        """상품페이지 GNB '네이버플러스 스토어 홈' 클릭."""
+        self._set_status("스토어 홈")
+        for xp in STORE_HOME_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=2.0):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ 스토어 홈 클릭: {xp}")
+                        time.sleep(2.0)
+                        self._dismiss_popups()
+                        return True
+            except Exception:
+                continue
+        self._log("❌ 네이버플러스 스토어 홈 미발견")
+        return False
+
+    def _open_cart_and_click_order(self) -> bool:
+        """GNB 장바구니 아이콘 → '주문하기 N 개의 상품' 클릭 → 주문/결제 화면."""
+        self._set_status("장바구니 주문")
+        clicked = False
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()["height"]
+        except Exception:
+            pass
+        max_y_icon = int(w_h * 0.18)
+        min_x_icon = 0
+        try:
+            min_x_icon = int(self.driver.get_window_size()["width"] * 0.55)
+        except Exception:
+            min_x_icon = 500
+
+        for xp in CART_ICON_XPATHS:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    rect = el.rect
+                    cx = rect["x"] + rect["width"] // 2
+                    cy = rect["y"] + rect["height"] // 2
+                    desc = (el.get_attribute("content-desc") or "") + (el.get_attribute("text") or "")
+                    if cy > max_y_icon or cx < min_x_icon:
+                        continue
+                    if "전체메뉴" in desc or "스토어 홈" in desc:
+                        continue
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ 장바구니 아이콘 클릭 desc={desc!r} ({cx},{cy})")
+                        clicked = True
+                        time.sleep(2.5)
+                        break
+                if clicked:
+                    break
+            except Exception:
+                continue
+
+        if not clicked:
+            self._log("❌ 장바구니 아이콘 미발견")
+            return False
+
+        for xp in CART_ORDER_BTN_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=4.0):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    txt = el.get_attribute("text") or ""
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ 장바구니 주문하기 클릭: '{txt}'")
+                        time.sleep(5.0)
+                        if self._is_order_pay_screen():
+                            return True
+                        self._log("  ⚠ 주문하기 후 주문/결제 화면 미확인 → 재확인 대기")
+                        time.sleep(3.0)
+                        return self._is_order_pay_screen()
+            except Exception:
+                continue
+
+        self._log("❌ 장바구니 '주문하기' 버튼 미발견")
+        return False
+
+    def _search_and_add_to_cart(self, row: OrderRow) -> bool:
+        """검색 → 상품 클릭 → 구매하기 → 옵션 체크 → 장바구니 담기."""
+        if not self._input_search_keyword(row.search_keyword):
+            self._log("❌ 검색어 입력 실패")
+            return False
+        if not self._click_search_button():
+            self._log("❌ 검색 실행 실패")
+            return False
+        if not self._click_product(row.seller_name, row.product_name):
+            self._log("❌ 상품 매칭 실패")
+            return False
+        self._click_buy_button()
+        time.sleep(1.0)
+        self._click_checkbox(row.product_name)
+        time.sleep(0.8)
+        if not self._click_add_to_cart():
+            self._log("❌ 장바구니 담기 실패")
+            return False
+        self._log(f"✅ 장바구니 담기 완료: {row.search_keyword!r}")
+        return True
+
+    def _pay_after_order_screen(self, row: OrderRow) -> bool:
+        """주문/결제 화면 이후: 배송지 → 결제방식 (기존 바로구매 이후와 동일)."""
+        if self._check_current_delivery_address(row.recipient_name, row.phone):
+            self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
+        else:
+            self._log("🔄 목표 배송지가 선택되어 있지 않아 변경을 시도합니다.")
+            if not self._click_change_button():
+                self._log("❌ 변경 버튼 클릭 실패 (주문/결제 화면 미진입 가능)")
+                return False
+            if not self._select_delivery_address(row.recipient_name, row.phone):
+                self._log("❌ 배송지 선택 실패")
+                return False
+
+        if self.manual_mode:
+            self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
+            return True
+
+        self._handle_delivery_memo()
+
+        pm = row.payment_method or ""
+        if self._is_kb_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 국민카드 ({pm!r})")
+            if not self._process_kb_card_payment():
+                self._log("❌ 국민카드 결제 진행 실패")
+                return False
+        elif self._is_hyundai_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r})")
+            second_pw = getattr(row, "second_password", "") or ""
+            if not self._process_hyundai_card_payment(second_pw):
+                self._log("❌ 현대카드 결제 진행 실패")
+                return False
+        elif self._is_bank_transfer_payment(pm):
+            self._log(f"🏦 결제방식 분기: 무통장 ({pm!r})")
+            if not self._process_bank_transfer():
+                self._log("❌ 무통장 결제 진행 실패")
+                return False
+        elif self._is_money_payment(pm):
+            self._log(f"💸 결제방식 분기: 머니 ({pm!r})")
+            if not self._process_money_payment(row.password):
+                self._log("❌ 머니 결제 진행 실패")
+                return False
+        else:
+            if self._is_point_payment(pm):
+                self._log(f"🅿️ 결제방식 분기: 포인트/페이포인트 ({pm!r})")
+            else:
+                self._log(f"🅿️ 결제방식 분기: 기본(포인트/전액사용) ({pm!r})")
+            if not self._click_full_use():
+                self._log("❌ 전액사용 버튼 클릭 실패")
+                return False
+            if not self._click_pay_button():
+                self._log("❌ 결제하기 버튼 클릭 실패")
+                return False
+            if row.password:
+                if not self._input_password(row.password):
+                    self._log("❌ 비밀번호 입력 실패")
+                    return False
+            else:
+                self._log("  ℹ 비밀번호 없음 → 건너뜀")
+        self._log(f"✅ 주문 완료: {row.search_keyword}")
+        return True
+
+    def _process_cart_batch(self, rows: list) -> bool:
+        """같은 수취인/순번/아이디 상품을 장바구니에 모은 뒤 한 번 결제."""
+        if not rows:
+            return False
+        first = rows[0]
+        self._log(
+            f"🛒 장바구니 묶음 {len(rows)}건 "
+            f"수취인={first.recipient_name!r} 순번={getattr(first, 'seq_no', '')!r} "
+            f"아이디={first.login_id!r}"
+        )
+        if not self._go_main_and_enter_store(login_id=first.login_id):
+            self._log("❌ 계정 전환 또는 메인 페이지/스토어/마이쇼핑 진입 실패")
+            return False
+
+        for i, row in enumerate(rows):
+            if self._stop_event.is_set():
+                return False
+            self._log(
+                f"🛒 [{i + 1}/{len(rows)}] 장바구니 담기: row={row.row_index} "
+                f"keyword={row.search_keyword!r}"
+            )
+            if i == 0:
+                if not self._click_search_in_my_shopping():
+                    self._log("❌ 검색 버튼 클릭 실패")
+                    return False
+            else:
+                if not self._click_store_home():
+                    return False
+            if not self._search_and_add_to_cart(row):
+                return False
+
+        if not self._open_cart_and_click_order():
+            self._log("❌ 장바구니 주문하기 실패")
+            return False
+        return self._pay_after_order_screen(first)
 
     # ─── 단계 14: 변경 버튼 클릭 ─────────────────────────────────────────────
 
@@ -5390,24 +5699,38 @@ class NaverOrderWorker:
                 self._set_status(f"완료 (총 {t_cnt} / 잔여 {p_cnt})")
                 break
 
+            try:
+                batch = self.order_manager.get_cart_batch(row, device_id=self.device_id)
+            except Exception:
+                batch = [row]
+            if not batch:
+                batch = [row]
+            seq_no = getattr(row, "seq_no", "") or ""
             self._log(
-                f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
-                f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
+                f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 장바구니 묶음 {len(batch)}건: "
+                f"수취인={row.recipient_name!r} 순번={seq_no!r} 아이디={row.login_id!r} "
+                f"rows={[r.row_index for r in batch]}"
             )
-            self._set_status(f"주문 중: {row.search_keyword} (총 {t_cnt} / 잔여 {p_cnt})")
+            self._set_status(f"장바구니 {len(batch)}건: {row.search_keyword} (총 {t_cnt} / 잔여 {p_cnt})")
             self.has_dismissed_payment_benefit = False
+
+            def _mark_batch(ok: bool):
+                for r in batch:
+                    if ok:
+                        self.order_manager.mark_success(r.row_index)
+                    else:
+                        self.order_manager.mark_failed(r.row_index)
 
             try:
                 # 23. 실패 시 재작업하지 않음 (1회만 시도)
-                success = self._process_order_with_timeout(row)
+                success = self._process_order_with_timeout(batch)
             except Exception as fatal_err:
-                self.order_manager.mark_failed(row.row_index)
+                _mark_batch(False)
                 self._log(f"❌ 치명적 오류: {fatal_err}")
                 raise
 
             if success:
                 if self._is_bank_transfer_payment(row.payment_method):
-                    # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
                         if self._skip_final_order_click():
                             mode = "수동시작" if self.manual_mode else "테스트 모드"
@@ -5420,28 +5743,23 @@ class NaverOrderWorker:
                         order_confirmed = False
 
                     if order_confirmed:
-                        self.order_manager.mark_success(row.row_index)
-                        if self.manual_mode:
-                            self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
-                        else:
-                            self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
+                        _mark_batch(True)
+                        self._log(f"✅ 무통장 묶음 {len(batch)}건 Y 기록")
                     else:
-                        self.order_manager.mark_failed(row.row_index)
-                        self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
+                        _mark_batch(False)
+                        self._log(f"❌ 무통장 주문번호 미확인 → 묶음 F 기록")
                         self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
                         break
                 else:
-                    self.order_manager.mark_success(row.row_index)
+                    _mark_batch(True)
                     if self.manual_mode:
-                        self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
+                        self._log(f"✅ [수동시작] 묶음 {len(batch)}건 Y 기록")
                     else:
-                        self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+                        self._log(f"✅ 주문 성공 묶음 {len(batch)}건 → Y 기록")
 
-                # 작업 완료 후 잔여수 갱신 로그
                 counts_after = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
                 self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
 
-                # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
                 if self.manual_mode:
                     self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
                     break
@@ -5451,8 +5769,8 @@ class NaverOrderWorker:
                 gc.collect()
                 time.sleep(30)
             else:
-                self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                _mark_batch(False)
+                self._log(f"❌ 주문 실패 묶음 {len(batch)}건 → F 기록")
                 counts_after = self.order_manager.get_device_task_counts(self.device_id) if hasattr(self.order_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
                 self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
                 self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
@@ -5464,23 +5782,26 @@ class NaverOrderWorker:
 
 
 
-    def _process_order_with_timeout(self, row: OrderRow) -> bool:
-        """주문 1건 처리 (타임아웃 적용)"""
+    def _process_order_with_timeout(self, rows) -> bool:
+        """주문 묶음 처리 (타임아웃 적용). rows: OrderRow 또는 list."""
+        if isinstance(rows, OrderRow):
+            rows = [rows]
+        timeout_sec = TASK_TIMEOUT_SEC + 180 * max(0, len(rows) - 1)
         result = [False]
         exception = [None]
 
         def task():
             try:
-                result[0] = self._process_one_order(row)
+                result[0] = self._process_cart_batch(rows)
             except Exception as e:
                 exception[0] = e
 
         t = threading.Thread(target=task, daemon=True)
         t.start()
-        t.join(timeout=TASK_TIMEOUT_SEC)
+        t.join(timeout=timeout_sec)
 
         if t.is_alive():
-            self._log(f"⏰ 타임아웃 ({TASK_TIMEOUT_SEC}초) - 다음 행으로")
+            self._log(f"⏰ 타임아웃 ({timeout_sec}초) - 다음 행으로")
             return False
 
         if exception[0]:
@@ -5498,122 +5819,8 @@ class NaverOrderWorker:
         return result[0]
 
     def _process_one_order(self, row: OrderRow) -> bool:
-        """
-        주문 1건 전체 흐름 (단계 3~19)
-        각 주문마다 처음부터 메인 페이지로 이동하여 처리
-        """
-        # [단계 3~6] 매 주문마다 메인→계정전환(3.2)→스토어→마이쇼핑 재진입
-        if not self._go_main_and_enter_store(login_id=row.login_id):
-            self._log("❌ 계정 전환 또는 메인 페이지/스토어/마이쇼핑 진입 실패 -> 다음 레드로 이동")
-            return False
-
-        # [단계 7] 마이쇼핑 검색 버튼 클릭
-        if not self._click_search_in_my_shopping():
-            self._log("❌ 검색 버튼 클릭 실패")
-            return False
-
-        # [단계 8] 검색어 입력
-        if not self._input_search_keyword(row.search_keyword):
-            self._log("❌ 검색어 입력 실패")
-            return False
-
-        # [단계 9] 검색 실행
-        if not self._click_search_button():
-            self._log("❌ 검색 실행 실패")
-            return False
-
-        # [단계 10] 상품 매칭 클릭
-        if not self._click_product(row.seller_name, row.product_name):
-            self._log("❌ 상품 매칭 실패")
-            return False
-
-        # [단계 11] 구매하기 버튼
-        self._click_buy_button()
-        time.sleep(1.0)
-
-        # [단계 12] 체크박스/옵션 항목 클릭
-        self._click_checkbox(row.product_name)
-        time.sleep(0.8)
-
-        # [단계 13] 바로구매 클릭
-        if not self._click_buy_now():
-            self._log("❌ 바로구매 클릭 실패")
-            return False
-
-        # [단계 14 & 16] 배송지 확인 및 선택
-        if self._check_current_delivery_address(row.recipient_name, row.phone):
-            self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
-        else:
-            self._log("🔄 목표 배송지가 선택되어 있지 않아 변경을 시도합니다.")
-            if not self._click_change_button():
-                self._log("❌ 변경 버튼 클릭 실패 (주문/결제 화면 미진입 가능)")
-                return False
-
-            # [단계 15] 스크롤 다운 → 제거 (배송지 목록이 바로 표시되므로 불필요)
-
-            if not self._select_delivery_address(row.recipient_name, row.phone):
-                self._log("❌ 배송지 선택 실패")
-                return False
-
-        # 수동시작: 배송지 선택(결제창 복귀)까지 완료하면 결제 단계 생략 → Y 기록
-        if self.manual_mode:
-            self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
-            return True
-
-        # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)
-        self._handle_delivery_memo()
-
-        # [단계 17] 결제 방식 분기
-        #  - 국민카드(2023) 등 → 국민카드
-        #  - 현대카드(591*) 등 → 현대카드
-        #  - 무통장 / 무통장 입금 → 무통장
-        #  - 머니 → 머니
-        #  - 페이포인트 / 포인트 → 포인트(전액사용)
-        pm = row.payment_method or ""
-        if self._is_kb_card_payment(pm):
-            self._log(f"💳 결제방식 분기: 국민카드 ({pm!r})")
-            if not self._process_kb_card_payment():
-                self._log("❌ 국민카드 결제 진행 실패")
-                return False
-        elif self._is_hyundai_card_payment(pm):
-            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r})")
-            second_pw = getattr(row, "second_password", "") or ""
-            if not self._process_hyundai_card_payment(second_pw):
-                self._log("❌ 현대카드 결제 진행 실패")
-                return False
-        elif self._is_bank_transfer_payment(pm):
-            self._log(f"🏦 결제방식 분기: 무통장 ({pm!r})")
-            if not self._process_bank_transfer():
-                self._log("❌ 무통장 결제 진행 실패")
-                return False
-        elif self._is_money_payment(pm):
-            self._log(f"💸 결제방식 분기: 머니 ({pm!r})")
-            if not self._process_money_payment(row.password):
-                self._log("❌ 머니 결제 진행 실패")
-                return False
-        else:
-            # 페이포인트 / 포인트 / 기타 → 포인트(전액사용) 결제
-            if self._is_point_payment(pm):
-                self._log(f"🅿️ 결제방식 분기: 포인트/페이포인트 ({pm!r})")
-            else:
-                self._log(f"🅿️ 결제방식 분기: 기본(포인트/전액사용) ({pm!r})")
-            if not self._click_full_use():
-                self._log("❌ 전액사용 버튼 클릭 실패")
-                return False
-            # [단계 18] 결제하기 버튼
-            if not self._click_pay_button():
-                self._log("❌ 결제하기 클릭 실패")
-                return False
-            # [단계 19] 비밀번호 입력
-            if row.password:
-                if not self._input_password(row.password):
-                    self._log("❌ 비밀번호 입력 실패")
-                    return False
-            else:
-                self._log("  ℹ 비밀번호 없음 → 건너뜀")
-
-        self._log(f"✅ 주문 완료: {row.search_keyword}")
-        return True
+        """단일 행도 장바구니 묶음 경로로 처리."""
+        return self._process_cart_batch([row])
 
     # ─── 이미지 인식 (naver_worker.py 동일 로직 재구현) ─────────────────────
 
