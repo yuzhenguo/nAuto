@@ -2093,16 +2093,18 @@ class NaverOrderWorker:
                 f"🛒 [{i + 1}/{len(rows)}] 장바구니 담기: row={row.row_index} "
                 f"keyword={row.search_keyword!r}"
             )
-            if i == 0:
-                if not self._click_search_in_my_shopping():
-                    self._log("❌ 검색 버튼 클릭 실패")
+            if i > 0:
+                self._log("🔄 장바구니 담기 완료 → 네이버 앱 종료 후 처음부터 다음 상품 진행")
+                if not self._go_main_and_enter_store(login_id=row.login_id or first.login_id):
+                    self._log("❌ 다음 상품을 위한 앱 재시작/스토어 진입 실패")
                     return False
-            else:
-                if not self._click_store_home():
-                    return False
+            if not self._click_search_in_my_shopping():
+                self._log("❌ 검색 버튼 클릭 실패")
+                return False
             if not self._search_and_add_to_cart(row):
                 return False
 
+        self._log(f"✅ 묶음 {len(rows)}건 장바구니 담기 완료 → 주문/결제 진행")
         if not self._open_cart_and_click_order():
             self._log("❌ 장바구니 주문하기 실패")
             return False
