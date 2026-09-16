@@ -184,6 +184,20 @@ class OrderManager:
         self._lock = threading.Lock()
         self._col_map: Optional[dict] = None  # 캐시
 
+    def _get_worksheet(self, wb):
+        """작업용 워크시트 선택. '백업' 시트는 제외하고 'Sheet1' 또는 주문 헤더가 있는 시트 우선 선택."""
+        if "Sheet1" in wb.sheetnames:
+            ws = wb["Sheet1"]
+            cm = _detect_columns(ws)
+            if ws.max_row > 1 and (ws.cell(1, cm.get("recipient_name", 1)).value or ws.cell(1, cm.get("search_keyword", 1)).value):
+                return ws
+        for name in wb.sheetnames:
+            if "백업" in name.lower() or "backup" in name.lower():
+                continue
+            ws = wb[name]
+            return ws
+        return wb.active
+
     def _get_col_map(self, ws) -> dict:
         if self._col_map is None:
             self._col_map = _detect_columns(ws)
@@ -214,7 +228,7 @@ class OrderManager:
             rows = []
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
+                ws = self._get_worksheet(wb)
                 cm = self._get_col_map(ws)
 
                 # 헤더 여부 확인 (1행이 헤더이면 2행부터 시작)
@@ -224,11 +238,17 @@ class OrderManager:
                 if first_cell and str(first_cell).strip().isdigit():
                     start_row = 1
 
+                empty_count = 0
                 for row_idx in range(start_row, ws.max_row + 1):
-                    # 검색어 컬럼이 비면 데이터 끝
                     keyword_val = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not keyword_val or self._str(keyword_val) == "":
-                        break
+                    recip_val = ws.cell(row_idx, cm.get("recipient_name", COL_RECIPIENT_NAME)).value
+                    # 검색어와 수취인이 모두 비어있으면 빈 행으로 간주
+                    if (not keyword_val or self._str(keyword_val) == "") and (not recip_val or self._str(recip_val) == ""):
+                        empty_count += 1
+                        if empty_count >= 5:
+                            break
+                        continue
+                    empty_count = 0
 
                     status_val = ws.cell(row_idx, cm["status"]).value
                     status_str = self._str(status_val)
@@ -299,7 +319,7 @@ class OrderManager:
         with self._lock:
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
+                ws = self._get_worksheet(wb)
                 cm = self._get_col_map(ws)
                 ws.cell(row_index, cm["status"]).value = status
                 wb.save(self.xlsx_path)
@@ -312,18 +332,25 @@ class OrderManager:
             summary = {"total": 0, "done": 0, "failed": 0, "pending": 0}
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
+                ws = self._get_worksheet(wb)
                 cm = self._get_col_map(ws)
                 start_row = 2
                 first_cell = ws.cell(1, cm["search_keyword"]).value
                 if first_cell and str(first_cell).strip().isdigit():
                     start_row = 1
+                empty_count = 0
                 for row_idx in range(start_row, ws.max_row + 1):
                     kw = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not kw or str(kw).strip() == "":
-                        break
+                    recip = ws.cell(row_idx, cm.get("recipient_name", COL_RECIPIENT_NAME)).value
+                    if (not kw or self._str(kw) == "") and (not recip or self._str(recip) == ""):
+                        empty_count += 1
+                        if empty_count >= 5:
+                            break
+                        continue
+                    empty_count = 0
+
                     summary["total"] += 1
-                    st = str(ws.cell(row_idx, cm["status"]).value or "").strip()
+                    st = self._str(ws.cell(row_idx, cm["status"]).value).upper()
                     if st == "Y":
                         summary["done"] += 1
                     elif st == "F":
@@ -339,24 +366,30 @@ class OrderManager:
         엑셀 전체를 1회 순회하여 기기ID별 작업수 집계 반환 (스레드 안전)
         반환: {
             "R5CX533JADN": {"total": 9, "pending": 9, "done": 0, "failed": 0},
-            ...
+            "": {"total": 3, "pending": 3, ...}  # 폰ID 미지정
         }
         """
         with self._lock:
             counts = {}
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
+                ws = self._get_worksheet(wb)
                 cm = self._get_col_map(ws)
                 start_row = 2
                 first_cell = ws.cell(1, cm["search_keyword"]).value
                 if first_cell and str(first_cell).strip().isdigit():
                     start_row = 1
 
+                empty_count = 0
                 for row_idx in range(start_row, ws.max_row + 1):
                     kw = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not kw or self._str(kw) == "":
-                        break
+                    recip = ws.cell(row_idx, cm.get("recipient_name", COL_RECIPIENT_NAME)).value
+                    if (not kw or self._str(kw) == "") and (not recip or self._str(recip) == ""):
+                        empty_count += 1
+                        if empty_count >= 5:
+                            break
+                        continue
+                    empty_count = 0
 
                     st = self._str(ws.cell(row_idx, cm["status"]).value).upper()
                     dev_raw = ""
@@ -379,12 +412,32 @@ class OrderManager:
             return counts
 
     def get_device_task_counts(self, device_id: str) -> dict:
-        """특정 기기ID의 {total, pending, done, failed} 반환"""
+        """특정 기기ID의 {total, pending, done, failed} 반환. 미지정(공백 폰ID) 건수도 포함."""
         norm_id = _norm_device_id(device_id)
         all_counts = self.get_all_devices_task_counts()
+        unassigned = all_counts.get("", {})
+        u_tot = unassigned.get("total", 0)
+        u_pen = unassigned.get("pending", 0)
+        u_don = unassigned.get("done", 0)
+        u_fai = unassigned.get("failed", 0)
+
         if norm_id in all_counts:
-            return all_counts[norm_id]
+            c = dict(all_counts[norm_id])
+            if norm_id != "":
+                c["total"] += u_tot
+                c["pending"] += u_pen
+                c["done"] += u_don
+                c["failed"] += u_fai
+            return c
         for k, v in all_counts.items():
-            if _device_ids_match(k, device_id):
-                return v
+            if k and _device_ids_match(k, device_id):
+                c = dict(v)
+                c["total"] += u_tot
+                c["pending"] += u_pen
+                c["done"] += u_don
+                c["failed"] += u_fai
+                return c
+        # 특정 기기 전용 행은 없지만 폰ID 미지정 행이 있는 경우
+        if u_tot > 0:
+            return dict(unassigned)
         return {"total": 0, "pending": 0, "done": 0, "failed": 0}
