@@ -321,6 +321,12 @@ class MainApp(tk.Tk):
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
 
+        if os.path.exists(self._xlsx_path):
+            try:
+                self.order_manager = OrderManager(self._xlsx_path)
+            except Exception as e:
+                print(f"[MainApp] 초기 OrderManager 로드 오류: {e}")
+
         self._build_ui()
         self._refresh_summary()
 
@@ -539,7 +545,7 @@ class MainApp(tk.Tk):
             ).pack(side=tk.LEFT)
 
             # 기기별 작업수 (총작업 / 잔여수)
-            dev_cnt = device_counts.get(_norm_device_id(did), {"total": 0, "pending": 0})
+            dev_cnt = self.order_manager.get_device_task_counts(did) if self.order_manager else {"total": 0, "pending": 0}
             t_cnt, p_cnt = dev_cnt.get("total", 0), dev_cnt.get("pending", 0)
             cnt_color = CLR_SUCCESS if p_cnt == 0 and t_cnt > 0 else (CLR_PRIMARY if p_cnt > 0 else CLR_TEXT_MUTE)
             cnt_lbl = tk.Label(
@@ -1603,16 +1609,16 @@ class MainApp(tk.Tk):
             dev_counts = self.order_manager.get_all_devices_task_counts()
             if hasattr(self, "device_panels"):
                 for did, panel in self.device_panels.items():
-                    c = dev_counts.get(_norm_device_id(did), {"total": 0, "pending": 0})
+                    c = self.order_manager.get_device_task_counts(did)
                     panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
             if hasattr(self, "device_task_labels"):
                 for did, lbl in self.device_task_labels.items():
-                    c = dev_counts.get(_norm_device_id(did), {"total": 0, "pending": 0})
+                    c = self.order_manager.get_device_task_counts(did)
                     t, p = c.get("total", 0), c.get("pending", 0)
                     color = CLR_SUCCESS if p == 0 and t > 0 else (CLR_PRIMARY if p > 0 else CLR_TEXT_MUTE)
                     lbl.config(text=f"총 {t} / 잔여 {p}", fg=color)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[MainApp] 현황 갱신 오류: {e}")
 
         # 5초마다 자동 갱신
         self._summary_timer = self.after(5000, self._refresh_summary)
