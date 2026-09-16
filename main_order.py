@@ -25,7 +25,7 @@ _NAVER_DIR = os.path.join(_BASE_DIR, "naver_address_auto")
 if _NAVER_DIR not in sys.path:
     sys.path.insert(0, _NAVER_DIR)
 
-from order_manager import OrderManager, _norm_device_id
+from order_manager import OrderManager
 from naver_order_worker import NaverOrderWorker
 
 # ─── 기본 설정 ────────────────────────────────────────────────────────────────
@@ -72,7 +72,9 @@ class DevicePanel(tk.Frame):
                                    bg=CLR_SURFACE2, font=("Segoe UI", 11))
         self.status_dot.pack(side=tk.LEFT)
 
-        title = f"  {self.remark}" if self.remark else f"  {self.device_id}"
+        title = f"  {self.device_id}"
+        if self.remark:
+            title += f" ({self.remark})"
         tk.Label(hdr, text=title,
                  fg=CLR_TEXT, bg=CLR_SURFACE2,
                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
@@ -100,13 +102,6 @@ class DevicePanel(tk.Frame):
         tk.Label(hdr, text=f"PORT:{self.port}",
                  fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2,
                  font=("Segoe UI", 8)).pack(side=tk.RIGHT, padx=(0, 6))
-
-        self.task_count_label = tk.Label(
-            hdr, text="총 0 / 잔여 0",
-            fg=CLR_PRIMARY, bg=CLR_SURFACE2,
-            font=("Segoe UI", 8, "bold")
-        )
-        self.task_count_label.pack(side=tk.RIGHT, padx=(0, 8))
 
         self.status_label = tk.Label(
             self, text="대기 중", fg=CLR_TEXT_MUTE,
@@ -195,11 +190,6 @@ class DevicePanel(tk.Frame):
         self.status_dot.config(fg=CLR_TEXT_MUTE)
         self.status_label.config(text="대기 중", fg=CLR_TEXT_MUTE)
         self.set_running(False)
-
-    def set_task_counts(self, total: int, pending: int):
-        """총작업수 및 잔여수 표시 업데이트"""
-        color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
-        self.task_count_label.config(text=f"총 {total} / 잔여 {pending}", fg=color)
 
 
 # ─── 스크롤 가능 프레임 ───────────────────────────────────────────────────────
@@ -298,7 +288,7 @@ class MainApp(tk.Tk):
         super().__init__()
         self.title("🛒 네이버 자동 주문 프로그램")
         self.geometry("1400x820")
-        self.minsize(1200, 650)
+        self.minsize(1100, 650)
         self.configure(bg=CLR_BG)
 
         self._xlsx_path = XLSX_PATH
@@ -320,12 +310,6 @@ class MainApp(tk.Tk):
 
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
-
-        if os.path.exists(self._xlsx_path):
-            try:
-                self.order_manager = OrderManager(self._xlsx_path)
-            except Exception as e:
-                print(f"[MainApp] 초기 OrderManager 로드 오류: {e}")
 
         self._build_ui()
         self._refresh_summary()
@@ -460,14 +444,6 @@ class MainApp(tk.Tk):
             w.destroy()
 
         self.device_check_vars = {}
-        self.device_task_labels = {}
-
-        device_counts = {}
-        try:
-            if self.order_manager:
-                device_counts = self.order_manager.get_all_devices_task_counts()
-        except Exception:
-            pass
 
         is_desc = getattr(self, "sort_desc", False)
         sorted_devices = sorted(
@@ -543,18 +519,6 @@ class MainApp(tk.Tk):
                 row_frame, text=status_text, fg=status_color, bg=row_bg,
                 font=("Segoe UI", 9), width=7, anchor="center"
             ).pack(side=tk.LEFT)
-
-            # 기기별 작업수 (총작업 / 잔여수)
-            dev_cnt = self.order_manager.get_device_task_counts(did) if self.order_manager else {"total": 0, "pending": 0}
-            t_cnt, p_cnt = dev_cnt.get("total", 0), dev_cnt.get("pending", 0)
-            cnt_color = CLR_SUCCESS if p_cnt == 0 and t_cnt > 0 else (CLR_PRIMARY if p_cnt > 0 else CLR_TEXT_MUTE)
-            cnt_lbl = tk.Label(
-                row_frame, text=f"총 {t_cnt} / 잔여 {p_cnt}",
-                fg=cnt_color, bg=row_bg,
-                font=("Segoe UI", 8, "bold"), width=13, anchor="center"
-            )
-            cnt_lbl.pack(side=tk.LEFT, padx=(2, 4))
-            self.device_task_labels[did] = cnt_lbl
 
             # 테더링 여부 체크박스 (시안/스카이블루 고대비 색상 적용)
             tether_var = tk.BooleanVar(value=info.get("tethering", True))
@@ -689,7 +653,7 @@ class MainApp(tk.Tk):
 
         # ── 좌측: 기기 선택 패널 ──────────────────────────────────────────────
         self.dev_list_frame = tk.Frame(
-            body_frame, bg=CLR_SURFACE, width=540,
+            body_frame, bg=CLR_SURFACE, width=440,
             highlightbackground=CLR_BORDER, highlightthickness=1
         )
         self.dev_list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
@@ -723,8 +687,6 @@ class MainApp(tk.Tk):
                  font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
         tk.Label(col_hdr, text="상태", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
                  font=("Segoe UI", 9, "bold"), width=7, anchor="center").pack(side=tk.LEFT)
-        tk.Label(col_hdr, text="작업(총/잔여)", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-                 font=("Segoe UI", 9, "bold"), width=13, anchor="center").pack(side=tk.LEFT)
         sort_icon = " ▼" if getattr(self, "sort_desc", False) else " ▲"
         lbl_remark = tk.Label(col_hdr, text=f"비고{sort_icon}", fg=CLR_PRIMARY, bg=CLR_SURFACE,
                               font=("Segoe UI", 9, "bold"), cursor="hand2", anchor="w")
@@ -816,9 +778,6 @@ class MainApp(tk.Tk):
                 highlightbackground=CLR_BORDER,
                 highlightthickness=1
             )
-            if self.order_manager:
-                c = self.order_manager.get_device_task_counts(did)
-                panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
             row = i // cols
             col = i % cols
             panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
@@ -1605,20 +1564,8 @@ class MainApp(tk.Tk):
             summary = self.order_manager.get_summary()
             for key, lbl in self.summary_labels.items():
                 lbl.config(text=str(summary.get(key, 0)))
-
-            dev_counts = self.order_manager.get_all_devices_task_counts()
-            if hasattr(self, "device_panels"):
-                for did, panel in self.device_panels.items():
-                    c = self.order_manager.get_device_task_counts(did)
-                    panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
-            if hasattr(self, "device_task_labels"):
-                for did, lbl in self.device_task_labels.items():
-                    c = self.order_manager.get_device_task_counts(did)
-                    t, p = c.get("total", 0), c.get("pending", 0)
-                    color = CLR_SUCCESS if p == 0 and t > 0 else (CLR_PRIMARY if p > 0 else CLR_TEXT_MUTE)
-                    lbl.config(text=f"총 {t} / 잔여 {p}", fg=color)
-        except Exception as e:
-            print(f"[MainApp] 현황 갱신 오류: {e}")
+        except Exception:
+            pass
 
         # 5초마다 자동 갱신
         self._summary_timer = self.after(5000, self._refresh_summary)

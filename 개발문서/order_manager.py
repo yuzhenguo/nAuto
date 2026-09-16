@@ -9,6 +9,7 @@ order_manager.py
   수취인      : 배송지 수취인명
   전화번호    : 수취인 전화번호
   비밀번호    : 결제 비밀번호 (숫자, 예: 123456)
+  2차비밀번호 : 현대카드 2차 비밀번호 (4자리)
   완료여부    : 공백=미처리, Y=완료, F=실패
 
 헤더가 없거나 컬럼명이 다를 경우 컬럼 인덱스로 직접 지정 가능 (아래 COL_* 상수 참고)
@@ -32,6 +33,7 @@ COL_STATUS          = 7   # 완료여부
 COL_PAYMENT_METHOD  = 8   # 결제방식
 COL_DEVICE_ID       = 9   # 폰ID (기기 ID)
 COL_LOGIN_ID        = 11  # 로그인아이디
+COL_SECOND_PASSWORD = 12  # 2차비밀번호 (현대카드)
 
 
 # ─── 헤더 키워드 매핑 (대소문자/공백 무시, 긴 키워드 우선) ───────────────────
@@ -46,6 +48,7 @@ HEADER_KEYWORDS = {
     "payment_method": ["결제방식", "결재방식", "payment"],
     "device_id":      ["폰id", "기기id", "단말기id", "deviceid", "device_id"],
     "login_id":       ["로그인아이디", "로그인id", "loginid", "login_id"],
+    "second_password": ["2차비밀번호", "2차암호", "2차비번", "secondarypassword"],
 }
 
 
@@ -76,7 +79,8 @@ class OrderRow:
                  status: str,
                  payment_method: str = "",
                  device_id: str = "",
-                 login_id: str = ""):
+                 login_id: str = "",
+                 second_password: str = ""):
         self.row_index      = row_index         # 엑셀 실제 행 번호 (1-based)
         self.search_keyword = search_keyword    # 검색어
         self.seller_name    = seller_name       # 판매자명
@@ -88,6 +92,7 @@ class OrderRow:
         self.payment_method = str(payment_method).strip() if payment_method else "" # 결제방식
         self.device_id      = str(device_id).strip() if device_id else ""  # 폰ID
         self.login_id       = str(login_id).strip() if login_id else "" # 로그인아이디
+        self.second_password = str(second_password).strip() if second_password else ""  # 2차비밀번호
 
     def get_phone_digits(self) -> str:
         """전화번호에서 숫자만 추출"""
@@ -96,6 +101,10 @@ class OrderRow:
     def get_password_digits(self) -> str:
         """비밀번호 숫자 문자열"""
         return ''.join(filter(str.isdigit, self.password))
+
+    def get_second_password_digits(self) -> str:
+        """현대카드 2차비밀번호 숫자 문자열"""
+        return ''.join(filter(str.isdigit, self.second_password))
 
     def __repr__(self):
         return (f"OrderRow(row={self.row_index}, keyword={self.search_keyword!r}, "
@@ -121,6 +130,7 @@ def _detect_columns(ws) -> dict:
         "payment_method": COL_PAYMENT_METHOD,
         "device_id":      COL_DEVICE_ID,
         "login_id":       COL_LOGIN_ID,
+        "second_password": COL_SECOND_PASSWORD,
     }
     scores = {k: -1 for k in mapping}
 
@@ -130,6 +140,9 @@ def _detect_columns(ws) -> dict:
             continue
         cell_str = str(cell_val).strip().lower().replace(" ", "").replace("_", "")
         for field, keywords in HEADER_KEYWORDS.items():
+            # '2차비밀번호'가 일반 '비밀번호'로 오탐되지 않도록
+            if field == "password" and "2차" in cell_str:
+                continue
             for kw in keywords:
                 kw_n = kw.lower().replace(" ", "").replace("_", "")
                 if not kw_n:
@@ -165,6 +178,20 @@ class OrderManager:
 
     def _str(self, val) -> str:
         return str(val).strip() if val is not None else ""
+
+    def _str_pin(self, val) -> str:
+        """엑셀 숫자셀(1234.0)이 비밀번호로 깨지지 않게 변환."""
+        if val is None:
+            return ""
+        if isinstance(val, bool):
+            return ""
+        if isinstance(val, int):
+            return str(val)
+        if isinstance(val, float):
+            if val.is_integer():
+                return str(int(val))
+            return str(val).strip()
+        return str(val).strip()
 
     def get_pending_rows(self, device_id: str = "") -> List[OrderRow]:
         """완료여부가 공백인 미처리 행 목록 반환.
@@ -213,11 +240,12 @@ class OrderManager:
                         product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
                         recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
                         phone          = self._str(ws.cell(row_idx, cm["phone"]).value),
-                        password       = self._str(ws.cell(row_idx, cm["password"]).value),
+                        password       = self._str_pin(ws.cell(row_idx, cm["password"]).value),
                         status         = status_str,
                         payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
                         device_id      = row_device_id,
                         login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
+                        second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
                     ))
             except Exception as e:
                 print(f"[OrderManager] 엑셀 읽기 오류: {e}")

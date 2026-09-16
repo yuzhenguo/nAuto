@@ -16,7 +16,7 @@ naver_order_worker.py
 10    상품 리스트에서 판매자명 + 상품명 매칭 클릭, 5초 대기
 11    구매하기 버튼 클릭, 5초 대기
 12    체크박스.png 이미지 인식 클릭, 2초 대기
-13    바로구매.png 이미지 인식 클릭, 8초 대기
+13    바로구매.png / 바로구매2/3/4 이미지 인식 클릭, 8초 대기
 14    변경 버튼 클릭, 3초 대기
 15    스크롤 다운
 16    배송지 목록에서 수취인/전화번호 매칭 클릭, 5초 대기
@@ -45,6 +45,15 @@ try:
 except ImportError:
     import appium_helper as ah  # type: ignore
 
+# 구버전 모듈이 이미 sys.modules에 남아 stop_event 미지원인 경우 강제 재로딩
+try:
+    import importlib
+    import inspect as _inspect
+    if "stop_event" not in _inspect.signature(ah.create_driver).parameters:
+        ah = importlib.reload(ah)
+except Exception:
+    pass
+
 from order_manager import OrderManager, OrderRow
 
 # ─── 이미지 파일 경로 (개발문서 폴더) ───────────────────────────────────────
@@ -55,12 +64,18 @@ IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력
 IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력창 예비용
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
+IMG_CHECKBOX2     = os.path.join(_IMG_DIR, "체크박스2.png")
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
+IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
+IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
+IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
+IMG_DELIVERY_MEMO2 = os.path.join(_IMG_DIR, "배송메모선택2.png")  # 배송메모 선택 팝업 타이틀
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
+IMG_MEMO_NO_SELECT2 = os.path.join(_IMG_DIR, "선택안함2.png")  # 배송메모 '선택안함' 옵션 (변형)
 IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
 
@@ -109,6 +124,122 @@ IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
+
+# 현대카드 결제 이미지 (단계 22)
+_HYUNDAI_NUM_DIR = os.path.join(_IMG_DIR, "현대숫자")
+IMG_HYUNDAI_NUMS = {
+    str(d): os.path.join(_HYUNDAI_NUM_DIR, f"{d}.png") for d in range(10)
+}
+HYUNDAI_PIN6 = "115080"  # 현대카드 1차 PIN (6자리, 개발리스트 22-8)
+IMG_HYUNDAI_CARDS = [
+    (os.path.join(_IMG_DIR, "카드를.png"), "카드를"),
+    (os.path.join(_IMG_DIR, "카드를1.png"), "카드를1"),
+    (os.path.join(_IMG_DIR, "카드를2.png"), "카드를2"),
+    (os.path.join(_IMG_DIR, "카드를3.png"), "카드를3"),
+    (os.path.join(_IMG_DIR, "카드를4.png"), "카드를4"),
+    (os.path.join(_IMG_DIR, "카드를6.png"), "카드를6"),
+    (os.path.join(_IMG_DIR, "카드를7.png"), "카드를7"),
+]
+IMG_HYUNDAI_BRAND = [
+    (os.path.join(_IMG_DIR, "현대1.png"), "현대1"),
+    (os.path.join(_IMG_DIR, "현대2.png"), "현대2"),
+    (os.path.join(_IMG_DIR, "현대3.png"), "현대3"),
+    (os.path.join(_IMG_DIR, "현대4.png"), "현대4"),
+]
+# 국민카드 (결제방식=국민카드): kb국민1/2 선택 → 결재하기 후 종료
+IMG_KB_BRAND = [
+    (os.path.join(_IMG_DIR, "kb국민1.png"), "kb국민1"),
+    (os.path.join(_IMG_DIR, "kb국민2.png"), "kb국민2"),
+]
+IMG_HYUNDAI_DO_PAY = [
+    (os.path.join(_IMG_DIR, "결재하기.png"), "결재하기"),
+    (os.path.join(_IMG_DIR, "결재하기1.png"), "결재하기1"),
+    (os.path.join(_IMG_DIR, "결재하기2.png"), "결재하기2"),
+    (os.path.join(_IMG_DIR, "결재하기3.png"), "결재하기3"),
+    (os.path.join(_IMG_DIR, "결재하기4.png"), "결재하기4"),
+]
+IMG_HYUNDAI_PIN_BTN = [
+    (os.path.join(_IMG_DIR, "현대핀1.png"), "현대핀1"),
+    (os.path.join(_IMG_DIR, "현대핀2.png"), "현대핀2"),
+    (os.path.join(_IMG_DIR, "현대핀3.png"), "현대핀3"),
+    (os.path.join(_IMG_DIR, "현대핀4.png"), "현대핀4"),
+    (os.path.join(_IMG_DIR, "현대핀5.png"), "현대핀5"),
+]
+IMG_HYUNDAI_PIN_INPUT = [
+    (os.path.join(_IMG_DIR, "핀입력1.png"), "핀입력1"),
+    (os.path.join(_IMG_DIR, "핀입력2.png"), "핀입력2"),
+    (os.path.join(_IMG_DIR, "핀입력3.png"), "핀입력3"),
+    (os.path.join(_IMG_DIR, "핀입력4.png"), "핀입력4"),
+    (os.path.join(_IMG_DIR, "핀입력5.png"), "핀입력5"),
+]
+IMG_HYUNDAI_CONFIRM = [
+    (os.path.join(_IMG_DIR, "현대확인1.png"), "현대확인1"),
+    (os.path.join(_IMG_DIR, "현대확인2.png"), "현대확인2"),
+    (os.path.join(_IMG_DIR, "현대확인3.png"), "현대확인3"),
+    (os.path.join(_IMG_DIR, "현대확인4.png"), "현대확인4"),
+]
+IMG_HYUNDAI_PAY_NOW = [
+    (os.path.join(_IMG_DIR, "현대결제하기1.png"), "현대결제하기1"),
+    (os.path.join(_IMG_DIR, "현대결제하기2.png"), "현대결제하기2"),
+    (os.path.join(_IMG_DIR, "현대결제하기3.png"), "현대결제하기3"),
+    (os.path.join(_IMG_DIR, "현대결제하기4.png"), "현대결제하기4"),
+]
+IMG_HYUNDAI_CARD_PW = [
+    (os.path.join(_IMG_DIR, "현대카드비번1.png"), "현대카드비번1"),
+    (os.path.join(_IMG_DIR, "현대카드비번2.png"), "현대카드비번2"),
+    (os.path.join(_IMG_DIR, "현대카드비번3.png"), "현대카드비번3"),
+    (os.path.join(_IMG_DIR, "현대카드비번4.png"), "현대카드비번4"),
+    (os.path.join(_IMG_DIR, "현대카드비번5.png"), "현대카드비번5"),
+    (os.path.join(_IMG_DIR, "현대카드비번6.png"), "현대카드비번6"),
+    (os.path.join(_IMG_DIR, "현대카드비번7.png"), "현대카드비번7"),
+]
+# 안전인증 후 2차비밀번호(본인인증) 페이지 진입 판별
+IMG_HYUNDAI_2ND_PAGE = [
+    (os.path.join(_IMG_DIR, "2차페이지1.png"), "2차페이지1"),
+    (os.path.join(_IMG_DIR, "2차페이지2.png"), "2차페이지2"),
+    (os.path.join(_IMG_DIR, "2차페이지3.png"), "2차페이지3"),
+]
+# 2차페이지2.png (454x527) 실측 좌표 — 노란바 바로 아래 3x4 키패드
+_HYUNDAI_2ND_TMPL_WH = (454, 527)
+_HYUNDAI_2ND_KEYS_TMPL = {
+    "1": (81, 324), "2": (227, 324), "3": (372, 324),
+    "4": (81, 374), "5": (227, 374), "6": (372, 374),
+    "7": (81, 430), "8": (227, 430), "9": (372, 430),
+    "완료": (81, 484), "0": (227, 484),
+}
+_HYUNDAI_2ND_YELLOW_TMPL = (9, 231, 441, 282)  # x1,y1,x2,y2
+# 현대결제하기 클릭 후 안전/추가인증 팝업 감지
+IMG_HYUNDAI_SAFE_DETECT = [
+    (os.path.join(_IMG_DIR, "안전한.png"), "안전한"),
+    (os.path.join(_IMG_DIR, "안전한2.png"), "안전한2"),
+    (os.path.join(_IMG_DIR, "안전한3.png"), "안전한3"),
+    (os.path.join(_IMG_DIR, "안전결재.png"), "안전결재"),
+    (os.path.join(_IMG_DIR, "안전결재2.png"), "안전결재2"),
+    (os.path.join(_IMG_DIR, "추가인증.png"), "추가인증"),
+]
+# 팝업 본체(화이트 모달) — bbox 하단 = 확인 버튼
+IMG_HYUNDAI_SAFE_POPUP_BODY = [
+    (os.path.join(_IMG_DIR, "안전한3.png"), "안전한3"),
+    (os.path.join(_IMG_DIR, "안전결재.png"), "안전결재"),
+    (os.path.join(_IMG_DIR, "안전결재2.png"), "안전결재2"),
+]
+# 전체화면 참고 (안전결재3)
+IMG_HYUNDAI_SAFE_POPUP_FULL = os.path.join(_IMG_DIR, "안전결재3.png")
+# 팝업 닫기: 안전확인1~3 중 하나 클릭
+IMG_HYUNDAI_SAFE_CONFIRM = [
+    (os.path.join(_IMG_DIR, "안전확인1.png"), "안전확인1"),
+    (os.path.join(_IMG_DIR, "안전확인2.png"), "안전확인2"),
+    (os.path.join(_IMG_DIR, "안전확인3.png"), "안전확인3"),
+]
+SAFE_AUTH_TEXT_XPATHS = [
+    '//*[contains(@text,"안전한 결제를 위해")]',
+    '//*[contains(@text,"추가 인증을 진행합니다")]',
+    '//*[contains(@text,"추가 인증")]',
+]
+# 현대비번.png = 키패드 영역 템플릿 (인식 후 ROI 커팅 → 숫자 입력)
+IMG_HYUNDAI_PW_KEYPAD = os.path.join(_IMG_DIR, "현대비번.png")
+IMG_HYUNDAI_PW_CONFIRM_FULL = os.path.join(_IMG_DIR, "현대비번 확인.png")
+ORDER_COMPLETE_XPATH = '//android.widget.TextView[@text="주문완료 되었습니다"]'
 
 # 비밀번호 숫자 이미지 (단계 19): p0.png ~ p9.png
 IMG_NUMS = {
@@ -198,7 +329,7 @@ DELIVERY_LIST_WEBVIEW_XPATHS = [
 ]
 
 # 타임아웃
-TASK_TIMEOUT_SEC = 600  # 주문 1건 최대 10분
+TASK_TIMEOUT_SEC = 900  # 주문 1건 최대 15분 (현대카드 PIN 대기 포함)
 
 
 class NaverOrderWorker:
@@ -225,21 +356,73 @@ class NaverOrderWorker:
         self._status_cb     = status_callback
         self.machine_num    = machine_num
         self.test_mode      = test_mode
-        # 수동시작: 주문하기 클릭 생략 + 엑셀 Y 기록 후 종료
+        # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
         self.manual_mode    = manual_mode
         self.driver         = None
         self._stop_event    = threading.Event()
+        self._ui_gen        = 0  # GUI 세대 (중지 후 재시작 시 stale done 무시)
+        # 안전인증 후 '본인인증/카드비밀번호4자리' WebView 모드
+        self._hyundai_pw4_identity_mode = False
+        self._hyundai_pw4_field_xy = None
+        self._hyundai_pw4_keypad_box = None
+        self._hyundai_pw4_key_origin = None
+        self._hyundai_pw4_key_map = None
 
     def _skip_final_order_click(self) -> bool:
         """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
         return bool(self.test_mode or self.manual_mode)
 
+    def _sleep_interruptible(self, seconds: float, slice_sec: float = 0.4) -> bool:
+        """중지 가능 대기. 중지되면 False."""
+        end = time.time() + max(0.0, seconds)
+        while time.time() < end:
+            if self._stop_event.is_set():
+                return False
+            time.sleep(min(slice_sec, max(0.05, end - time.time())))
+        return not self._stop_event.is_set()
+
+    def _create_driver(self):
+        """Appium 드라이버 생성 (stop_event 지원 여부와 무관하게 호환)."""
+        global ah
+        import inspect
+        import importlib
+
+        # GUI가 예전 모듈을 붙잡고 있어도 디스크의 최신 create_driver를 쓰도록 재로딩
+        try:
+            ah = importlib.reload(ah)
+        except Exception:
+            pass
+
+        kwargs = {
+            "device_id": self.device_id,
+            "appium_port": self.appium_port,
+            "log_callback": self._log,
+        }
+        try:
+            if "stop_event" in inspect.signature(ah.create_driver).parameters:
+                kwargs["stop_event"] = self._stop_event
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            return ah.create_driver(**kwargs)
+        except TypeError as e:
+            # 구버전 create_driver 호환
+            if "stop_event" in str(e):
+                kwargs.pop("stop_event", None)
+                return ah.create_driver(**kwargs)
+            raise
+
     # ─── 공개 메서드 ─────────────────────────────────────────────────────────
 
     def run(self) -> bool:
         """워커 메인 실행 (별도 스레드에서 호출)"""
+        if self._stop_event.is_set():
+            self._log("⏹ 중지 상태로 실행 요청됨 → 즉시 종료")
+            return False
+
         if self.manual_mode:
-            self._log("🖐 수동시작 워커 시작 (주문하기 클릭 생략 → Y 기록 후 종료)")
+            self._log("🖐 수동시작 워커 시작 (배송지 선택까지 → Y 기록 후 종료)")
         else:
             self._log("🚀 자동 주문 워커 시작")
 
@@ -255,21 +438,33 @@ class NaverOrderWorker:
 
         for attempt in range(1, max_restarts + 1):
             if self._stop_event.is_set():
+                self._log("⏹ 중지 요청 → 연결 루프 종료")
                 break
 
             self._set_status(f"연결 중... ({attempt}/{max_restarts})")
 
             try:
-                self.driver = ah.create_driver(self.device_id, self.appium_port, self._log)
+                self.driver = self._create_driver()
+                if self._stop_event.is_set():
+                    self._log("⏹ 중지 요청 → 앱 재시작 생략")
+                    break
                 self._log("🔄 네이버 앱 재시작")
                 ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
             except Exception as e:
+                if self._stop_event.is_set() or "중지 요청" in str(e):
+                    self._log("⏹ 중지 요청으로 드라이버 연결 중단")
+                    break
                 self._log(f"❌ 드라이버 연결 실패: {e}")
                 self._set_status("연결 실패")
                 if attempt < max_restarts:
-                    time.sleep(10)
+                    if not self._sleep_interruptible(10):
+                        self._log("⏹ 중지 요청 → 재연결 대기 중단")
+                        break
                     continue
                 return False
+
+            if self._stop_event.is_set():
+                break
 
             success = False
             try:
@@ -281,8 +476,11 @@ class NaverOrderWorker:
                 success = True
 
             except Exception as e:
-                self._log(f"❌ 예기치 않은 오류: {e}")
-                self._set_status("오류 발생")
+                if self._stop_event.is_set():
+                    self._log("⏹ 중지 요청으로 작업 중단")
+                else:
+                    self._log(f"❌ 예기치 않은 오류: {e}")
+                    self._set_status("오류 발생")
             finally:
                 if self.driver:
                     try:
@@ -295,15 +493,26 @@ class NaverOrderWorker:
                 break
 
             self._log(f"🔄 오류 회복 재시작... ({attempt}/{max_restarts})")
-            time.sleep(5)
+            if not self._sleep_interruptible(5):
+                break
 
-        self._log("🏁 워커 종료")
-        self._set_status("완료")
+        if self._stop_event.is_set():
+            self._log("✅ 중지 완료")
+            self._set_status("중지됨")
+        else:
+            self._log("🏁 워커 종료")
+            self._set_status("완료")
         return True
 
     def stop(self):
         self._stop_event.set()
         self._log("⏹ 중지 요청됨")
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            pass
+        self.driver = None
 
     # ─── 단계 3~6: 메인 → 스토어 → 마이쇼핑 ─────────────────────────────────
 
@@ -1019,8 +1228,9 @@ class NaverOrderWorker:
 
             if scroll_cnt < scroll_max:
                 self._log(f"  ⬇ 스크롤 다운 ({scroll_cnt + 1}/{scroll_max})")
-                self._scroll_down()
-                time.sleep(1.0)
+                # 상품 리스트: 지문검증/재시도 없이 빠른 ADB 스와이프 (간격 단축)
+                self._scroll_down_fast(distance_ratio=0.28)
+                time.sleep(0.35)
 
         # 20회 스크롤 완료 후에도 완전 매칭이 없었던 경우 폴백 후보 사용
         if fallback_candidates:
@@ -1107,6 +1317,9 @@ class NaverOrderWorker:
                         pass
 
                 self._log(f"  👉 ADB 좌표 탭: ({x}, {y})")
+                if not self._is_visible_coord(x, y):
+                    self._log(f"  ⏭ 화면 밖 좌표 클릭 생략: ({x}, {y})")
+                    return False
                 subprocess.run(
                     ["adb", "-s", self.device_id, "shell", "input", "tap",
                      str(x), str(y)],
@@ -1130,13 +1343,15 @@ class NaverOrderWorker:
                         y = rect['y'] + rect['height'] // 2
                 except Exception:
                     pass
-                if 150 <= y <= w_h - 200:
+                if self._is_visible_coord(x, y) and 150 <= y <= w_h - 200:
                     subprocess.run(
                         ["adb", "-s", self.device_id, "shell", "input", "tap",
                          str(x), str(y)],
                         capture_output=True, timeout=5
                     )
                     return True
+                self._log(f"  ⏭ 스크롤 후에도 화면 밖 ({x}, {y}) → 클릭 안 함")
+                return False
 
         except Exception as e:
             self._log(f"  ⚠ 안전 클릭 실패: {e}")
@@ -1189,28 +1404,69 @@ class NaverOrderWorker:
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
+    def _score_template_in_region(self, template_path, screen_gray, screen_w, screen_h,
+                                  min_x, max_x, min_y, max_y):
+        """한 장의 그레이 스크린샷에서 템플릿 최고점/좌표. 영역 밖이면 무효.
+        returns (cx, cy, score) 또는 None"""
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return None
+        if not os.path.exists(template_path):
+            return None
+        template_bgr = cv2.imdecode(
+            np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        if template_bgr is None:
+            return None
+        template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+        t_h, t_w = template_gray.shape
+        roi = screen_gray.copy()
+        if min_y > 0:
+            roi[:min_y, :] = 0
+        if max_y < screen_h:
+            roi[max_y:, :] = 0
+        if min_x > 0:
+            roi[:, :min_x] = 0
+        if max_x < screen_w:
+            roi[:, max_x:] = 0
+
+        best_score, best_loc, best_tw, best_th = -1.0, None, t_w, t_h
+        for scale in np.linspace(0.55, 1.65, 12):
+            new_w, new_h = int(t_w * scale), int(t_h * scale)
+            if new_w >= screen_w or new_h >= screen_h or new_w < 8 or new_h < 8:
+                continue
+            resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            try:
+                r = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                if max_val > best_score:
+                    best_score, best_loc, best_tw, best_th = max_val, max_loc, new_w, new_h
+            except Exception:
+                continue
+        if best_loc is None:
+            return None
+        cx = best_loc[0] + best_tw // 2
+        cy = best_loc[1] + best_th // 2
+        if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+            return None
+        return cx, cy, float(best_score)
+
     def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 체크박스.png 이미지 인식 및 옵션 항목 클릭, 2초 대기 (threshold 0.65, min_y 0.40*h, max_y 0.90*h)"""
+        """[단계 12] 체크박스2/4/원본 중 인식률이 가장 높은 것을,
+        옵션선택과 배송정보 사이(왼쪽 열)에서만 찾아 클릭."""
         self._set_status("체크박스/옵션 선택")
         self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
 
-        w_h = 2400
-        w_w = 1080
+        w_h, w_w = 2400, 1080
         try:
             size = self.driver.get_window_size()
-            w_h = size['height']
-            w_w = size['width']
+            w_h, w_w = size['height'], size['width']
         except Exception:
             pass
 
-        min_y_check = int(w_h * 0.38)   # 옵션 시트 영역
-        # 하단 구매바/네비(바로구매·장바구니)를 체크박스로 오인하지 않도록 하단 18%는 제외
-        max_y_check = int(w_h * 0.82)
-        max_x_check = int(w_w * 0.40)   # 옵션 체크박스는 화면 좌측
-
-        # ─── 0순위: 옵션선택.png ~ 배송정보.png 사이로 Y축 동적 설정 ─────────────
-        opt_y = None
-        del_y = None
+        opt_y = del_y = None
         if os.path.exists(IMG_OPTION_SELECT):
             opt_coords = self._find_image_coords(IMG_OPTION_SELECT, threshold=0.70)
             if opt_coords:
@@ -1220,134 +1476,150 @@ class NaverOrderWorker:
             if del_coords:
                 del_y = del_coords[1]
 
-        bar_limit = int(w_h * 0.82)
+        # 옵션선택 라벨·'옵션 필수선택' 헤더를 건너뛴 뒤 ~ 배송정보 직전
+        # = 화살표가 가리키는 옵션 행 체크박스 간격
+        header_skip = max(85, int(w_h * 0.036))
         if opt_y and del_y and opt_y < del_y:
-            min_y_check = opt_y
-            max_y_check = min(del_y, bar_limit)
-            self._log(f"  📌 체크박스 탐색 Y영역 동적 설정 (옵션~배송정보): {min_y_check} ~ {max_y_check}")
+            min_y_check = opt_y + header_skip
+            max_y_check = del_y - 45
+            if min_y_check >= max_y_check:
+                min_y_check = opt_y + 50
+                max_y_check = del_y - 20
+            self._log(
+                f"  📌 체크박스 탐색 구간 (옵션선택~배송정보 사이): "
+                f"y={min_y_check}~{max_y_check}, 옵션y={opt_y}, 배송y={del_y}"
+            )
         elif opt_y:
-            min_y_check = opt_y
-            max_y_check = bar_limit
-            self._log(f"  📌 체크박스 탐색 Y영역: 옵션선택 하단({opt_y}) ~ 하단바 제외({max_y_check})")
+            min_y_check = opt_y + header_skip
+            max_y_check = int(w_h * 0.82)
+            self._log(f"  📌 체크박스 탐색 구간: 옵션선택 아래 y={min_y_check}~{max_y_check}")
+        else:
+            min_y_check = int(w_h * 0.55)
+            max_y_check = int(w_h * 0.82)
+            self._log("  ⚠ 옵션선택 미검출 → 화면 하단 시트로 제한")
 
-        # ─── 체크박스 클릭 후 추가 탭 헬퍼 ───────────────────────────────────────
-        def _post_click_extra_tap():
-            # 옵션선택과 배송정보가 모두 있으면 배송정보 위를 한 번 더 탭 (사용자 화살표 요청)
-            if opt_y and del_y:
-                tap_x = int(w_w * 0.15)
-                tap_y = del_y - 65  # 배송정보 텍스트 바로 위쪽 약 65픽셀 부근
-                self._log(f"  👉 옵션 선택/배송정보 확인됨. 배송정보 바로 위({tap_x}, {tap_y}) 추가 탭 시도")
-                try:
-                    import subprocess
-                    subprocess.run(
-                        ["adb", "-s", self.device_id, "shell", "input", "tap", str(tap_x), str(tap_y)],
-                        capture_output=True, timeout=5
-                    )
-                    time.sleep(1.0)
-                except Exception:
-                    pass
+        min_x_check = 0
+        max_x_check = int(w_w * 0.22)
+
+        checkbox_imgs = [
+            p for p in (IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX) if os.path.exists(p)
+        ]
+        if not checkbox_imgs:
+            self._log("  ⚠ 체크박스 템플릿 파일 없음")
             return True
 
-        # ─── 1순위: 체크박스.png / 체크박스4.png 매칭 (인식률 높은 것 우선) ──────────────
-        checkbox_imgs = [img for img in [IMG_CHECKBOX, IMG_CHECKBOX4] if os.path.exists(img)]
-        if checkbox_imgs:
-            # threshold 단계별 시도 (0.75 → 0.60): 두 이미지에 대해 같은 점수대에서 찾으면 더 인식률 높은게 걸림
-            for thr in [0.75, 0.70, 0.65, 0.60]:
-                for img_path in checkbox_imgs:
-                    coords = self._find_image_coords(img_path, threshold=thr,
-                                                     min_x=0, max_x=max_x_check,
-                                                     min_y=min_y_check, max_y=max_y_check)
-                    if coords:
-                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        img_name = os.path.basename(img_path)
-                        self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (threshold={thr})")
-                        time.sleep(1.5)
-                        return _post_click_extra_tap()
+        min_score = 0.78
 
-            # X축 제한 없이 재시도
-            for img_path in checkbox_imgs:
-                coords = self._find_image_coords(img_path, threshold=0.55,
-                                                 min_y=min_y_check, max_y=max_y_check)
-                if coords:
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    img_name = os.path.basename(img_path)
-                    self._log(f"✅ {img_name} 이미지 인식 클릭 완료 (X축 제한 해제)")
-                    time.sleep(1.5)
-                    return _post_click_extra_tap()
+        def _pick_best():
+            try:
+                import cv2
+                import numpy as np
+                from PIL import Image
+                import io
+            except ImportError:
+                self._log("  [이미지 매칭] cv2/numpy/PIL 미설치")
+                return None
+            png = self._get_screenshot()
+            pil = Image.open(io.BytesIO(png))
+            screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            sh, sw = screen_gray.shape
+            ranked = []
+            for path in checkbox_imgs:
+                hit = self._score_template_in_region(
+                    path, screen_gray, sw, sh,
+                    min_x_check, max_x_check, min_y_check, max_y_check,
+                )
+                name = os.path.basename(path)
+                if hit is None:
+                    self._log(f"  ℹ {name}: 구간 내 매칭 없음")
+                    continue
+                cx, cy, score = hit
+                if not self._is_visible_coord(cx, cy):
+                    self._log(
+                        f"  ⏭ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy}) 는 화면 밖 → 제외"
+                    )
+                    continue
+                ranked.append((score, cx, cy, path))
+                self._log(f"  ℹ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy})")
+            if not ranked:
+                return None
+            ranked.sort(key=lambda t: t[0], reverse=True)
+            best = ranked[0]
+            self._log(
+                f"  🎯 최고 인식: {os.path.basename(best[3])} "
+                f"점수 {best[0]:.4f} @ ({best[1]}, {best[2]})"
+            )
+            if best[0] < min_score:
+                self._log(f"  ⚠ 최고점도 {best[0]:.4f} < {min_score} → 오탐 가능, 채택 안 함")
+                return None
+            return best
 
-        # ─── 2순위: 상품명 키워드 기반 옵션 텍스트 XPath (Y축 범위 우선, X축 제한 완화) ──
+        best = _pick_best()
+        if best:
+            score, cx, cy, path = best
+            img_name = os.path.basename(path)
+            if not self._is_visible_coord(cx, cy):
+                self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
+            else:
+                self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
+                if not self._soft_tap(cx, cy, duration_ms=180):
+                    pass
+                else:
+                    time.sleep(1.2)
+                    again = _pick_best()
+                    if again is None:
+                        self._log(f"✅ {img_name} 클릭 후 구간 내 미체크 소멸 → 선택 완료")
+                        return True
+                    if again[3] == path and abs(again[2] - cy) <= 40 and again[0] >= min_score:
+                        self._log("  ⚠ 같은 위치 미체크 잔존 → 한 번 더 탭")
+                        self._soft_tap(cx, cy, duration_ms=180)
+                        time.sleep(0.8)
+                    else:
+                        self._log(f"✅ {img_name} 클릭 완료 (원래 위치 미체크 아님)")
+                    return True
+
         if product_name:
             import re
-            clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
-            keywords = [k.strip() for k in clean_prod.split() if len(k.strip()) >= 2]
-            for kw in keywords[:5]:
-                safe_kw = kw.replace('"', '').replace("'", "")
-                option_xpaths = [
-                    f'//android.view.View[contains(@text, "{safe_kw}")]',
-                    f'//android.widget.TextView[contains(@text, "{safe_kw}")]',
-                    f'//*[contains(@text, "{safe_kw}")]',
-                ]
-                for xpath in option_xpaths:
-                    if ah.element_exists(self.driver, xpath, timeout=1):
-                        try:
-                            els = self.driver.find_elements(By.XPATH, xpath)
-                            # Y 범위 내 우선 탐색
-                            for el in els:
-                                rect = el.rect
-                                cx = rect['x'] + rect['width'] // 2
-                                cy = rect['y'] + rect['height'] // 2
-                                if min_y_check <= cy <= max_y_check:
-                                    self._safe_click_element(el)
-                                    self._log(f"  ✅ 옵션 상품 텍스트 XPath 클릭 ({kw}, x={cx}, y={cy}): {xpath}")
-                                    time.sleep(1.5)
-                                    return _post_click_extra_tap()
-                        except Exception:
-                            pass
-
-        # ─── 3순위: CheckBox / checkable / 옵션 키워드 XPath 폴백 (Y 범위 내) ─────
-        checkbox_xpaths = [
-            '//android.widget.CheckBox',
-            '//*[@checkable="true"]',
-            '//*[contains(@text, "박스")]',
-            '//*[contains(@text, "포")]',
-            '//*[contains(@text, "개")]',
-        ]
-        for xpath in checkbox_xpaths:
-            if ah.element_exists(self.driver, xpath, timeout=1):
+            hangul = re.sub(r'[^가-힣0-9]', ' ', product_name)
+            kws = [k for k in hangul.split() if len(k) >= 2][:4]
+            extra = []
+            for k in list(kws):
+                if len(k) >= 4:
+                    extra.append(k[:4])
+            for kw in kws + extra:
                 try:
-                    els = self.driver.find_elements(By.XPATH, xpath)
+                    els = self.driver.find_elements(
+                        By.XPATH, f'//*[contains(@text, "{kw}")]'
+                    )
                     for el in els:
+                        text = (el.get_attribute("text") or "")
+                        if any(s in text for s in ("옵션", "배송", "바로구매", "장바구니")):
+                            continue
                         rect = el.rect
-                        cx = rect['x'] + rect['width'] // 2
                         cy = rect['y'] + rect['height'] // 2
                         if min_y_check <= cy <= max_y_check:
-                            self._safe_click_element(el)
-                            self._log(f"  ✅ 체크박스 XPath 클릭 (x={cx}, y={cy}): {xpath}")
-                            time.sleep(1.5)
-                            return _post_click_extra_tap()
+                            tap_x = int(w_w * 0.11)
+                            if not self._is_visible_coord(tap_x, cy):
+                                self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
+                                continue
+                            self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
+                            self._soft_tap(tap_x, cy, duration_ms=180)
+                            time.sleep(0.8)
+                            return True
                 except Exception:
-                    pass
+                    continue
 
-        # ─── 4순위: 좌표 고정 ADB 탭 폴백 (옵션선택/배송정보 영역이 확실할 때만) ─────────────────
         if opt_y and del_y and opt_y < del_y:
-            # 옵션선택과 배송정보 사이의 하단(배송정보 바로 위 약 65픽셀)을 타격
-            fallback_x = int(w_w * 0.15)
-            fallback_y = del_y - 65
-            self._log(f"  ⚠ 이미지/XPath 미발견 -> 확실한 영역(배송정보 바로 위) 탭 ({fallback_x}, {fallback_y})")
-            try:
-                import subprocess
-                subprocess.run(
-                    ["adb", "-s", self.device_id, "shell", "input", "tap",
-                     str(fallback_x), str(fallback_y)],
-                    capture_output=True, timeout=5
-                )
-                self._log(f"  ✅ 좌표 고정 탭 완료 ({fallback_x}, {fallback_y})")
-                time.sleep(1.5)
-                return _post_click_extra_tap()
-            except Exception as e:
-                self._log(f"  ⚠ 좌표 탭 실패: {e}")
-        else:
-            self._log("  ⚠ 옵션선택~배송정보 기준점을 찾지 못해 임의 좌표 클릭을 생략합니다. (오작동 방지)")
+            tap_x = int(w_w * 0.11)
+            tap_y = (min_y_check + max_y_check) // 2
+            if not self._is_visible_coord(tap_x, tap_y):
+                self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
+            else:
+                self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
+                self._soft_tap(tap_x, tap_y, duration_ms=180)
+                time.sleep(0.8)
+                return True
 
         self._log("  ⚠ 체크박스 미발견 → 계속 진행")
         return True
@@ -1401,10 +1673,39 @@ class NaverOrderWorker:
                 continue
         return False
 
+    def _is_order_pay_screen(self) -> bool:
+        """주문/결제 화면 진입 여부 확인 (바로구매 성공 판정용)"""
+        markers = [
+            '//android.webkit.WebView[@text="주문/결제"]',
+            '//android.widget.TextView[@text="주문/결제"]',
+            '//android.widget.Button[@text="변경"]',
+            '//*[contains(@text,"결제하기")]',
+            '//*[contains(@text,"배송지명")]',
+            '//*[contains(@text,"배송메모")]',
+        ]
+        for xpath in markers:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=1):
+                    return True
+            except Exception:
+                continue
+        if os.path.exists(IMG_ORDER_PAY):
+            try:
+                if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매 클릭 (이미지 → XPath → 하단 구매하기 CTA)"""
+        """[단계 13] 바로구매 클릭 (XPath 우선 → 하단 이미지만 → 검증)"""
         self._set_status("바로구매 클릭")
         time.sleep(1.0)
+
+        # 이미 주문/결제 화면이면 성공
+        if self._is_order_pay_screen():
+            self._log("  ✅ 이미 주문/결제 화면 → 바로구매 생략")
+            return True
 
         w_h, w_w = 2400, 1080
         try:
@@ -1413,29 +1714,49 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_buynow = int(w_h * 0.55)
-        max_y_buynow = int(w_h * 0.96)
-        min_x_right = int(w_w * 0.35)  # 바로구매는 보통 하단 우측
+        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 72% 이상으로 제한
+        min_y_buynow = int(w_h * 0.72)
+        max_y_buynow = int(w_h * 0.98)
+        min_x_right = int(w_w * 0.30)
+
+        buy_now_imgs = [
+            (p, n) for p, n in (
+                (IMG_BUY_NOW, "바로구매"),
+                (IMG_BUY_NOW2, "바로구매2"),
+                (IMG_BUY_NOW3, "바로구매3"),
+                (IMG_BUY_NOW4, "바로구매4"),
+            ) if os.path.exists(p)
+        ]
+
+        def _confirm_after_click(label: str) -> bool:
+            time.sleep(4.0)
+            if self._is_order_pay_screen():
+                self._log(f"  ✅ {label} 후 주문/결제 화면 확인")
+                return True
+            self._log(f"  ⚠ {label} 후 주문/결제 화면 미확인 → 오클릭 가능")
+            return False
 
         for attempt in range(1, 4):
-            # 1) 이미지 (우측 하단, threshold 단계 완화)
-            if os.path.exists(IMG_BUY_NOW):
-                for thr in (0.65, 0.58, 0.52):
+            # 1) XPath 우선 (하단 CTA만)
+            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
+                if _confirm_after_click("XPath CTA"):
+                    return True
+
+            # 2) 이미지: 하단만, threshold 완화하되 Y는 엄격
+            for thr in (0.65, 0.58, 0.52):
+                for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
-                        IMG_BUY_NOW, threshold=thr,
+                        img_path, threshold=thr,
                         min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
                     )
-                    if coords:
-                        ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        self._log(f"✅ 바로구매 이미지 인식 클릭 완료 (threshold={thr})")
-                        time.sleep(5)
+                    if not coords:
+                        continue
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={coords[1]})")
+                    if _confirm_after_click(img_name):
                         return True
 
-            # 2) XPath: 바로구매 / 바로 구매 / 하단 구매하기
-            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
-                return True
-
-            # 3) 구매하기 이미지(하단 우측) — 옵션 시트의 확인 버튼이 '구매하기'인 경우
+            # 3) 옵션시트 확인이 '구매하기'인 경우 (하단만)
             for img_path, img_name in (
                 (IMG_BUY_BTN, "구매하기"),
                 (IMG_BUY_BTN2, "구매하기2"),
@@ -1448,18 +1769,19 @@ class NaverOrderWorker:
                     img_path, threshold=0.70,
                     min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
                 )
-                if coords:
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 완료 (바로구매 대체)")
-                    time.sleep(5)
+                if not coords:
+                    continue
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={coords[1]})")
+                if _confirm_after_click(img_name):
                     return True
 
             if attempt < 3:
-                self._log(f"  ⚠ 바로구매 미발견 ({attempt}회차) → 옵션 시트 재오픈 후 재시도")
+                self._log(f"  ⚠ 바로구매 미확인 ({attempt}회차) → 옵션 시트 재오픈 후 재시도")
                 self._click_buy_button()
                 time.sleep(1.2)
 
-        self._log("  ❌ 바로구매 버튼 미발견")
+        self._log("  ❌ 바로구매 버튼 미발견/미확인")
         try:
             btns = self.driver.find_elements(By.XPATH, '//android.widget.Button')
             names = []
@@ -1472,28 +1794,335 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        if os.path.exists(IMG_ORDER_PAY):
-            self._log("  🔍 주문결재.png 존재 여부 확인 중...")
-            if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
-                self._log("  ✅ 주문결재.png 확인됨! 바로구매 버튼 클릭 성공으로 간주하고 계속 진행")
-                return True
-
+        if self._is_order_pay_screen():
+            self._log("  ✅ 주문/결제 화면 확인됨 → 바로구매 성공으로 간주")
+            return True
         return False
 
     # ─── 단계 14: 변경 버튼 클릭 ─────────────────────────────────────────────
 
     def _click_change_button(self) -> bool:
-        """[단계 14] 변경 버튼 클릭, 3초 대기"""
+        """[단계 14] 변경 버튼 클릭 (XPath → 좌표 탭), 미발견 시 False"""
         self._set_status("변경 버튼 클릭")
-        if ah.element_exists(self.driver, CHANGE_BTN_XPATH, timeout=5):
-            ah.wait_and_click(self.driver, CHANGE_BTN_XPATH, timeout=5, log_callback=self._log)
-            self._log("✅ 변경 버튼 클릭 완료")
-            time.sleep(2)
-            return True
-        self._log("⚠ 변경 버튼 미발견 → 계속 진행")
-        return True
+        time.sleep(1.0)
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()['height']
+        except Exception:
+            pass
+        # 배송지 영역 '변경'은 상단~중상단. 하단 CTA와 구분
+        max_y_change = int(w_h * 0.55)
+
+        xpaths = [
+            CHANGE_BTN_XPATH,
+            '//android.widget.Button[contains(@text,"변경")]',
+            '//*[@text="변경" and @clickable="true"]',
+            '//android.view.View[@text="변경"]',
+        ]
+
+        for xpath in xpaths:
+            try:
+                if not ah.element_exists(self.driver, xpath, timeout=3):
+                    continue
+                for el in self.driver.find_elements(By.XPATH, xpath):
+                    try:
+                        rect = el.rect
+                    except Exception:
+                        continue
+                    cx = rect['x'] + rect['width'] // 2
+                    cy = rect['y'] + rect['height'] // 2
+                    if cy > max_y_change:
+                        continue
+                    txt = (el.get_attribute("text") or "").strip()
+                    self._log(f"  📌 변경 버튼 발견 (text={txt!r}, x={cx}, y={cy})")
+                    if ah.tap_by_coords(self.driver, cx, cy, self._log):
+                        self._log("✅ 변경 버튼 좌표 클릭 완료")
+                        time.sleep(2.5)
+                        return True
+                    if self._safe_click_element(el):
+                        self._log("✅ 변경 버튼 클릭 완료")
+                        time.sleep(2.5)
+                        return True
+            except Exception:
+                continue
+
+        self._log("❌ 변경 버튼 미발견")
+        try:
+            btns = self.driver.find_elements(By.XPATH, '//android.widget.Button')
+            names = [
+                (b.get_attribute("text") or b.get_attribute("content-desc") or "").strip()
+                for b in btns[:15]
+            ]
+            names = [n for n in names if n]
+            if names:
+                self._log(f"  ℹ 현재 화면 Button: {names}")
+        except Exception:
+            pass
+        return False
 
     # ─── 단계 16: 배송지 선택 ────────────────────────────────────────────────
+
+    def _recipient_name_matches(self, text: str, recipient_name: str) -> bool:
+        """배송지/수취인 텍스트에 목표 수취인명이 포함되는지 확인.
+        예: '박경아', '배송지명박경아', '배송지명박경아(박경아)'
+        """
+        if not recipient_name or not text:
+            return False
+        name = recipient_name.strip()
+        if not name:
+            return False
+        if name in text:
+            return True
+        # '배송지명' 접두사 제거 후 비교 (배송지명박경아(박경아) 등)
+        if text.startswith("배송지명"):
+            rest = text[len("배송지명"):].strip()
+            if name in rest or rest.startswith(name):
+                return True
+            # '이름(이름)' 형태에서 괄호 앞 이름만 비교
+            if "(" in rest:
+                head = rest.split("(", 1)[0].strip()
+                if head == name or name in head:
+                    return True
+        return False
+
+    def _parse_element_bounds(self, el):
+        """요소 bounds → (x1,y1,x2,y2) 또는 None."""
+        import re as _re
+        try:
+            bs = el.get_attribute("bounds") or ""
+            mm = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bs)
+            if mm:
+                return tuple(map(int, mm.groups()))
+            rect = el.rect
+            return (rect["x"], rect["y"],
+                    rect["x"] + rect["width"], rect["y"] + rect["height"])
+        except Exception:
+            return None
+
+    def _iter_address_select_buttons(self):
+        """배송지 목록의 '선택'/'선택됨' 후보 (WebView에서 class가 비는 경우 대비)."""
+        seen = set()
+        xpaths = [
+            '//android.widget.Button[@text="선택" or @text="선택됨"]',
+            '//*[@text="선택" or @text="선택됨"]',
+        ]
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    t = (el.get_attribute("text") or "").strip()
+                    if t not in ("선택", "선택됨"):
+                        continue
+                    bb = self._parse_element_bounds(el)
+                    key = bb if bb else id(el)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield el
+                except Exception:
+                    continue
+
+    def _find_card_select_button(self, name_el, recipient_name: str):
+        """
+        수취인 이름 View를 덮는(같은 카드) '선택' 버튼 반환.
+
+        네이버 배송지 XML: 각 카드의 선택 버튼 bounds가 이름·전화·주소를 통째로 덮음.
+        → 이름 중심점이 들어있는 선택 버튼 중 면적이 가장 작은 것 = 해당 카드.
+        (리스트 전체가 아닌 카드 단위; 위쪽 다른 수취인 오선택 방지)
+        """
+        name_bb = self._parse_element_bounds(name_el)
+        if not name_bb:
+            return None
+        name_cx = (name_bb[0] + name_bb[2]) // 2
+        name_cy = (name_bb[1] + name_bb[3]) // 2
+
+        all_btns = list(self._iter_address_select_buttons())
+        if not all_btns:
+            self._log("  ℹ 화면에서 text='선택'/'선택됨' 버튼 0개")
+            return None
+
+        containing = []  # (area, dist, btn, bb)
+        named = []       # 이름 포함 확인된 후보
+        for btn in all_btns:
+            try:
+                bb = self._parse_element_bounds(btn)
+                if not bb:
+                    continue
+                # 이름 중심이 버튼(카드) 안에 있어야 동일 카드
+                if not (bb[0] - 8 <= name_cx <= bb[2] + 8 and bb[1] - 24 <= name_cy <= bb[3] + 24):
+                    continue
+                area = max(1, (bb[2] - bb[0]) * (bb[3] - bb[1]))
+                # 화면 전체/리스트 전체를 덮는 비정상적으로 큰 버튼 제외
+                if area > 1080 * 900:
+                    continue
+                btn_cy = (bb[1] + bb[3]) // 2
+                dist = abs(btn_cy - name_cy)
+                item = (area, dist, btn, bb)
+                containing.append(item)
+                # 조상에 목표 이름이 있으면 가점 후보
+                node = btn
+                has_name = False
+                for _ in range(4):
+                    try:
+                        node = node.find_element(By.XPATH, "..")
+                        area_txt = " ".join(
+                            (e.get_attribute("text") or "")
+                            for e in node.find_elements(By.XPATH, ".//*")
+                        )
+                        sel_cnt = sum(
+                            1 for e in node.find_elements(By.XPATH, ".//*")
+                            if (e.get_attribute("text") or "").strip() in ("선택", "선택됨")
+                        )
+                        if sel_cnt > 1:
+                            break
+                        if self._recipient_name_matches(area_txt, recipient_name):
+                            has_name = True
+                            break
+                    except Exception:
+                        break
+                if has_name:
+                    named.append(item)
+            except Exception:
+                continue
+
+        pool = named if named else containing
+        if not pool:
+            self._log(
+                f"  ℹ 선택 버튼 {len(all_btns)}개 중 이름 Y({name_cy})를 덮는 카드 없음"
+            )
+            # 최후: 세로만 겹치는 가장 가까운 버튼 (이름 X가 카드 밖인 경우)
+            nearest = None
+            for btn in all_btns:
+                bb = self._parse_element_bounds(btn)
+                if not bb:
+                    continue
+                if not (bb[1] - 24 <= name_cy <= bb[3] + 24):
+                    continue
+                area = max(1, (bb[2] - bb[0]) * (bb[3] - bb[1]))
+                if area > 1080 * 900:
+                    continue
+                dist = abs((bb[1] + bb[3]) // 2 - name_cy)
+                cand = (area, dist, btn, bb)
+                if nearest is None or cand[:2] < nearest[:2]:
+                    nearest = cand
+            if nearest is None:
+                return None
+            pool = [nearest]
+
+        pool.sort(key=lambda x: (x[0], x[1]))
+        best = pool[0][2]
+        self._log(
+            f"  🎯 이름 Y={name_cy} 덮는 선택 카드 채택 "
+            f"(후보 {len(pool)}/{len(all_btns)}, bounds={pool[0][3]})"
+        )
+        return best
+
+    def _tap_recipient_card_select(self, name_el, recipient_name: str):
+        """
+        이름 View → 동일 카드 '선택' 버튼 중앙 탭.
+        반환: True=탭 완료, False=스크롤 후 재탐색 필요, None=버튼 못 찾음
+        """
+        btn = self._find_card_select_button(name_el, recipient_name)
+        if btn is None:
+            self._log(f"  ⚠ 이름 '{recipient_name}' 동일 카드의 선택 버튼 미발견")
+            return None
+
+        bb = self._parse_element_bounds(btn)
+        if not bb:
+            self._log("  ⚠ 선택 버튼 bounds 파싱 실패")
+            return None
+
+        btn_h = bb[3] - bb[1]
+        if btn_h < 50:
+            self._log(f"  ⚠ 선택 버튼 높이 {btn_h}px 잘림 → 스크롤 후 재탐색")
+            if not self._scroll_address_list("down"):
+                self._scroll_down(distance_ratio=0.15)
+            time.sleep(0.5)
+            return False
+
+        tap_x = (bb[0] + bb[2]) // 2
+        tap_y = (bb[1] + bb[3]) // 2
+        btn_txt = (btn.get_attribute("text") or "").strip()
+
+        try:
+            scr_h = self.driver.get_window_size()["height"]
+        except Exception:
+            scr_h = 2400
+        safe_top = int(scr_h * 0.10)
+        safe_bottom = int(scr_h * 0.90)
+
+        if tap_y < safe_top:
+            self._log(f"  ⚠ 선택 버튼 Y={tap_y} 상단 밖 → 스크롤 다운")
+            if not self._scroll_address_list("down"):
+                self._scroll_down(distance_ratio=0.15)
+            time.sleep(0.5)
+            return False
+        if tap_y > safe_bottom:
+            self._log(f"  ⚠ 선택 버튼 Y={tap_y} 하단 밖 → 스크롤 업")
+            if not self._scroll_address_list("up"):
+                self._scroll_up(distance_ratio=0.18)
+            time.sleep(0.5)
+            return False
+
+        self._log(
+            f"  🎯 '{recipient_name}' 카드 '{btn_txt}' 탭 → ({tap_x}, {tap_y}) bounds={bb}"
+        )
+        self._soft_tap(tap_x, tap_y)
+        time.sleep(2.5)
+        return True
+
+    def _scroll_address_list(self, direction: str = "down") -> bool:
+        """배송지 목록 팝업 ListView 안에서만 스크롤. direction: down|up"""
+        try:
+            lists = self.driver.find_elements(By.XPATH, "//android.widget.ListView")
+            best = None
+            best_area = 0
+            for lv in lists:
+                has_sel = False
+                try:
+                    for e in lv.find_elements(By.XPATH, ".//*"):
+                        if (e.get_attribute("text") or "").strip() in ("선택", "선택됨"):
+                            has_sel = True
+                            break
+                except Exception:
+                    pass
+                if not has_sel:
+                    continue
+                bb = self._parse_element_bounds(lv)
+                if not bb:
+                    continue
+                area = (bb[2] - bb[0]) * (bb[3] - bb[1])
+                if area > best_area:
+                    best_area = area
+                    best = bb
+            if not best:
+                return False
+            x1, y1, x2, y2 = best
+            cx = (x1 + x2) // 2
+            if direction == "up":
+                y_from = int(y1 + (y2 - y1) * 0.35)
+                y_to = int(y1 + (y2 - y1) * 0.75)
+                arrow = "⬆"
+            else:
+                y_from = int(y1 + (y2 - y1) * 0.75)
+                y_to = int(y1 + (y2 - y1) * 0.35)
+                arrow = "⬇"
+            self._log(f"  {arrow} 배송지 ListView 스크롤 {direction}: ({cx},{y_from})→({cx},{y_to})")
+            _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                 str(cx), str(y_from), str(cx), str(y_to), "350"],
+                capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _scroll_address_list_up(self) -> bool:
+        return self._scroll_address_list("up")
 
     def _check_current_delivery_address(self, recipient_name: str, phone: str) -> bool:
         """
@@ -1526,7 +2155,7 @@ class NaverOrderWorker:
                                         node = node.find_element(By.XPATH, "..")
                                         els = node.find_elements(By.XPATH, ".//*")
                                         area_text = " ".join([e.get_attribute("text") or "" for e in els])
-                                        if recipient_name in area_text:
+                                        if self._recipient_name_matches(area_text, recipient_name):
                                             return True
                                     except Exception:
                                         break
@@ -1535,38 +2164,84 @@ class NaverOrderWorker:
         except Exception:
             pass
             
-        # 기존 폴백 로직 (배송지명으로 탐색)
+        # 폴백: '배송지명{수취인}' 패턴이면 이름만으로도 현재 선택으로 인정
+        # (연락처가 다른 View에 있거나 마스킹되어 last4 검증이 실패하는 경우 대응)
         try:
             views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
             for view in views:
                 text = view.get_attribute("text") or ""
-                if recipient_name in text:
-                    if not last4:
+                if not self._recipient_name_matches(text, recipient_name):
+                    continue
+                self._log(f"  ✅ 현재 배송지명 매칭: '{text[:60]}' ← '{recipient_name}'")
+                if not last4:
+                    return True
+                try:
+                    parent = view.find_element(By.XPATH, "..")
+                    area_views = parent.find_elements(By.XPATH, ".//*")
+                    area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
+                    if last4 in area_text or "***" in area_text:
                         return True
-                    try:
-                        parent = view.find_element(By.XPATH, "..")
-                        area_views = parent.find_elements(By.XPATH, ".//*")
-                        area_text = " ".join([av.get_attribute("text") or "" for av in area_views])
-                        if last4 in area_text:
-                            return True
-                    except Exception:
-                        pass
+                    # 부모에 전화가 없어도 배송지명에 수취인이 명확히 있으면 성공
+                    # (결제창 '배송지명박경아(박경아)' 형태)
+                    self._log(f"  ℹ 배송지명에 '{recipient_name}' 확인됨 (전화 미확인 → 이름만으로 인정)")
+                    return True
+                except Exception:
+                    return True
         except Exception:
             pass
             
         return False
 
-    def _soft_tap(self, x: int, y: int, duration_ms: int = 120) -> None:
+    def _visible_bounds(self):
+        """사용자가 실제로 보는 화면 좌표 범위 (상태바·하단 내비 제외). ADB tap 기준."""
+        w, h = self._get_window_size()
+        try:
+            import re as _re
+            res = _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "wm", "size"],
+                capture_output=True, timeout=3, text=True,
+            )
+            out = (res.stdout or "") + (res.stderr or "")
+            m = _re.search(r"(\d+)\s*x\s*(\d+)", out)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        left = 8
+        right = max(left + 1, w - 8)
+        top = max(48, int(h * 0.04))       # 상태바 아래
+        bottom = min(h - 12, int(h * 0.96))  # 제스처/내비 위
+        return left, top, right, bottom
+
+    def _is_visible_coord(self, x, y) -> bool:
+        """보이는 화면 안 좌표인지. 밖이면 클릭 금지."""
+        try:
+            x, y = int(x), int(y)
+        except Exception:
+            return False
+        left, top, right, bottom = self._visible_bounds()
+        return left <= x <= right and top <= y <= bottom
+
+    def _soft_tap(self, x: int, y: int, duration_ms: int = 120) -> bool:
         """
         제자리 짧은 swipe(꾹 눌렀다 떼기)로 부드러운 탭을 수행합니다.
         네이버 주문/결제 WebView에서는 순간적인 'input tap'이 무시되는 경우가 있어,
         약 120ms 동안 눌렀다 떼는 방식이 훨씬 안정적으로 클릭을 인식합니다.
+        사용자 가시 범위 밖 좌표는 클릭하지 않습니다.
         """
+        if not self._is_visible_coord(x, y):
+            left, top, right, bottom = self._visible_bounds()
+            self._log(
+                f"  ⏭ 화면 밖 좌표 클릭 생략: ({x}, {y}) "
+                f"가시범위 x={left}~{right} y={top}~{bottom}"
+            )
+            return False
         _run_cmd(
             ["adb", "-s", self.device_id, "shell", "input", "swipe",
-             str(x), str(y), str(x), str(y), str(duration_ms)],
+             str(int(x)), str(int(y)), str(int(x)), str(int(y)), str(duration_ms)],
             capture_output=True, timeout=5
         )
+        return True
 
     def _find_recipient_on_screen(self, recipient_name: str, phone_digits: str) -> bool:
         """
@@ -1575,374 +2250,109 @@ class NaverOrderWorker:
         last4 = phone_digits[-4:] if (phone_digits and len(phone_digits) >= 4) else ""
         formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}" if len(phone_digits) >= 8 else ""
 
-        # ── 방법 1: 배송지 목록 팝업 ('선택' 또는 '선택됨' 버튼 우선 탐색) ──
-        # 팝업 리스트에서는 "선택", "선택됨" 텍스트를 가진 버튼을 찾는 것이 좌표 오차를 없애는 가장 확실한 방법입니다.
-        try:
-            sel_views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "선택")]')
-            for sv in sel_views:
-                try:
-                    sv_text = (sv.get_attribute("text") or "").strip()
-                    if sv_text not in ["선택", "선택됨"]:
-                        continue
-
-                    node = sv
-                    found_name = False
-                    # 조상 노드를 5단계까지 올라가며 동일 블록 안에 수취인명과 전화번호가 있는지 확인
-                    for _ in range(5):
-                        try:
-                            node = node.find_element(By.XPATH, "..")
-                            els = node.find_elements(By.XPATH, ".//*")
-                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
-
-                            if recipient_name in area_text:
-                                # 전화번호 검증 (팝업은 마스킹 안됨, 하지만 혹시 모르니 확인)
-                                if (formatted_phone in area_text) or (last4 in area_text) or ("***" in area_text):
-                                    found_name = True
-                                    break
-                                elif not last4:
-                                    found_name = True
-                                    break
-                        except Exception:
-                            break
-                    
-                    if found_name:
-                        bounds_str = sv.get_attribute("bounds") or ""
-                        self._log(f"  🎯 팝업 매칭! '{recipient_name}' 그룹의 '{sv_text}' 버튼 클릭 시도")
-                        
-                        import re as _re
-                        m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                        if m:
-                            x1, y1, x2, y2 = map(int, m.groups())
-                            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                            self._log(f"  👉 '{sv_text}' 부드러운 탭(120ms): ({cx}, {cy})")
-                            self._soft_tap(cx, cy)
-                        else:
-                            self._log("  ⚠ 좌표 파싱 실패 -> 기본 클릭")
-                            self._safe_click_element(sv)
-                        
-                        time.sleep(3)
-                        return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 방법 2: 수취인 이름 기반 탐색 (팝업 폴백, '배송지명' 인라인 텍스트 제외) ──
-        # 팝업에서 '선택' 버튼을 못 찾았을 경우, 이름 텍스트 뷰 자체를 클릭합니다.
+        # ── 방법 1: 수취인 이름 View → 동일 카드 형제 '선택' 버튼만 탭 ──
+        # XML: View[text=이름] 과 Button[text=선택] 이 같은 부모 아래 형제
+        # (전역 point-in-bounds / 전화 동일번호 카드 오선택 방지)
         try:
             search_xpath = f'//*[contains(@text, "{recipient_name}")]'
             views = self.driver.find_elements(By.XPATH, search_xpath)
             for view in views:
                 try:
-                    text = view.get_attribute("text") or ""
-                    # 사용자 요청: 수취인 이름이 포함된 요소면 일단 클릭 (전화번호나 '배송지명' 조건 완화)
-                    if recipient_name not in text:
+                    text = (view.get_attribute("text") or "").strip()
+                    if not self._recipient_name_matches(text, recipient_name):
+                        continue
+                    # 결제창 뒤쪽 '배송지명…' 스킵
+                    if "배송지명" in text:
+                        popup_open = False
+                        try:
+                            popup_open = bool(self.driver.find_elements(
+                                By.XPATH,
+                                '//android.widget.Button[@text="선택" or @text="선택됨"]'
+                            ))
+                        except Exception:
+                            pass
+                        if not popup_open:
+                            self._log(f"  ✅ 결제창 인라인 배송지명에 '{recipient_name}' 확인 → 이미 선택됨")
+                            return True
+                        self._log("  ℹ '배송지명' 인라인 텍스트는 팝업 뒤쪽 → 스킵")
+                        continue
+
+                    # 잘린/비정상 이름 View 스킵 (상단 일부만 보임)
+                    nbb = self._parse_element_bounds(view)
+                    if nbb and (nbb[3] - nbb[1]) < 20:
+                        self._log(f"  ⏭ 잘린 이름 View 스킵: '{text[:40]}' h={nbb[3]-nbb[1]}")
                         continue
 
                     self._log(f"  🔎 이름 패턴 View 발견: '{text[:60]}'")
-
-                    # 배송지 목록 팝업 안의 요소들은 보통 '기본배송지', '주소' 형태이며 '배송지명' 문구가 없음.
-                    # '배송지명송주은...' 같이 '배송지명'이 포함되어 있으면 주문 화면 앞단의 단순 텍스트이므로 클릭하지 않고 건너뜀.
-                    if "배송지명" in text:
-                        continue
-
-                    # 연락처(last4) 검증이 엄격해서 매칭을 놓치는 경우가 많으므로,
-                    # 전화번호 뒷자리가 텍스트나 주변 뷰에 없더라도 이름이 확실히 포함되어 있으면 진행
-                    if last4:
-                        phone_ok = False
-                        try:
-                            parent = view.find_element(By.XPATH, "..")
-                            sibling_texts = []
-                            try:
-                                grand_parent = parent.find_element(By.XPATH, "..")
-                                area_views = grand_parent.find_elements(By.XPATH, ".//*")
-                                for av in area_views:
-                                    try:
-                                        at = av.get_attribute("text") or ""
-                                        if at: sibling_texts.append(at)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-
-                            area_text = " ".join(sibling_texts)
-                            if "***" in area_text:
-                                phone_ok = True
-                                self._log("  ℹ 전화번호 마스킹 감지 → 이름만으로 매칭")
-                            elif last4 in area_text:
-                                phone_ok = True
-                            elif "연락처" in area_text:
-                                for st in sibling_texts:
-                                    if "연락처" in st and last4 in st:
-                                        phone_ok = True
-                                        break
-                        except Exception:
-                            phone_ok = True
-                            self._log("  ⚠ 전화번호 범위 탐색 실패 → 이름만으로 매칭 시도")
-
-                        # 전화번호 미매칭이라도 에러 로그만 남기고 클릭은 허용 (사용자 요청)
-                        if not phone_ok:
-                            self._log(f"  ⚠ 전화번호 뒷4자리 '{last4}' 주변에 없지만, 이름('{recipient_name}') 포함되어 클릭 시도")
-
-                    self._log(f"  🎯 이름 패턴 매칭 성공: '{text[:60]}'")
-                    
-                    # ── 사용자 요청: 연락처(전화번호) View를 찾아 클릭 ──
-                    target_view = view
-                    if last4:
-                        try:
-                            parent = view.find_element(By.XPATH, "..")
-                            grand_parent = parent.find_element(By.XPATH, "..")
-                            search_xpath = f'.//*[contains(@text, "{formatted_phone}") or contains(@text, "{last4}")]'
-                            phone_views = grand_parent.find_elements(By.XPATH, search_xpath)
-                            for pv in phone_views:
-                                ptext = pv.get_attribute("text") or ""
-                                if "연락처" in ptext or formatted_phone in ptext or last4 in ptext:
-                                    target_view = pv
-                                    self._log(f"  👉 연락처 View로 클릭 대상 변경: {ptext[:30]}")
-                                    break
-                        except Exception:
-                            pass
-
-                    import re as _re
-
-                    def _parse_bounds(el):
-                        try:
-                            bs = el.get_attribute("bounds") or ""
-                            mm = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bs)
-                            if mm:
-                                return tuple(map(int, mm.groups()))
-                            rect = el.rect
-                            return (rect['x'], rect['y'],
-                                    rect['x'] + rect['width'], rect['y'] + rect['height'])
-                        except Exception:
-                            return None
-
-                    try:
-                        # ── 좌표 안정화: 스크롤 관성/재렌더링으로 bounds가 밀리는 것을 방지 ──
-                        # bounds가 두 번 연속 동일할 때까지 최대 3회 재측정 (최대 ~1.5초)
-                        bounds = _parse_bounds(target_view)
-                        for _ in range(3):
-                            time.sleep(0.5)
-                            new_bounds = _parse_bounds(target_view)
-                            if new_bounds is None or new_bounds == bounds:
-                                bounds = new_bounds or bounds
-                                break
-                            self._log(f"  ↕ 화면 이동 감지 → 좌표 재측정: {bounds} → {new_bounds}")
-                            bounds = new_bounds
-                        if not bounds:
-                            raise RuntimeError("bounds 파싱 실패")
-
-                        x1, y1, x2, y2 = bounds
-                        tap_x = (x1 + x2) // 2
-                        tap_y = (y1 + y2) // 2
-
-                        # ── 안전 영역 확인: 상하 끝에 몰려있으면 스크롤로 중앙에 위치시킨 후 탭 ──
-                        # 상단 20% 미만 또는 하단 20% 초과 시 잘못된 항목 클릭 방지를 위해 스크롤
-                        try:
-                            scr_h = self.driver.get_window_size()['height']
-                        except Exception:
-                            scr_h = 2400
-                        safe_top    = int(scr_h * 0.20)   # 상단 안전선
-                        safe_bottom = int(scr_h * 0.80)   # 하단 안전선
-
-                        if tap_y < safe_top:
-                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 상단 안전선({safe_top}) 위에 있음 → 살짝 스크롤 다운 후 재탐색")
-                            self._scroll_down(distance_ratio=0.12)
-                            time.sleep(0.8)
-                            return False   # _try_and_verify 에서 재시도하도록 False 반환
-                        elif tap_y > safe_bottom:
-                            self._log(f"  ⚠ 탭 대상 Y={tap_y}가 하단 안전선({safe_bottom}) 아래에 있음 → 살짝 스크롤 업 후 재탐색")
-                            self._scroll_up(distance_ratio=0.12)
-                            time.sleep(0.8)
-                            return False   # _try_and_verify 에서 재시도하도록 False 반환
-
-                        # ── 이름 텍스트(clickable=false) 대신, 같은 블록을 덮고 있는
-                        #    '선택' Button(실제 클릭 가능한 요소)의 중앙으로 탭 좌표 보정 ──
-                        try:
-                            for btn in self.driver.find_elements(
-                                    By.XPATH,
-                                    '//android.widget.Button[@text="선택" or @text="선택됨"]'):
-                                bb = _parse_bounds(btn)
-                                if bb and bb[0] <= tap_x <= bb[2] and bb[1] <= tap_y <= bb[3]:
-                                    tap_x = (bb[0] + bb[2]) // 2
-                                    tap_y = (bb[1] + bb[3]) // 2
-                                    self._log(f"  🎯 이름 블록을 덮는 '선택' 버튼 발견 → 버튼 중앙 ({tap_x}, {tap_y})으로 보정")
-                                    break
-                        except Exception:
-                            pass
-
-                        self._log(f"  👉 부드러운 탭(120ms): ({tap_x}, {tap_y})  [안전 영역 내]")
-                        self._soft_tap(tap_x, tap_y)
-                        time.sleep(3)
+                    # True=탭완료, False=스크롤후재시도, None=이 View 스킵
+                    tapped = self._tap_recipient_card_select(view, recipient_name)
+                    if tapped is True:
                         return True
-                    except Exception as e:
-                        self._log(f"  ⚠ 좌표 클릭 실패: {e}")
-                        if self._safe_click_element(target_view):
-                            time.sleep(3)
-                            return True
+                    if tapped is False:
+                        return False
+                    continue
                 except Exception:
                     continue
         except Exception:
             pass
 
-        # ── 방법 B: 배송지 목록 팝업 형태 (명확한 '선택' 버튼 좌표 클릭) ──
-        # 전략: 전화번호 View를 찾은 후, 동일 블록 내 수취인명과 "선택"(또는 "선택됨") 버튼을 확인하고,
-        # 버튼의 중앙 좌표(bounds 파싱)를 직접 계산하여 터치합니다. (엉뚱한 신규배송지 클릭 방지)
+        # ── 방법 2: 선택 버튼 조상에 목표 이름이 있는 카드만 탭 ──
         try:
-            if phone_digits and len(phone_digits) >= 8:
-                formatted_phone = f"{phone_digits[:3]}-{phone_digits[3:7]}-{phone_digits[7:]}"
-                phone_xpaths = [
-                    f'//*[contains(@text, "{formatted_phone}")]',
-                    f'//*[contains(@text, "{last4}")]'
-                ]
-                for px in phone_xpaths:
-                    try:
-                        p_views = self.driver.find_elements(By.XPATH, px)
-                        for pv in p_views:
-                            try:
-                                pv_text = pv.get_attribute("text") or ""
-                                if "연락처" in pv_text:
-                                    continue
-                                
-                                node = pv
-                                target_button = None
-                                found_name = False
-                                
-                                # 조상 노드를 5단계까지 올라가며 수취인명과 선택버튼 탐색
-                                for _ in range(5):
-                                    try:
-                                        node = node.find_element(By.XPATH, "..")
-                                        els = node.find_elements(By.XPATH, ".//*")
-                                        
-                                        # 이름 검증
-                                        if not found_name:
-                                            area_text = " ".join((e.get_attribute("text") or "") for e in els)
-                                            if recipient_name in area_text:
-                                                found_name = True
-                                        
-                                        # 버튼 탐색
-                                        if not target_button:
-                                            for e in els:
-                                                e_class = e.get_attribute("class") or ""
-                                                e_text = e.get_attribute("text") or ""
-                                                if "Button" in e_class and e_text in ["선택", "선택됨"]:
-                                                    target_button = e
-                                                    break
-                                                    
-                                        if found_name and target_button:
-                                            break
-                                    except Exception:
-                                        break
-                                
-                                if found_name and target_button:
-                                    btn_text = target_button.get_attribute("text")
-                                    bounds_str = target_button.get_attribute("bounds")
-                                    self._log(f"  🎯 팝업 매칭! '{pv_text}' 그룹의 '{btn_text}' 버튼 클릭 시도 (bounds: {bounds_str})")
-                                    
-                                    # 명시적으로 bounds 중앙을 파싱해 클릭
-                                    import re
-                                    match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                                    if match:
-                                        x1, y1, x2, y2 = map(int, match.groups())
-                                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                                        self._log(f"  👉 '{btn_text}' 버튼 정중앙 탭: X={cx}, Y={cy}")
-                                        self.driver.tap([(cx, cy)])
-                                    else:
-                                        self._log("  ⚠ 좌표 파싱 실패 -> 기본 요소 클릭 사용")
-                                        self._click_element_or_parent(target_button)
-                                        
-                                    time.sleep(3)
-                                    return True
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        # ── 방법 B-2: 이름으로 먼저 찾는 폴백 로직 (전화번호가 마스킹된 경우 대비) ──
-        try:
-            name_xpaths = [
-                f'//*[contains(@text, "{recipient_name}")]',
-                f'//*[contains(@content-desc, "{recipient_name}")]',
-            ]
-            for nxp in name_xpaths:
+            sel_views = list(self._iter_address_select_buttons())
+            self._log(f"  ℹ 선택 버튼 후보 {len(sel_views)}개 (이름 매칭 폴백)")
+            for sv in sel_views:
                 try:
-                    name_views = self.driver.find_elements(By.XPATH, nxp)
-                    for nv in name_views:
+                    bb = self._parse_element_bounds(sv)
+                    if not bb or (bb[3] - bb[1]) < 50:
+                        continue
+                    # 조상(최대 4단)에 목표 수취인 이름이 있고, 선택 버튼이 1개뿐인 카드만
+                    matched = False
+                    node = sv
+                    for _ in range(4):
                         try:
-                            nv_text = nv.get_attribute("text") or ""
-                            nv_desc = nv.get_attribute("content-desc") or ""
-
-                            # '배송지명' prefix가 붙은 경우는 방법 A에서 이미 처리했으므로 패스
-                            if "배송지명" in nv_text:
-                                continue
-                            # 수취인명 매칭
-                            if recipient_name not in (nv_text + nv_desc):
-                                continue
-
-                            # 전화번호 검증 (같은 View에 있는지 먼저 확인)
-                            if last4:
-                                combined = nv_text + " " + nv_desc
-                                if last4 in combined:
-                                    # 같은 View에 전화번호도 있으면 바로 클릭
-                                    self._log(f"  🎯 배송지 발견 (이름+전화 동일 View): '{nv_text[:50]}'")
-                                    if self._click_element_or_parent(nv):
-                                        time.sleep(3)
-                                        return True
-                                else:
-                                    # 같은 View에 없으면 부모 영역 탐색
-                                    area_text = ""
-                                    try:
-                                        parent = nv.find_element(By.XPATH, "..")
-                                        gparent = parent.find_element(By.XPATH, "..")
-                                        area_els = gparent.find_elements(By.XPATH, ".//*")
-                                        area_text = " ".join(
-                                            (ae.get_attribute("text") or "") for ae in area_els
-                                        )
-                                    except Exception:
-                                        pass
-                                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
-                                    if "***" in area_text:
-                                        self._log(f"  ℹ 전화번호 마스킹 감지 → 이름만으로 클릭: '{nv_text[:40]}'")
-                                    elif area_text and last4 not in area_text:
-                                        self._log(f"  ⚠ 전화 뒷4자리 '{last4}' 부모 영역에도 없음 → 스킵")
-                                        continue
-
-                            self._log(f"  🎯 배송지 발견: '{nv_text[:50]}'")
-                            if self._click_element_or_parent(nv):
-                                time.sleep(3)
-                                return True
+                            node = node.find_element(By.XPATH, "..")
+                            texts = []
+                            sel_cnt = 0
+                            for e in node.find_elements(By.XPATH, ".//*"):
+                                t = (e.get_attribute("text") or "").strip()
+                                if not t:
+                                    continue
+                                texts.append(t)
+                                if t in ("선택", "선택됨"):
+                                    sel_cnt += 1
+                            if sel_cnt > 1:
+                                break
+                            if self._recipient_name_matches(" ".join(texts), recipient_name):
+                                matched = True
+                                break
                         except Exception:
-                            continue
-                except Exception:
-                    continue
-        except Exception:
-            pass
+                            break
+                    if not matched:
+                        continue
 
-        # ── 방법 C: RadioButton[text="선택"] 을 이름+전화가 매칭된 블록에서 직접 클릭 ──
-        # XML: <android.widget.RadioButton text="선택" resource-id="delivery_option_..."/>
-        try:
-            radio_buttons = self.driver.find_elements(
-                By.XPATH, '//android.widget.RadioButton[@text="선택"]'
-            )
-            for rb in radio_buttons:
-                try:
-                    # RadioButton의 부모 컨테이너에서 이름 탐색
-                    container = rb.find_element(By.XPATH, "..")
-                    container_els = container.find_elements(By.XPATH, ".//*")
-                    container_text = " ".join(
-                        (ce.get_attribute("text") or "") for ce in container_els
+                    cx, cy = (bb[0] + bb[2]) // 2, (bb[1] + bb[3]) // 2
+                    try:
+                        scr_h = self.driver.get_window_size()["height"]
+                    except Exception:
+                        scr_h = 2400
+                    if cy < int(scr_h * 0.10):
+                        if not self._scroll_address_list("down"):
+                            self._scroll_down(distance_ratio=0.15)
+                        time.sleep(0.5)
+                        return False
+                    if cy > int(scr_h * 0.90):
+                        if not self._scroll_address_list("up"):
+                            self._scroll_up(distance_ratio=0.18)
+                        time.sleep(0.5)
+                        return False
+
+                    sv_text = (sv.get_attribute("text") or "").strip()
+                    self._log(
+                        f"  🎯 폴백 매칭! '{recipient_name}' 카드 '{sv_text}' "
+                        f"→ ({cx}, {cy}) bounds={bb}"
                     )
-                    if recipient_name not in container_text:
-                        continue
-                    # 마스킹 감지: '***' 포함 시 전화번호 검증 스킵
-                    if last4 and "***" not in container_text and last4 not in container_text:
-                        self._log(f"  ⚠ RadioButton 블록 전화 '{last4}' 미매칭 → 스킵")
-                        continue
-                    self._log(f"  🎯 RadioButton '선택' 클릭 - 수취인 '{recipient_name}' 매칭")
-                    rb.click()
-                    time.sleep(3)
+                    self._soft_tap(cx, cy)
+                    time.sleep(2.5)
                     return True
                 except Exception:
                     continue
@@ -1981,13 +2391,18 @@ class NaverOrderWorker:
             else:
                 return False
 
-            self._log("  ⏳ 클릭 후 결제창(배송지.png) 복귀 확인 대기 (3초)...")
+            self._log("  ⏳ 클릭 후 결제창 복귀·수취인 확인 대기 (3초)...")
             time.sleep(3.0)
-            is_success = False
 
-            # ── 1차 검증: 배송지 목록 팝업이 실제로 닫혔는지 확인 ──
-            # (팝업이 열려있어도 뒤쪽 결제 화면의 '결제하기' 텍스트가 UI 트리에 남아있어
-            #  기존 텍스트 검증만으로는 오탐이 발생했음)
+            # 성공 조건: 반드시 결제 화면 '배송지명'이 목표 수취인과 일치해야 함.
+            # (팝업만 닫히거나 '결제하기' 텍스트만 보이면 SONG TAO 등 엉뚱한 배송지로
+            #  남아 있어도 Y 기록되던 오탐 방지)
+            def _recipient_confirmed() -> bool:
+                try:
+                    return bool(self._check_current_delivery_address(recipient_name, phone))
+                except Exception:
+                    return False
+
             popup_still_open = False
             try:
                 popup_still_open = bool(self.driver.find_elements(
@@ -1997,51 +2412,54 @@ class NaverOrderWorker:
 
             if popup_still_open:
                 self._log("  ⚠ 배송지 목록 팝업이 아직 열려있음 → 선택 미완료로 판단")
-            else:
-                # ── 2차 검증: 결제 화면 인라인 배송지가 목표 수취인으로 바뀌었는지 확인 ──
-                try:
-                    if self._check_current_delivery_address(recipient_name, phone):
-                        self._log("  ✅ 결제 화면 배송지가 목표 수취인으로 변경 확인됨")
-                        is_success = True
-                except Exception:
-                    pass
-
-                if not is_success:
-                    img_dest = os.path.join(_IMG_DIR, "배송지.png")
-                    if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
-                        is_success = True
-                    elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
-                        is_success = True
-                    else:
-                        try:
-                            if self.driver.find_elements(By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
-                                is_success = True
-                        except Exception:
-                            pass
-
-            if is_success:
+            elif _recipient_confirmed():
+                self._log("  ✅ 결제 화면 배송지가 목표 수취인으로 변경 확인됨")
                 self._log("  ✅ 배송지 선택 성공 및 결제창 복귀 확인됨")
                 return True
             else:
+                # 결제창으로 돌아간 것처럼 보여도 수취인이 다르면 실패
+                try:
+                    views = self.driver.find_elements(By.XPATH, '//*[contains(@text, "배송지명")]')
+                    shown = [(v.get_attribute("text") or "")[:60] for v in views[:5]]
+                    if shown:
+                        self._log(f"  ⚠ 목표 수취인 '{recipient_name}' 미확인. 현재 배송지명: {shown}")
+                except Exception:
+                    pass
+                back_on_pay = False
+                try:
+                    img_dest = os.path.join(_IMG_DIR, "배송지.png")
+                    if os.path.exists(img_dest) and self._find_image_coords(img_dest, threshold=0.75):
+                        back_on_pay = True
+                    elif os.path.exists(IMG_DELIVERY_INFO) and self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.75):
+                        back_on_pay = True
+                    elif self.driver.find_elements(
+                            By.XPATH, '//*[contains(@text, "결제하기") or contains(@text, "주문하기")]'):
+                        back_on_pay = True
+                except Exception:
+                    pass
+                if back_on_pay:
+                    self._log(
+                        f"  ❌ 결제창 복귀는 됐으나 수취인 '{recipient_name}' 미매칭 → 오선택으로 실패 처리"
+                    )
+                    return False
+
                 self._log("  ⚠ 클릭을 시도했으나 결제창 복귀 확인 실패 (요소가 뒤쪽에 가려진 것으로 의심)")
                 self._log("  👉 살짝 스크롤 업해서 요소를 앞단으로 노출 후 재탐색/클릭 시도합니다.")
                 for _ in range(2):
                     self._scroll_up(distance_ratio=0.12)
                     time.sleep(0.8)
-                
+
                 self._log("  📋 스크롤 업 후 수취인 재탐색...")
+                if _recipient_confirmed():
+                    self._log("  ✅ 스크롤 후 결제창 배송지명 매칭 → 선택 완료")
+                    return True
                 if self._find_recipient_on_screen(recipient_name, phone_digits):
                     time.sleep(3.0)
-                    # 재클릭 후에도 팝업이 닫혔는지 최종 확인
-                    try:
-                        if not self.driver.find_elements(
-                                By.XPATH, '//android.widget.Button[@text="선택"]'):
-                            self._log("  ✅ 재클릭 후 배송지 목록 닫힘 확인")
-                            return True
-                        self._log("  ⚠ 재클릭 후에도 배송지 목록이 열려있음 → 실패 처리 (스크롤 후 재시도)")
-                        return False
-                    except Exception:
+                    if _recipient_confirmed():
+                        self._log("  ✅ 재탐색 후 배송지명 매칭 확인")
                         return True
+                    self._log("  ⚠ 재클릭 후에도 목표 수취인 미확인 → 실패 처리 (스크롤 후 재시도)")
+                    return False
             return False
 
         # ── 1단계: 스크롤 없이 현재 화면에서 먼저 탐색 ──
@@ -2073,7 +2491,8 @@ class NaverOrderWorker:
         # ── 2단계: 없으면 스크롤하며 재탐색 ──
         for scroll_cnt in range(1, scroll_max + 1):
             self._log(f"  ⬇ 배송지 목록 스크롤 ({scroll_cnt}/{scroll_max})")
-            self._scroll_down()
+            if not self._scroll_address_list("down"):
+                self._scroll_down()
             time.sleep(1.0)
 
             self._log(f"  📋 스크롤 후 수취인 재탐색...")
@@ -2088,27 +2507,74 @@ class NaverOrderWorker:
     def _handle_delivery_memo(self) -> None:
         """
         [단계 16.5] 배송지 선택 직후 배송메모 처리:
-        '배송메모 선택' 팝업이 떠 있는 경우에만 '선택 안 함'(선택안함.png)을
-        이미지 인식으로 찾아 1회 클릭합니다.
-        (배송메모 필드를 직접 클릭해서 팝업을 여는 동작은 하지 않음)
+        '배송메모 선택' 팝업이 떠 있는 경우 '선택 안 함'을 찾아 클릭.
+        - 선택안함.png / 선택안함2.png 직접 인식 → 바로 클릭
+        - 배송메모선택2.png(팝업 타이틀) 인식 → 선택안함 찾아 클릭
         """
         self._set_status("배송메모 처리")
         self._log("🔍 [배송메모] '선택 안 함' 이미지 인식 시도...")
         time.sleep(1.0)
 
-        if not os.path.exists(IMG_MEMO_NO_SELECT):
-            self._log("  ℹ [배송메모] 선택안함.png 템플릿 없음 → 건너뛰고 다음 작업 진행")
+        # 인식할 '선택 안 함' 이미지 목록
+        no_select_imgs = []
+        for path, label in [
+            (IMG_MEMO_NO_SELECT, "선택안함"),
+            (IMG_MEMO_NO_SELECT2, "선택안함2"),
+        ]:
+            if os.path.exists(path):
+                no_select_imgs.append((path, label))
+
+        # 배송메모 팝업 타이틀 이미지
+        memo_popup_imgs = []
+        for path, label in [
+            (IMG_DELIVERY_MEMO, "배송메모"),
+            (IMG_DELIVERY_MEMO2, "배송메모선택2"),
+        ]:
+            if os.path.exists(path):
+                memo_popup_imgs.append((path, label))
+
+        if not no_select_imgs and not memo_popup_imgs:
+            self._log("  ℹ [배송메모] 템플릿 이미지 없음 → 건너뛰고 다음 작업 진행")
             return
 
-        # '선택 안 함' 이미지 인식 (최대 3회 재시도)
         for ns_try in range(1, 4):
-            ns_coords = self._find_image_coords(IMG_MEMO_NO_SELECT, threshold=0.60)
-            if ns_coords:
-                self._log(f"  🎯 [선택 안 함] 이미지 발견! 좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭")
-                ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
-                time.sleep(1.2)
-                self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
+            if self._stop_event.is_set():
                 return
+
+            # 1) '선택 안 함' 직접 인식 시도 (선택안함.png, 선택안함2.png)
+            for path, label in no_select_imgs:
+                ns_coords = self._find_image_coords(path, threshold=0.60)
+                if ns_coords:
+                    self._log(
+                        f"  🎯 [{label}] 이미지 발견! "
+                        f"좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭"
+                    )
+                    ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
+                    time.sleep(1.2)
+                    self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
+                    return
+
+            # 2) 배송메모 팝업 타이틀 인식 (배송메모.png, 배송메모선택2.png)
+            #    팝업이 열려있으면 → 아래쪽에 '선택 안 함' 항목이 있으므로
+            #    팝업 y좌표 아래 영역을 탭하여 닫기
+            for path, label in memo_popup_imgs:
+                memo_coords = self._find_image_coords(path, threshold=0.60)
+                if memo_coords:
+                    self._log(
+                        f"  🎯 [{label}] 팝업 감지! "
+                        f"좌표 ({memo_coords[0]}, {memo_coords[1]})"
+                    )
+                    # 팝업 바깥(상단)을 탭하여 닫기
+                    w, h = self._get_window_size()
+                    close_y = max(50, memo_coords[1] - int(h * 0.15))
+                    self._log(
+                        f"  👉 [배송메모] 팝업 닫기 탭 ({w // 2}, {close_y})"
+                    )
+                    ah.tap_by_coords(self.driver, w // 2, close_y, self._log)
+                    time.sleep(1.2)
+                    self._log("✅ [배송메모] 팝업 닫기 완료 → 다음 작업 진행")
+                    return
+
             if ns_try < 3:
                 time.sleep(1.0)
 
@@ -2214,11 +2680,19 @@ class NaverOrderWorker:
     # ─── 단계 19: 비밀번호 입력 ──────────────────────────────────────────────
 
     def _find_digit_coords(self, img_path: str, min_y: int,
-                           screenshot_png: Optional[bytes] = None) -> Optional[tuple]:
+                           screenshot_png: Optional[bytes] = None,
+                           max_y: Optional[int] = None,
+                           min_x: Optional[int] = None,
+                           max_x: Optional[int] = None,
+                           prefer_xy: Optional[tuple] = None,
+                           prefer_radius: int = 220,
+                           min_score: float = 0.50) -> Optional[tuple]:
         """
         숫자 키패드 이미지 인식 (경량화 버전).
         - 스케일 20단계 (0.6~1.8), UI 과부하 방지
         - screenshot_png를 외부에서 주입하면 재캡처 생략 (재시도 성능 개선)
+        - prefer_xy가 있으면 예상 좌표 근처 매칭을 우선
+        - min_x/max_x/min_y/max_y 로 ROI 제한 (현대비번 커팅 영역)
         """
         try:
             import cv2
@@ -2240,6 +2714,12 @@ class NaverOrderWorker:
             masked = screen_gray.copy()
             if min_y > 0:
                 masked[:min_y, :] = 0
+            if max_y is not None and 0 < max_y < screen_h:
+                masked[max_y:, :] = 0
+            if min_x is not None and min_x > 0:
+                masked[:, :min_x] = 0
+            if max_x is not None and 0 < max_x < screen_w:
+                masked[:, max_x:] = 0
 
             template_bgr = cv2.imdecode(
                 np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR
@@ -2250,6 +2730,7 @@ class NaverOrderWorker:
             t_h, t_w = template_gray.shape
 
             best_score, best_loc, best_tw, best_th = -1, None, t_w, t_h
+            best_near_score, best_near_loc, best_near_tw, best_near_th = -1, None, t_w, t_h
             # 키패드 버튼은 크기 편차가 작으므로 0.6~1.8 범위, 20단계만 탐색
             for scale in np.linspace(0.6, 1.8, 20):
                 nw = int(t_w * scale)
@@ -2261,14 +2742,52 @@ class NaverOrderWorker:
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
                 if max_val > best_score:
                     best_score, best_loc, best_tw, best_th = max_val, max_loc, nw, nh
+                if prefer_xy is not None:
+                    # 예상 좌표 주변 결과맵에서 최고점 탐색
+                    px, py = prefer_xy
+                    # result 좌표 = 템플릿 좌상단 → 중심 기준 역산
+                    rx = int(px - nw // 2)
+                    ry = int(py - nh // 2)
+                    rh, rw = result.shape
+                    pad = max(40, prefer_radius // 2)
+                    x1 = max(0, rx - pad)
+                    y1 = max(0, ry - pad)
+                    x2 = min(rw, rx + pad + 1)
+                    y2 = min(rh, ry + pad + 1)
+                    if x2 > x1 and y2 > y1:
+                        region = result[y1:y2, x1:x2]
+                        _, near_val, _, near_loc = cv2.minMaxLoc(region)
+                        abs_loc = (near_loc[0] + x1, near_loc[1] + y1)
+                        if near_val > best_near_score:
+                            best_near_score = near_val
+                            best_near_loc = abs_loc
+                            best_near_tw, best_near_th = nw, nh
 
-            if best_score >= 0.50 and best_loc is not None:
+            # 예상 좌표 근처 매칭이 충분하면 그쪽 우선
+            if prefer_xy is not None and best_near_loc is not None and best_near_score >= max(0.45, min_score - 0.08):
+                cx = best_near_loc[0] + best_near_tw // 2
+                cy = best_near_loc[1] + best_near_th // 2
+                self._log(
+                    f"    🎯 [숫자인식] 점수: {best_near_score:.4f} → 좌표 ({cx}, {cy})"
+                    f" (예상근처 {prefer_xy})"
+                )
+                return cx, cy
+
+            if best_score >= min_score and best_loc is not None:
                 cx = best_loc[0] + best_tw // 2
                 cy = best_loc[1] + best_th // 2
+                if prefer_xy is not None:
+                    dist = ((cx - prefer_xy[0]) ** 2 + (cy - prefer_xy[1]) ** 2) ** 0.5
+                    if dist > prefer_radius * 1.6:
+                        self._log(
+                            f"    ↩ [숫자인식] 후보 거부 ({cx},{cy}) "
+                            f"점수 {best_score:.4f} — 예상 {prefer_xy}과 거리 {dist:.0f}"
+                        )
+                        return None
                 self._log(f"    🎯 [숫자인식] 점수: {best_score:.4f} → 좌표 ({cx}, {cy})")
                 return cx, cy
 
-            self._log(f"    ↩ [숫자인식] 미발견 (점수 {best_score:.4f} < 0.50)")
+            self._log(f"    ↩ [숫자인식] 미발견 (점수 {best_score:.4f} < {min_score:.2f})")
             return None
         except Exception as e:
             self._log(f"    [숫자인식 오류] {e}")
@@ -2494,11 +3013,12 @@ class NaverOrderWorker:
         
     def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15,
                                      min_x: Optional[int] = None, max_x: Optional[int] = None,
-                                     min_y: Optional[int] = None, max_y: Optional[int] = None) -> bool:
-        """여러 이미지 중 하나라도 발견되면 미세 스크롤 조정 후 클릭"""
+                                     min_y: Optional[int] = None, max_y: Optional[int] = None,
+                                     allow_scroll_up: bool = False) -> bool:
+        """여러 이미지 중 하나라도 발견되면 클릭 (기본 allow_scroll_up=False 로 위로 스크롤 방지)"""
         names_str = " / ".join(n for _, n in images)
         self._set_status(f"{names_str} 탐색 중")
-        self._log(f"🔍 [{names_str}] 중 하나 탐색 시작 (미세 스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
+        self._log(f"🔍 [{names_str}] 중 하나 탐색 시작 (스크롤 탐색, 최대 {max_scroll_attempts}회 시도)")
 
         w_h = 2400
         try:
@@ -2507,7 +3027,7 @@ class NaverOrderWorker:
             pass
 
         mid_top    = int(w_h * 0.35)
-        mid_bottom = int(w_h * 0.65)
+        mid_bottom = int(w_h * 0.70)
 
         for attempt in range(1, max_scroll_attempts + 1):
             for img_path, name in images:
@@ -2515,17 +3035,27 @@ class NaverOrderWorker:
                     coords = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                     if coords:
                         if coords[1] < mid_top:
-                            self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
-                            self._scroll_up(distance_ratio=0.18)
+                            if allow_scroll_up:
+                                self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
+                                self._scroll_up(distance_ratio=0.18)
+                                time.sleep(1.0)
+                                adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
+                                if adj:
+                                    coords = adj
+                                else:
+                                    continue
+                            else:
+                                self._log(f"  ⚠ {name} 상단 치우침(y={coords[1]} < {mid_top}) -> 위로 스크롤 금지/오탐 방지 (무시하고 아래로 계속 탐색)")
+                                continue
+                        elif coords[1] > int(w_h * 0.94):
+                            self._log(f"  📌 {name} 하단 끝 치우침(y={coords[1]}) -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.12)
                             time.sleep(1.0)
                             adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
-                            if adj: coords = adj
-                        elif coords[1] > mid_bottom:
-                            self._log(f"  📌 {name} 하단 치우침(y={coords[1]}) -> 미세 스크롤 다운")
-                            self._scroll_down(distance_ratio=0.18)
-                            time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
-                            if adj: coords = adj
+                            if adj:
+                                coords = adj
+                            else:
+                                continue
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -2537,6 +3067,51 @@ class NaverOrderWorker:
             time.sleep(0.8)
         self._log(f"  ❌ [{names_str}] 버튼 모두 탐색 실패")
         return False
+
+    def _click_do_pay_button_down_only(self, max_scroll_attempts: int = 8) -> bool:
+        """
+        [결재하기 전용] 카드 선택 후 결재하기 버튼을 아래 방향으로만 탐색하여 클릭.
+        - 화면 상단 45% 오탐 제외 (min_y = int(h * 0.45))
+        - 위로 스크롤 절대 금지 (allow_scroll_up=False)
+        - 우측 여백 안전 스크롤 사용으로 화면 내 요소 클릭 방지
+        """
+        self._set_status("결재하기 탐색 중")
+        self._log(f"🔍 [결재하기] 탐색 시작 (위로 스크롤 금지, 아래로만 최대 {max_scroll_attempts}회 탐색)")
+
+        w, h = self._get_window_size()
+        min_y = int(h * 0.45)  # 화면 상단 45%는 결재하기 위치 불가 (오탐 원천 차단)
+
+        for attempt in range(1, max_scroll_attempts + 1):
+            for img_path, name in IMG_HYUNDAI_DO_PAY:
+                if os.path.exists(img_path):
+                    coords = self._find_image_coords(img_path, threshold=0.70, min_y=min_y)
+                    if coords:
+                        cx, cy = coords
+                        if cy < min_y:
+                            self._log(f"  ⚠ {name} 상단 영역(y={cy} < {min_y}) 감지 -> 결재하기 위치 부적합(오탐 방지), 무시")
+                            continue
+
+                        if cy > int(h * 0.95):
+                            self._log(f"  📌 {name} 하단 끝(y={cy}) -> 미세 스크롤 다운")
+                            self._scroll_down(distance_ratio=0.10)
+                            time.sleep(1.0)
+                            adj = self._find_image_coords(img_path, threshold=0.70, min_y=min_y)
+                            if adj:
+                                cx, cy = adj
+                            else:
+                                continue
+
+                        self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({cx}, {cy}) -> 결재하기 탭 클릭")
+                        ah.tap_by_coords(self.driver, cx, cy, self._log)
+                        time.sleep(3.0)
+                        return True
+
+            self._log(f"  ⬇ [결재하기] 미발견 -> 밑으로 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.20)
+            time.sleep(0.8)
+
+        self._log("  ⚠ [결재하기] 이미지 모두 미발견 → XPath / 하단 고정바 폴백 시도")
+        return self._click_pay_button()
 
     def _click_image_basic(self, img_path: str, name: str, threshold: float = 0.82) -> bool:
         """지정된 이미지를 스크롤 없이 한 번만 찾아서 클릭 (또는 짧게 대기하며 재시도)"""
@@ -2552,6 +3127,179 @@ class NaverOrderWorker:
             time.sleep(1)
         self._log(f"  ❌ {name} 버튼 탐색 실패 (스크롤 없음)")
         return False
+
+    def _click_any_image_basic(self, images: list, threshold: float = 0.70,
+                               attempts: int = 5, wait_after: float = 2.0,
+                               min_y: Optional[int] = None,
+                               max_y: Optional[int] = None,
+                               min_x: Optional[int] = None,
+                               max_x: Optional[int] = None) -> bool:
+        """여러 이미지 중 하나라도 발견되면 스크롤 없이 클릭."""
+        names_str = " / ".join(n for _, n in images)
+        self._set_status(f"{names_str} 탐색 중")
+        valid = [(p, n) for p, n in images if os.path.exists(p)]
+        if not valid:
+            self._log(f"  ❌ [{names_str}] 템플릿 파일 없음")
+            return False
+        for attempt in range(1, attempts + 1):
+            for img_path, name in valid:
+                coords = self._find_image_coords(
+                    img_path, threshold=threshold,
+                    min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+                )
+                if coords:
+                    self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(wait_after)
+                    return True
+            if attempt < attempts:
+                time.sleep(1.0)
+        self._log(f"  ❌ [{names_str}] 버튼 탐색 실패 (스크롤 없음, {attempts}회)")
+        return False
+
+    def _click_hyundai_safe_confirm(self, attempts: int = 6, threshold: float = 0.60,
+                                    force_tap: bool = False) -> bool:
+        """
+        안전결재3 화면 기준: 중앙 화이트 팝업 하단 '확인' 클릭.
+        기대 좌표 ≈ (544, 1253). 상단(y=316) 오인 차단.
+        """
+        w, h = 1080, 2400
+        try:
+            size = self.driver.get_window_size()
+            w, h = size["width"], size["height"]
+        except Exception:
+            pass
+
+        # 팝업 확인 버튼 ROI (안전결재3 기준 중하단)
+        min_y = int(h * 0.42)
+        max_y = int(h * 0.72)
+        min_x = int(w * 0.20)
+        max_x = int(w * 0.80)
+        expect_x, expect_y = w // 2, int(h * 0.52)  # ≈544,1250 @1080x2400
+
+        # 1) 팝업 본체(안전결재/안전한3) bbox → 하단 중앙 탭 (확인 위치)
+        for img_path, name in IMG_HYUNDAI_SAFE_POPUP_BODY:
+            if not os.path.exists(img_path):
+                continue
+            box = self._find_image_bbox(
+                img_path, threshold=0.50, save_crop=True, crop_label=f"팝업_{name}"
+            )
+            if not box:
+                continue
+            # 확인은 모달 하단 ~85~92% 지점
+            tap_x = (box["x1"] + box["x2"]) // 2
+            tap_y = int(box["y1"] + (box["y2"] - box["y1"]) * 0.88)
+            if not (min_y - int(h * 0.05) <= tap_y <= max_y + int(h * 0.08)):
+                # bbox가 전체화면(안전결재 축소본)일 수 있음 → 기대좌표 사용
+                tap_x, tap_y = expect_x, expect_y
+            self._log(
+                f"  🎯 [안전확인] 팝업본체 '{name}' bbox → 확인 탭 ({tap_x},{tap_y})"
+            )
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            time.sleep(2.0)
+            return True
+
+        # 2) 안전확인1~3 이미지 (중하단 ROI만)
+        self._log(
+            f"  🔍 [안전확인] 중하단 ROI 탐색 "
+            f"x={min_x}~{max_x} y={min_y}~{max_y} (기대≈{expect_x},{expect_y})"
+        )
+        if self._click_any_image_basic(
+            IMG_HYUNDAI_SAFE_CONFIRM,
+            threshold=threshold,
+            attempts=attempts,
+            wait_after=2.0,
+            min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+        ):
+            return True
+
+        # 3) XPath: 팝업 문구 근처 / 중하단 '확인'
+        for xp in SAFE_AUTH_TEXT_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1):
+                    # 같은 계층/근처의 확인 버튼
+                    parent_xp = xp + '/ancestor::*[1]//*[contains(@text,"확인")]'
+                    for c_xp in [parent_xp, '//android.widget.Button[contains(@text,"확인")]',
+                                 '//*[contains(@text,"확인")]']:
+                        try:
+                            els = self.driver.find_elements(By.XPATH, c_xp)
+                            for el in els:
+                                loc = el.location
+                                sz = el.size
+                                cx = int(loc["x"] + sz["width"] / 2)
+                                cy = int(loc["y"] + sz["height"] / 2)
+                                if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+                                    self._log(f"  ↩ [안전확인] XPath 거부 ({cx},{cy})")
+                                    continue
+                                if self._safe_click_element(el):
+                                    self._log(f"  ✅ [안전확인] XPath 클릭 ({cx},{cy})")
+                                    time.sleep(2.0)
+                                    return True
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        # 4) 팝업이 확인된 경우에만 안전결재3 기준 강제 탭
+        if force_tap:
+            self._log(f"  ⚠ [안전확인] 인식 실패 → 안전결재3 기준 강제 탭 ({expect_x},{expect_y})")
+            ah.tap_by_coords(self.driver, expect_x, expect_y, self._log)
+            time.sleep(2.0)
+            return True
+        return False
+
+    def _hyundai_safe_detect_visible(self, threshold: float = 0.60) -> Optional[str]:
+        """안전한/안전결재/추가인증 또는 텍스트로 팝업 감지."""
+        for img_path, name in IMG_HYUNDAI_SAFE_DETECT:
+            if not os.path.exists(img_path):
+                continue
+            coords = self._find_image_coords(img_path, threshold=threshold)
+            if coords:
+                return name
+        # 전체화면 참고 템플릿
+        if os.path.exists(IMG_HYUNDAI_SAFE_POPUP_FULL):
+            box = self._find_image_bbox(
+                IMG_HYUNDAI_SAFE_POPUP_FULL, threshold=0.40, save_crop=False, crop_label="안전결재3"
+            )
+            if box and box.get("score", 0) >= 0.40:
+                return "안전결재3"
+        # 텍스트
+        for xp in SAFE_AUTH_TEXT_XPATHS:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    return "텍스트팝업"
+            except Exception:
+                continue
+        return None
+
+    def _handle_hyundai_safe_auth_popup(self) -> bool:
+        """
+        [22-10 이후] 현대결제하기 → 3초 대기 →
+        안전결재3 팝업 확인 1회 클릭 후 바로 현대카드비번 단계로 진행.
+        (잔존 감지/재시도 생략 — 안전한2 상단 오인으로 루프 방지)
+        """
+        self._log("  ⏳ [안전인증] 현대결제하기 후 3초 대기...")
+        time.sleep(3.0)
+
+        detect_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_DETECT) + " / 안전결재3"
+        confirm_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_CONFIRM)
+
+        detected = self._hyundai_safe_detect_visible(threshold=0.55)
+        if detected:
+            self._log(f"  🔒 [안전인증] 팝업 감지: '{detected}' → 확인 클릭")
+        else:
+            self._log(f"  🔍 [안전인증] 감지 미매칭 ({detect_names}) → 안전확인 1회 시도")
+
+        self._log(f"  🔍 [안전인증] 팝업닫기: {confirm_names}")
+        clicked = self._click_hyundai_safe_confirm(
+            attempts=5, threshold=0.58, force_tap=bool(detected)
+        )
+        if clicked:
+            self._log("  ✅ [안전인증] 확인 클릭 완료 → 현대카드비번 단계로 진행 (잔존검사 패스)")
+        else:
+            self._log("  ℹ [안전인증] 확인 미클릭/팝업없음 → 현대카드비번 단계로 진행")
+        time.sleep(1.0)
+        return True
 
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 8) -> bool:
         """
@@ -2628,7 +3376,7 @@ class NaverOrderWorker:
         self._log(f"  ⚠ 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과). 무시하고 계속 진행합니다.")
         return True
 
-    def _click_other_pay_button(self, max_scroll_attempts: int = 8) -> bool:
+    def _click_other_pay_button(self, max_scroll_attempts: int = 20) -> bool:
         """
         다른결재 버튼을 3중 인식 방식으로 탐색 후 화면 중앙에 안착시켜 클릭합니다.
         0순위: 최우선 XPath (btn_payment_method_accordion 등)
@@ -2669,13 +3417,13 @@ class NaverOrderWorker:
 
         def _tap_coords_and_return(cx, cy, label):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 스크롤 업")
-                self._scroll_up(distance_ratio=0.12)
+                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 안전스크롤 업")
+                self._scroll_up(distance_ratio=0.08)
                 time.sleep(1.0)
                 return False
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 스크롤 다운")
-                self._scroll_down(distance_ratio=0.12)
+                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 안전스크롤 다운")
+                self._scroll_down_safe(distance_ratio=0.08)
                 time.sleep(1.0)
                 return False
 
@@ -2701,10 +3449,10 @@ class NaverOrderWorker:
             return True
 
         for attempt in range(1, max_scroll_attempts + 1):
-            # ── 이미지 매칭 전용 탐색 (threshold 0.72) ──
+            # ── 이미지 매칭 (threshold 0.55: 로그상 0.50~0.61대 후보 허용) ──
             found_and_handled = False
             for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.72)
+                coords = self._find_image_coords(img_path, threshold=0.55)
                 if coords:
                     res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
                     if res is True:
@@ -2716,9 +3464,10 @@ class NaverOrderWorker:
             if found_and_handled:
                 continue
 
-            self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.20)
-            time.sleep(1.0)
+            # 결제화면: 짧은·느린 안전스크롤 (앱 창밖 오버스크롤 방지)
+            self._log(f"  ⬇ [다른결재] 이미지 미발견 -> 안전스크롤 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down_safe(distance_ratio=0.14)
+            time.sleep(0.6)
 
         self._log("  ❌ [다른결재 버튼] 이미지 매칭 탐색 실패")
         return False
@@ -2812,8 +3561,25 @@ class NaverOrderWorker:
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
         self._ocr_payment_screen(label="무통장결제_화면진입")
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
             
-        if not self._click_other_pay_button(max_scroll_attempts=8):
+        if not self._click_other_pay_button(max_scroll_attempts=20):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
                 self._scroll_up(distance_ratio=0.5)
@@ -3124,6 +3890,1467 @@ class NaverOrderWorker:
             self._log("  ℹ 비밀번호 없음 → 건너뜀")
         return True
 
+    def _normalize_payment_method(self, method: str) -> str:
+        """결제방식 문자열 정규화 (공백 제거)."""
+        return (method or "").replace(" ", "").strip()
+
+    def _is_bank_transfer_payment(self, method: str) -> bool:
+        """결제방식: 무통장 / 무통장입금 / 무통장 입금 등."""
+        m = self._normalize_payment_method(method)
+        return "무통장" in m
+
+    def _is_hyundai_card_payment(self, method: str) -> bool:
+        """결제방식: 현대카드 / 현대카드(591*) / 현대하드 등."""
+        if self._is_kb_card_payment(method):
+            return False
+        m = self._normalize_payment_method(method)
+        return any(k in m for k in ("현대카드", "현대하드")) or m == "현대"
+
+    def _is_kb_card_payment(self, method: str) -> bool:
+        """결제방식: 국민카드 / 국민카드(2023) / kb국민 / 국만카드."""
+        m = self._normalize_payment_method(method)
+        m_lower = m.lower()
+        if any(k in m for k in ("국민카드", "국만카드", "KB국민", "kb국민")):
+            return True
+        if m_lower in ("kb", "kb국민카드") or m == "국민":
+            return True
+        return False
+
+    def _is_point_payment(self, method: str) -> bool:
+        """결제방식: 페이포인트 / 포인트."""
+        m = self._normalize_payment_method(method)
+        return ("페이포인트" in m) or ("포인트" in m)
+
+    def _is_money_payment(self, method: str) -> bool:
+        """결제방식: 머니."""
+        m = self._normalize_payment_method(method)
+        return m == "머니" or "머니" in m
+
+    def _ensure_normal_pay_checked(self) -> bool:
+        """[22-2] 일반결재가 체크되어 있어야 함. 아니면 클릭."""
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ [22-2] '일반결재체크' 상태 확인")
+            return True
+        normal_pay_images = [
+            (IMG_NORMAL_PAY, "일반결재"),
+            (IMG_NORMAL_PAY3, "일반결재3"),
+        ]
+        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
+            self._log("✅ [22-2] 일반결재 클릭 완료")
+            return True
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ [22-2] '일반결재체크' 발견")
+            return True
+        self._log("❌ [22-2] 일반결재 미확인")
+        return False
+
+    def _card_placeholder_visible(self) -> bool:
+        """드롭다운이 아직 '카드를 선택해주세요' 상태인지."""
+        xpaths = [
+            '//*[contains(@text,"카드를 선택해주세요")]',
+            '//*[contains(@content-desc,"카드를 선택해주세요")]',
+            '//*[contains(@text,"카드를 선택")]',
+            '//*[contains(@content-desc,"카드를 선택")]',
+        ]
+        for xp in xpaths:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _hyundai_card_selected(self) -> bool:
+        """카드 필드에 현대가 선택되었는지 (플레이스홀더가 사라진 상태)."""
+        if self._card_placeholder_visible():
+            return False
+        xpaths = [
+            '//*[contains(@text,"현대카드")]',
+            '//*[contains(@text,"현대")]',
+        ]
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    t = (el.get_attribute("text") or "").strip()
+                    if "현대" in t and "선택해주세요" not in t:
+                        bb = self._parse_element_bounds(el)
+                        if not bb:
+                            continue
+                        cy = (bb[1] + bb[3]) // 2
+                        # 상단 헤더(오탐) 제외
+                        if cy < 280:
+                            continue
+                        self._log(f"  ✅ 현대카드 선택 확인: '{t[:30]}' y={cy}")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _open_card_select_dropdown(self, brand: str = "hyundai") -> bool:
+        """[22-3] '카드를 선택해주세요' 드롭다운을 연다. brand=hyundai|kb"""
+        self._set_status("카드 선택 드롭다운")
+        self._log(f"🔍 [22-3] 카드 선택 드롭다운 열기 (brand={brand})")
+        if brand == "kb":
+            if self._kb_card_selected():
+                self._log("  ℹ 이미 국민카드(KB)가 선택되어 있음")
+                return True
+        elif self._hyundai_card_selected():
+            self._log("  ℹ 이미 현대카드가 선택되어 있음")
+            return True
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()["height"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        xpaths = [
+            '//*[contains(@text,"카드를 선택해주세요")]',
+            '//*[contains(@content-desc,"카드를 선택해주세요")]',
+            '//android.widget.Button[contains(@text,"카드를 선택")]',
+            '//android.widget.Button[contains(@content-desc,"카드를 선택")]',
+            '//android.view.View[contains(@text,"카드를 선택")]',
+            '//android.view.View[contains(@content-desc,"카드를 선택")]',
+        ]
+
+        for attempt in range(1, 7):
+            clicked = False
+            for xp in xpaths:
+                try:
+                    els = self.driver.find_elements(By.XPATH, xp)
+                except Exception:
+                    continue
+                for el in els:
+                    bb = self._parse_element_bounds(el)
+                    if not bb:
+                        continue
+                    cy = (bb[1] + bb[3]) // 2
+                    if not (min_y <= cy <= max_y):
+                        continue
+                    cx = (bb[0] + bb[2]) // 2
+                    self._log(f"  🎯 [22-3] XPath 드롭다운 탭 ({cx}, {cy})")
+                    self._soft_tap(cx, cy)
+                    clicked = True
+                    break
+                if clicked:
+                    break
+
+            if not clicked:
+                if self._click_any_image_with_scroll(
+                    IMG_HYUNDAI_CARDS, threshold=0.60, max_scroll_attempts=3,
+                    min_y=min_y, max_y=max_y,
+                ):
+                    clicked = True
+
+            if clicked:
+                time.sleep(1.8)
+                if brand == "kb":
+                    if self._find_kb_list_target():
+                        self._log("  ✅ [22-3] 카드 목록에서 KB국민 항목 감지")
+                        return True
+                    self._log("  ℹ [22-3] 드롭다운 클릭 완료 → 목록에서 KB국민 탐색")
+                else:
+                    if self._find_hyundai_list_target():
+                        self._log("  ✅ [22-3] 카드 목록에서 현대 항목 감지")
+                        return True
+                    self._log("  ℹ [22-3] 드롭다운 클릭 완료 → 목록에서 현대 탐색")
+                return True
+            else:
+                self._log(f"  ⬇ [22-3] 드롭다운 미발견 → 스크롤 ({attempt}/6)")
+                self._scroll_down_safe(distance_ratio=0.10)
+                time.sleep(0.6)
+
+        self._log("❌ [22-3] 카드 선택 드롭다운을 열지 못함")
+        return False
+
+    def _kb_card_selected(self) -> bool:
+        """카드 필드에 KB국민이 선택되었는지."""
+        if self._card_placeholder_visible():
+            return False
+        xpaths = [
+            '//*[contains(@text,"KB국민")]',
+            '//*[contains(@text,"kb국민")]',
+            '//*[contains(@text,"국민카드")]',
+        ]
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    t = (el.get_attribute("text") or "").strip()
+                    if not t:
+                        continue
+                    if "선택해주세요" in t:
+                        continue
+                    if any(k in t for k in ("KB국민", "kb국민", "국민카드", "국민")):
+                        bb = self._parse_element_bounds(el)
+                        if not bb:
+                            continue
+                        cy = (bb[1] + bb[3]) // 2
+                        if cy < 280:
+                            continue
+                        self._log(f"  ✅ 국민카드 선택 확인: '{t[:30]}' y={cy}")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _find_kb_list_target(self):
+        """카드 목록에서 클릭할 KB국민 항목 (x,y) 또는 None."""
+        w_h, w_w = 2400, 1080
+        try:
+            sz = self.driver.get_window_size()
+            w_h, w_w = sz["height"], sz["width"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        xpaths = [
+            '//*[contains(@text,"KB국민")]',
+            '//*[contains(@text,"kb국민")]',
+            '//*[contains(@text,"국민카드")]',
+            '//android.widget.TextView[contains(@text,"국민")]',
+            '//android.view.View[contains(@text,"국민")]',
+        ]
+        best = None
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    t = (el.get_attribute("text") or "").strip()
+                    if "선택해주세요" in t:
+                        continue
+                    if not any(k in t for k in ("KB국민", "kb국민", "국민카드", "국민")):
+                        continue
+                    if "현대" in t:
+                        continue
+                    bb = self._parse_element_bounds(el)
+                    if not bb:
+                        continue
+                    cy = (bb[1] + bb[3]) // 2
+                    cx = (bb[0] + bb[2]) // 2
+                    if not (min_y <= cy <= max_y):
+                        continue
+                    # KB국민 우선
+                    score = 2 if ("KB" in t or "kb" in t.lower()) else 1
+                    cand = (score, cx, cy, t)
+                    if best is None or cand[0] > best[0]:
+                        best = cand
+                except Exception:
+                    continue
+        if best:
+            return best[1], best[2]
+
+        for img_path, name in IMG_KB_BRAND:
+            if not os.path.exists(img_path):
+                continue
+            coords = self._find_image_coords(
+                img_path, threshold=0.70, min_y=min_y, max_y=max_y
+            )
+            if coords:
+                self._log(f"  🎯 KB목록 이미지 '{name}' @ {coords}")
+                return coords
+        return None
+
+    def _pick_kb_card(self) -> bool:
+        """목록에서 kb국민1/2 클릭."""
+        self._set_status("국민카드 선택")
+        self._log("🔍 [국민카드] kb국민1/2 선택 시도")
+        if self._kb_card_selected():
+            self._log("  ✅ 이미 국민카드 선택됨")
+            return True
+
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()["height"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        for attempt in range(1, 8):
+            target = self._find_kb_list_target()
+            if target:
+                self._soft_tap(target[0], target[1])
+                time.sleep(1.5)
+                if self._kb_card_selected() or not self._card_placeholder_visible():
+                    self._log("  ✅ [국민카드] 선택 확인")
+                    return True
+                self._log("  ⚠ 탭 후에도 플레이스홀더 잔존 → 재시도")
+
+            # 이미지 직접 클릭
+            if self._click_any_image_basic(
+                IMG_KB_BRAND, threshold=0.68, attempts=2, wait_after=1.5,
+                min_y=min_y, max_y=max_y,
+            ):
+                time.sleep(1.0)
+                if self._kb_card_selected() or not self._card_placeholder_visible():
+                    self._log("  ✅ [국민카드] 이미지 클릭 후 선택 확인")
+                    return True
+
+            # 드롭다운 재오픈
+            if self._card_placeholder_visible() or attempt % 2 == 0:
+                self._open_card_select_dropdown(brand="kb")
+            else:
+                self._scroll_down_safe(distance_ratio=0.10)
+            time.sleep(0.6)
+
+        self._log("❌ [국민카드] kb국민 선택 실패")
+        return False
+
+    def _find_hyundai_list_target(self):
+        """카드 목록에서 클릭할 현대 항목 (x,y) 또는 없으면 None.
+        상단 헤더(y<22%) 오탐을 제외한다.
+        """
+        w_h, w_w = 2400, 1080
+        try:
+            sz = self.driver.get_window_size()
+            w_h, w_w = sz["height"], sz["width"]
+        except Exception:
+            pass
+        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+
+        xpaths = [
+            '//*[contains(@text,"현대카드")]',
+            '//android.widget.TextView[@text="현대"]',
+            '//android.view.View[@text="현대"]',
+            '//android.widget.TextView[contains(@text,"현대")]',
+            '//android.view.View[contains(@text,"현대")]',
+        ]
+        best = None
+        for xp in xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    t = (el.get_attribute("text") or "").strip()
+                    if "현대" not in t:
+                        continue
+                    if "선택해주세요" in t:
+                        continue
+                    bb = self._parse_element_bounds(el)
+                    if not bb:
+                        continue
+                    cy = (bb[1] + bb[3]) // 2
+                    cx = (bb[0] + bb[2]) // 2
+                    if not (min_y <= cy <= max_y):
+                        continue
+                    score = 2 if "현대카드" in t else 1
+                    cand = (score, cx, cy, t)
+                    if best is None or cand[0] > best[0]:
+                        best = cand
+                except Exception:
+                    continue
+        if best:
+            # (cx, cy, label, src) — _pick_hyundai_card 호환
+            return best[1], best[2], best[3], "xpath"
+
+        for img_path, name in IMG_HYUNDAI_BRAND:
+            if not os.path.exists(img_path):
+                continue
+            coords = self._find_image_coords(
+                img_path, threshold=0.70, min_y=min_y, max_y=max_y
+            )
+            if coords:
+                self._log(f"  🎯 현대목록 이미지 '{name}' @ {coords}")
+                return coords[0], coords[1], name, "image"
+        return None
+
+    def _pick_hyundai_card(self) -> bool:
+        """[22-4] 열린 카드 목록에서 현대만 클릭하고, 선택 여부를 검증한다."""
+        self._set_status("현대카드 선택")
+        self._log("🔍 [22-4] 카드 목록에서 현대 선택")
+        if self._hyundai_card_selected():
+            self._log("  ✅ 이미 현대카드 선택됨")
+            return True
+
+        for attempt in range(1, 9):
+            target = self._find_hyundai_list_target()
+            if target:
+                cx, cy, label, src = target
+                self._log(f"  🎯 [22-4] 현대 탭 ({cx}, {cy}) src={src} '{str(label)[:24]}'")
+                self._soft_tap(cx, cy)
+                time.sleep(1.8)
+                if self._hyundai_card_selected():
+                    self._log("  ✅ [22-4] 현대카드 선택 확인")
+                    return True
+                if not self._card_placeholder_visible():
+                    # 목록이 닫혔고 플레이스홀더가 없음 → 선택 성공으로 간주
+                    self._log("  ✅ [22-4] 드롭다운 닫힘(플레이스홀더 소멸) → 선택 완료")
+                    return True
+                self._log("  ⚠ [22-4] 탭 후에도 '카드를 선택해주세요' 유지 → 재시도")
+                if attempt in (3, 6) and self._card_placeholder_visible():
+                    self._log("  🔄 [22-4] 드롭다운 다시 열기")
+                    self._open_card_select_dropdown(brand="hyundai")
+            else:
+                self._log(f"  ⬇ [22-4] 목록에서 현대 미발견 → 스크롤 ({attempt}/8)")
+                self._scroll_down_safe(distance_ratio=0.10)
+                time.sleep(0.6)
+                if attempt == 3 and self._card_placeholder_visible():
+                    self._log("  🔄 [22-4] 목록 미검출 → 드롭다운 다시 열기")
+                    self._open_card_select_dropdown(brand="hyundai")
+
+        self._log("❌ [22-4] 현대카드 선택 실패")
+        return False
+
+    def _find_image_bbox(self, template_path: str, threshold: float = 0.55,
+                         save_crop: bool = True, crop_label: str = "") -> Optional[dict]:
+        """
+        템플릿 매칭 후 bbox 반환.
+        반환: {cx, cy, x1, y1, x2, y2, score, tw, th} 또는 None
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return None
+
+        if not os.path.exists(template_path):
+            self._log(f"  [bbox매칭] 템플릿 없음: {template_path}")
+            return None
+
+        try:
+            screenshot_png = self._get_screenshot()
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_h, screen_w = screen_gray.shape
+
+            template_bgr = cv2.imdecode(
+                np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+            if template_bgr is None:
+                return None
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            t_h, t_w = template_gray.shape
+
+            best_score, best_loc, best_tw, best_th = -1, None, t_w, t_h
+            for scale in np.linspace(0.45, 1.80, 18):
+                nw = int(t_w * scale)
+                nh = int(t_h * scale)
+                if nw >= screen_w or nh >= screen_h or nw < 20 or nh < 20:
+                    continue
+                resized = cv2.resize(template_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                result = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                if max_val > best_score:
+                    best_score, best_loc, best_tw, best_th = max_val, max_loc, nw, nh
+
+            if best_score < threshold or best_loc is None:
+                self._log(f"  ❌ [bbox매칭] 실패 (점수 {best_score:.4f} < {threshold})")
+                return None
+
+            x1, y1 = int(best_loc[0]), int(best_loc[1])
+            x2, y2 = min(screen_w, x1 + best_tw), min(screen_h, y1 + best_th)
+            cx, cy = x1 + best_tw // 2, y1 + best_th // 2
+            self._log(
+                f"  🎯 [bbox매칭] 발견 score={best_score:.4f} "
+                f"center=({cx},{cy}) box=({x1},{y1})-({x2},{y2})"
+            )
+
+            if save_crop:
+                try:
+                    root_dir = os.path.dirname(os.path.abspath(__file__))
+                    recognize_dir = os.path.join(root_dir, "인식")
+                    os.makedirs(recognize_dir, exist_ok=True)
+                    label = crop_label or os.path.splitext(os.path.basename(template_path))[0]
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    crop_path = os.path.join(
+                        recognize_dir,
+                        f"crop_{label}_({cx},{cy})_{best_score:.3f}_{timestamp}.png",
+                    )
+                    cropped = screen_bgr[y1:y2, x1:x2]
+                    if cropped.size > 0:
+                        cv2.imwrite(crop_path, cropped)
+                        self._log(f"  📸 [키패드 커팅 저장] {crop_path}")
+                except Exception:
+                    pass
+
+            return {
+                "cx": cx, "cy": cy,
+                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                "score": float(best_score),
+                "tw": best_tw, "th": best_th,
+                "screen_w": screen_w, "screen_h": screen_h,
+            }
+        except Exception as e:
+            self._log(f"  [bbox매칭 오류] {e}")
+            return None
+
+    def _locate_hyundai_pw_keypad(self, attempts: int = 5) -> Optional[dict]:
+        """
+        현대비번.png 인식 → 키패드 ROI 커팅.
+        반환 ROI: {min_x, max_x, min_y, max_y, cx, cy, ...}
+        """
+        if not os.path.exists(IMG_HYUNDAI_PW_KEYPAD):
+            self._log("  ⚠ 현대비번.png 파일 없음 → ROI 없이 진행")
+            return None
+
+        self._log("  🔍 [현대비번] 키패드 영역 인식/커팅 시도...")
+        for attempt in range(1, attempts + 1):
+            box = self._find_image_bbox(
+                IMG_HYUNDAI_PW_KEYPAD,
+                threshold=0.50,
+                save_crop=True,
+                crop_label="현대비번",
+            )
+            if box:
+                # 여유 마진 (키 가장자리 포함)
+                pad_x = max(20, int(box["tw"] * 0.04))
+                pad_y = max(20, int(box["th"] * 0.03))
+                sw, sh = box["screen_w"], box["screen_h"]
+                roi = {
+                    "min_x": max(0, box["x1"] - pad_x),
+                    "max_x": min(sw, box["x2"] + pad_x),
+                    "min_y": max(0, box["y1"] - pad_y),
+                    "max_y": min(sh, box["y2"] + pad_y),
+                    "cx": box["cx"],
+                    "cy": box["cy"],
+                    "score": box["score"],
+                }
+                self._log(
+                    f"  ✅ [현대비번] 키패드 ROI 확정 "
+                    f"x={roi['min_x']}~{roi['max_x']} y={roi['min_y']}~{roi['max_y']} "
+                    f"(시도 {attempt}/{attempts})"
+                )
+                return roi
+            self._log(f"  ↩ [현대비번] 미발견 ({attempt}/{attempts})")
+            time.sleep(1.0)
+        self._log("  ⚠ [현대비번] 키패드 ROI 실패 → 기본 영역으로 숫자 입력")
+        return None
+
+    def _input_hyundai_digits_with_fallback(self, password: str, expected_len: int,
+                                            use_keypad_crop: bool = True) -> bool:
+        """현대 PIN 입력: 현대비번 ROI 커팅 → 이미지 키패드 → send_keys 폴백."""
+        pwd_digits = ''.join(filter(str.isdigit, password or ""))
+        if expected_len and len(pwd_digits) != expected_len:
+            self._log(f"  ❌ PIN 자릿수 불일치: {len(pwd_digits)}자리 (기대 {expected_len}자리)")
+            return False
+        if not pwd_digits:
+            self._log("  ❌ PIN 값 없음")
+            return False
+
+        self._log(f"  🔐 PIN 입력 시도: {'*' * len(pwd_digits)}자리")
+        time.sleep(1.0)
+
+        roi = None
+        if use_keypad_crop:
+            roi = self._locate_hyundai_pw_keypad(attempts=4)
+
+        # 방법1: 이미지 키패드 (현대비번 ROI 내부 우선)
+        img_ok = self._input_hyundai_digits(pwd_digits, expected_len=expected_len, roi=roi)
+        if img_ok:
+            return True
+
+        self._log("  ⚠ 이미지 키패드 실패 → send_keys 폴백 시도")
+
+        # 방법2: EditText send_keys
+        for xp in ['//android.widget.EditText', '//*[@class="android.widget.EditText"]']:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=2):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    el.clear()
+                    el.send_keys(pwd_digits)
+                    self._log(f"  ✅ send_keys 입력 완료: {xp}")
+                    time.sleep(0.5)
+                    return True
+            except Exception as e:
+                self._log(f"  ⚠ send_keys 실패 ({xp}): {e}")
+
+        # 방법3: ADB input text
+        try:
+            _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "input", "text", pwd_digits],
+                timeout=8,
+            )
+            self._log(f"  ✅ ADB input text 완료")
+            time.sleep(0.5)
+            return True
+        except Exception as e:
+            self._log(f"  ❌ ADB input text 실패: {e}")
+
+        return False
+
+    def _input_hyundai_digits(self, password: str, expected_len: int,
+                              roi: Optional[dict] = None) -> bool:
+        """현대숫자 폴더 0.png~9.png 로 PIN 입력 (현대비번 ROI + 키패드 그리드 보정)."""
+        pwd_digits = ''.join(filter(str.isdigit, password or ""))
+        if expected_len and len(pwd_digits) != expected_len:
+            self._log(f"  ❌ 현대 PIN 자릿수 불일치: {len(pwd_digits)}자리 (기대 {expected_len}자리)")
+            return False
+        if not pwd_digits:
+            self._log("  ❌ 현대 PIN 값 없음")
+            return False
+
+        self._log(f"  🔐 현대 PIN 입력: {'*' * len(pwd_digits)}자리")
+        w_w, w_h = 1080, 2400
+        try:
+            size = self.driver.get_window_size()
+            w_w, w_h = size['width'], size['height']
+        except Exception:
+            pass
+
+        # 일반 전화 키패드 상대 좌표 (열, 행) — '1' 기준
+        # 1 2 3
+        # 4 5 6
+        # 7 8 9
+        #   0
+        KEYPAD_RC = {
+            '1': (0, 0), '2': (1, 0), '3': (2, 0),
+            '4': (0, 1), '5': (1, 1), '6': (2, 1),
+            '7': (0, 2), '8': (1, 2), '9': (2, 2),
+            '0': (1, 3),
+        }
+
+        if roi:
+            min_x_keypad = int(roi.get("min_x", 0))
+            max_x_keypad = int(roi.get("max_x", w_w))
+            min_y_keypad = int(roi.get("min_y", int(w_h * 0.28)))
+            max_y_keypad = int(roi.get("max_y", int(w_h * 0.95)))
+            roi_w = max(1, max_x_keypad - min_x_keypad)
+            roi_h = max(1, max_y_keypad - min_y_keypad)
+            # ROI 기준 키 간격 (현대비번 커팅 영역 내부)
+            dx = max(80, int(roi_w / 3))
+            dy = max(80, int(roi_h / 4.5))
+            self._log(
+                f"  📐 현대비번 ROI 적용: x={min_x_keypad}~{max_x_keypad} "
+                f"y={min_y_keypad}~{max_y_keypad} dx={dx} dy={dy}"
+            )
+        else:
+            min_x_keypad = 0
+            max_x_keypad = w_w
+            min_y_keypad = int(w_h * 0.28)
+            max_y_keypad = int(w_h * 0.95)
+            dx = int(w_w * 0.28)
+            dy = int(w_h * 0.075)
+
+        anchor_digit = None
+        anchor_xy = None  # '1' 위치 (가상 원점)
+
+        self._log(f"  ⏳ 현대 키패드 표시 대기 (1.5초)... (탐색 y={min_y_keypad}~{max_y_keypad})")
+        time.sleep(1.5)
+
+        MAX_DIGIT_RETRY = 3
+        RETRY_INTERVAL = 0.8
+        for idx, digit in enumerate(pwd_digits):
+            img_path = IMG_HYUNDAI_NUMS.get(digit)
+            if not img_path or not os.path.exists(img_path):
+                self._log(f"  ⚠ 현대숫자 이미지 없음: {digit}.png → 실패")
+                return False
+            self._log(f"  🔢 {idx + 1}번째 자리 '{digit}' 클릭 시도")
+
+            prefer_xy = None
+            if anchor_xy is not None and digit in KEYPAD_RC:
+                col, row = KEYPAD_RC[digit]
+                prefer_xy = (anchor_xy[0] + col * dx, anchor_xy[1] + row * dy)
+                self._log(f"    ℹ 키패드 예상좌표: {prefer_xy} (기준 '{anchor_digit}'={anchor_xy})")
+            elif roi and digit in KEYPAD_RC and anchor_xy is None:
+                # ROI만 있을 때: 좌상단을 '1' 가정한 초기 예상좌표
+                col, row = KEYPAD_RC[digit]
+                prefer_xy = (
+                    min_x_keypad + int(dx * (col + 0.5)),
+                    min_y_keypad + int(dy * (row + 0.35)),
+                )
+                self._log(f"    ℹ ROI 초기 예상좌표: {prefer_xy}")
+
+            digit_ok = False
+            for retry in range(1, MAX_DIGIT_RETRY + 1):
+                coords = self._find_digit_coords(
+                    img_path,
+                    min_y_keypad,
+                    max_y=max_y_keypad,
+                    min_x=min_x_keypad,
+                    max_x=max_x_keypad,
+                    prefer_xy=prefer_xy,
+                    prefer_radius=max(160, int(min(dx, dy) * 0.85)),
+                    min_score=0.55,
+                )
+                if coords:
+                    cx, cy = coords
+                    # ROI 밖이면 거부
+                    if not (min_x_keypad <= cx <= max_x_keypad and min_y_keypad <= cy <= max_y_keypad):
+                        self._log(f"    ↩ ROI 밖 좌표 거부 ({cx},{cy})")
+                        time.sleep(RETRY_INTERVAL)
+                        continue
+                    # 첫 숫자로 키패드 원점('1' 위치) 추정
+                    if anchor_xy is None and digit in KEYPAD_RC:
+                        col, row = KEYPAD_RC[digit]
+                        anchor_xy = (cx - col * dx, cy - row * dy)
+                        anchor_digit = digit
+                        # ROI와 교차하는 범위로 더 좁힘
+                        min_y_keypad = max(min_y_keypad, int(anchor_xy[1] - dy * 0.6))
+                        max_y_keypad = min(max_y_keypad, int(anchor_xy[1] + dy * 3.8))
+                        min_x_keypad = max(min_x_keypad, int(anchor_xy[0] - dx * 0.6))
+                        max_x_keypad = min(max_x_keypad, int(anchor_xy[0] + dx * 2.6))
+                        self._log(
+                            f"    📌 키패드 원점 추정: '1'≈{anchor_xy} "
+                            f"(from '{digit}'@{coords}), "
+                            f"범위 x={min_x_keypad}~{max_x_keypad} y={min_y_keypad}~{max_y_keypad}"
+                        )
+                    elif anchor_xy is not None and digit in KEYPAD_RC:
+                        col, row = KEYPAD_RC[digit]
+                        exp_x = anchor_xy[0] + col * dx
+                        exp_y = anchor_xy[1] + row * dy
+                        if digit == '5' and (cx < anchor_xy[0] or cy < anchor_xy[1] + int(dy * 0.35)):
+                            self._log(
+                                f"    ↩ '5' 위치 거부 ({cx},{cy}) — "
+                                f"'1'({anchor_xy})보다 오른쪽 아래여야 함 (예상≈{exp_x},{exp_y})"
+                            )
+                            time.sleep(RETRY_INTERVAL)
+                            continue
+                        if col > 0:
+                            dx = max(int(dx * 0.7), abs(cx - anchor_xy[0]) // col)
+                        if row > 0:
+                            dy = max(int(dy * 0.7), abs(cy - anchor_xy[1]) // row)
+
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    self._log(f"    ✅ '{digit}' 클릭 완료 ({coords}) [시도 {retry}회]")
+                    digit_ok = True
+                    time.sleep(0.5)
+                    break
+                self._log(f"    ↩ '{digit}' 인식 실패 ({retry}/{MAX_DIGIT_RETRY})")
+                time.sleep(RETRY_INTERVAL)
+            if not digit_ok:
+                # 앵커/ROI 예상 좌표 강제 탭
+                if prefer_xy is not None:
+                    px = max(min_x_keypad, min(max_x_keypad, prefer_xy[0]))
+                    py = max(min_y_keypad, min(max_y_keypad, prefer_xy[1]))
+                    self._log(f"    ⚠ 인식 실패 → 예상좌표 강제 탭 ({px},{py})")
+                    ah.tap_by_coords(self.driver, px, py, self._log)
+                    time.sleep(0.5)
+                    continue
+                self._log(f"    ❌ '{digit}' 최종 인식 실패")
+                return False
+        self._log("  ✅ 현대 PIN 입력 완료")
+        return True
+
+    def _match_best_among_images(self, images: list, threshold: float = 0.48,
+                                 min_y: Optional[int] = None,
+                                 max_y: Optional[int] = None) -> Optional[tuple]:
+        """한 번 캡처로 여러 템플릿 중 최고 점수 매칭. (coords, name, score) 또는 None."""
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return None
+
+        valid = [(p, n) for p, n in images if os.path.exists(p)]
+        if not valid:
+            return None
+        try:
+            screenshot_png = self._get_screenshot()
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_h, screen_w = screen_gray.shape
+            if min_y is not None and min_y > 0:
+                screen_gray[:min_y, :] = 0
+            if max_y is not None and max_y < screen_h:
+                screen_gray[max_y:, :] = 0
+
+            best = None  # (score, cx, cy, name)
+            scales = np.linspace(0.50, 1.70, 13)
+            for img_path, name in valid:
+                template_bgr = cv2.imdecode(
+                    np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR
+                )
+                if template_bgr is None:
+                    continue
+                template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+                t_h, t_w = template_gray.shape
+                local_best = -1.0
+                local_loc = None
+                local_tw, local_th = t_w, t_h
+                for scale in scales:
+                    new_w = int(t_w * scale)
+                    new_h = int(t_h * scale)
+                    if new_w >= screen_w or new_h >= screen_h or new_w < 8 or new_h < 4:
+                        continue
+                    resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    try:
+                        r = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                        if max_val > local_best:
+                            local_best = float(max_val)
+                            local_loc = max_loc
+                            local_tw, local_th = new_w, new_h
+                    except Exception:
+                        continue
+                if local_loc is not None and local_best >= threshold:
+                    cx = local_loc[0] + local_tw // 2
+                    cy = local_loc[1] + local_th // 2
+                    if best is None or local_best > best[0]:
+                        best = (local_best, cx, cy, name)
+                else:
+                    # 실패 템플릿은 조용히 스킵 (로그 폭주/오해 방지)
+                    pass
+
+            if not best:
+                return None
+            score, cx, cy, name = best
+            self._log(f"  🎯 [일괄매칭] 최고 '{name}' score={score:.4f} @ ({cx},{cy})")
+            return (cx, cy), name, score
+        except Exception as e:
+            self._log(f"  ⚠ [일괄매칭] 예외: {e}")
+            return None
+
+    def _is_hyundai_identity_auth_screen(self) -> bool:
+        """2차페이지(본인인증) 화면인지 — 플래그 또는 확실한 XPath만 사용.
+
+        주의: 2차페이지1~3 이미지로 자동 판별하면 22-9(PIN확인) 화면에서 오탐남.
+        """
+        if getattr(self, "_hyundai_pw4_identity_mode", False):
+            return True
+        xps = [
+            '//*[contains(@text,"본인 인증을 진행")]',
+            '//*[contains(@text,"본인인증을 진행")]',
+            '//*[@text="본인 인증"]',
+            '//*[@text="본인인증"]',
+        ]
+        for xp in xps:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.35):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _has_hyundai_2nd_page_markers(self) -> bool:
+        """본인인증(2차비번) 화면의 확실한 텍스트 마커."""
+        xps = [
+            '//*[contains(@text,"본인 인증을 진행")]',
+            '//*[contains(@text,"본인인증을 진행")]',
+            '//*[contains(@text,"본인인증을진행")]',
+            '//*[@text="본인 인증"]',
+            '//*[@text="본인인증"]',
+            '//*[@text="완료"]',
+        ]
+        for xp in xps:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.4):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _click_hyundai_card_pw_entry(self) -> bool:
+        """[22-11a] 현대카드비번1~7 중 최고점만 클릭 (0.53 오탐 금지)."""
+        self._set_status("현대카드비번 클릭")
+        self._log("  🔍 [22-11a] 현대카드비번1~7 최고점 클릭 (임계값 0.65)")
+        self._hyundai_pw4_identity_mode = False
+        self._hyundai_pw4_field_xy = None
+        self._hyundai_pw4_keypad_box = None
+        self._hyundai_pw4_key_origin = None
+        self._hyundai_pw4_key_map = None
+
+        w, h = self._get_window_size()
+        min_y, max_y = int(h * 0.12), int(h * 0.58)
+
+        for attempt in range(1, 8):
+            if self._stop_event.is_set():
+                return False
+            hit = self._match_best_among_images(
+                IMG_HYUNDAI_CARD_PW, threshold=0.65, min_y=min_y, max_y=max_y
+            )
+            if hit:
+                (cx, cy), name, score = hit
+                self._log(
+                    f"  ✅ [22-11a] '{name}' 클릭 score={score:.4f} @ ({cx},{cy}) "
+                    f"(시도 {attempt}/7)"
+                )
+                ah.tap_by_coords(self.driver, cx, cy, self._log)
+                time.sleep(2.0)
+                return True
+            self._log(f"  ↩ [22-11a] 현대카드비번 미인식 (시도 {attempt}/7, 0.65 미만)")
+            time.sleep(1.0)
+
+        for xp in [
+            '//*[contains(@text,"카드 비밀번호 4자리")]',
+            '//*[contains(@text,"카드비밀번호4자리")]',
+            '//*[contains(@text,"비밀번호 4자리")]',
+            '//*[contains(@text,"비밀번호4자리")]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1.0):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ [22-11a] XPath 클릭: {xp}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
+                continue
+
+        self._log("❌ [22-11a] 현대카드비번 인식 실패 (0.65 이상 매칭 없음)")
+        return False
+
+    def _accept_2nd_page_hit(self, name: str, cy: int, score: float, h: int) -> bool:
+        """2차페이지3은 PIN확인 화면 y≈1131에서 오탐 → 노란바는 상단만 인정."""
+        if name == "2차페이지2":
+            return score >= 0.52
+        if not (int(h * 0.16) <= cy <= int(h * 0.42)):
+            self._log(
+                f"  ⚠ [22-11b] '{name}' y={cy} 는 PIN확인 오탐 → 무시 "
+                f"(허용 {int(h * 0.16)}~{int(h * 0.42)})"
+            )
+            return False
+        return score >= 0.58
+
+    def _set_2nd_page_keypad_from_yellow(self, yellow_cx: int, yellow_cy: int):
+        """노란바 중심만 저장. 실제 키 좌표는 _build_2nd_page_key_map 에서 잡는다."""
+        w, h = self._get_window_size()
+        self._hyundai_pw4_field_xy = (yellow_cx, yellow_cy)
+        # 2차페이지2 기준: 노란바 직후 ~ 4행 키패드 (화면 높이의 약 20%)
+        top = min(h - 80, yellow_cy + int(h * 0.03))
+        bottom = min(h - 20, top + int(h * 0.20))
+        self._hyundai_pw4_keypad_box = (int(w * 0.02), top, int(w * 0.98), bottom)
+        self._log(f"  📐 [2차페이지] 입력란=({yellow_cx},{yellow_cy})")
+
+    def _store_2nd_page_key_map(self, keymap: dict, src: str):
+        self._hyundai_pw4_key_map = keymap
+        x1, y1 = keymap["1"]
+        x2, _ = keymap["2"]
+        _, y4 = keymap["4"]
+        dx, dy = x2 - x1, y4 - y1
+        self._hyundai_pw4_key_origin = (x1, y1, dx, dy)
+        self._hyundai_pw4_keypad_box = (
+            keymap["1"][0] - max(20, dx // 2),
+            keymap["1"][1] - max(20, dy // 2),
+            keymap["3"][0] + max(20, dx // 2),
+            keymap["0"][1] + max(20, dy // 2),
+        )
+        self._log(
+            f"  📐 [2차페이지] 키맵 {src} "
+            f"1={keymap['1']} 2={keymap['2']} 3={keymap['3']} "
+            f"4={keymap['4']} 7={keymap['7']} "
+            f"완료={keymap['완료']} (dx={dx} dy={dy})"
+        )
+
+    def _key_map_from_2nd_page2_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
+        tw, th = _HYUNDAI_2ND_TMPL_WH
+        bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+        return {
+            d: (int(x1 + tx * bw / tw), int(y1 + ty * bh / th))
+            for d, (tx, ty) in _HYUNDAI_2ND_KEYS_TMPL.items()
+        }
+
+    def _key_map_from_yellow_box(self, x1: int, y1: int, x2: int, y2: int) -> dict:
+        """노란바 bbox → 화면 크기 기반 균일 스케일로 키 좌표 계산.
+
+        기존 버그: 노란바 높이(yh)로 행 스케일링 → 행간격 30px로 줄어듦.
+        수정: 화면 폭 기준 스케일을 사용해 가로·세로 동일 비율 적용.
+        """
+        w, h = self._get_window_size()
+        yx1, yy1, yx2, yy2 = _HYUNDAI_2ND_YELLOW_TMPL
+        tmpl_w, tmpl_h = _HYUNDAI_2ND_TMPL_WH           # (454, 527)
+
+        # 화면 폭 ÷ 템플릿 폭 = 해상도 무관 균일 스케일
+        scale = w / tmpl_w
+
+        # 노란바 중심 = bbox 중심 (매칭된 위치 기준)
+        bbox_cx = (x1 + x2) / 2
+        bbox_cy = (y1 + y2) / 2
+        tmpl_yellow_cx = (yx1 + yx2) / 2
+        tmpl_yellow_cy = (yy1 + yy2) / 2
+
+        self._log(
+            f"  📐 [키맵계산] 화면={w}x{h} 스케일={scale:.3f} "
+            f"노란바중심=({bbox_cx:.0f},{bbox_cy:.0f})"
+        )
+
+        layout = {
+            "1": (0, 0), "2": (1, 0), "3": (2, 0),
+            "4": (0, 1), "5": (1, 1), "6": (2, 1),
+            "7": (0, 2), "8": (1, 2), "9": (2, 2),
+            "완료": (0, 3), "0": (1, 3),
+        }
+        keymap = {}
+        for d in layout:
+            tx, ty = _HYUNDAI_2ND_KEYS_TMPL[d]
+            sx = int(bbox_cx + scale * (tx - tmpl_yellow_cx))
+            sy = int(bbox_cy + scale * (ty - tmpl_yellow_cy))
+            # 화면 범위 클램프
+            sx = max(5, min(w - 5, sx))
+            sy = max(5, min(h - 5, sy))
+            keymap[d] = (sx, sy)
+        return keymap
+
+    def _build_2nd_page_key_map(self) -> bool:
+        """본인인증 키패드 좌표: 2차페이지2 bbox 우선, 없으면 노란바 비율."""
+        page2 = IMG_HYUNDAI_2ND_PAGE[1][0]
+        box = self._find_image_bbox(
+            page2, threshold=0.42, save_crop=True, crop_label="2차페이지키패드"
+        )
+        if box and (box["y2"] - box["y1"]) >= 180:
+            self._store_2nd_page_key_map(
+                self._key_map_from_2nd_page2_box(box["x1"], box["y1"], box["x2"], box["y2"]),
+                "2차페이지2",
+            )
+            return True
+
+        w, h = self._get_window_size()
+        for path, name in (IMG_HYUNDAI_2ND_PAGE[0], IMG_HYUNDAI_2ND_PAGE[2]):
+            ybox = self._find_image_bbox(
+                path, threshold=0.58, save_crop=False, crop_label=name
+            )
+            if not ybox:
+                continue
+            cy = ybox["cy"]
+            if not (int(h * 0.16) <= cy <= int(h * 0.48)):
+                continue
+            self._store_2nd_page_key_map(
+                self._key_map_from_yellow_box(ybox["x1"], ybox["y1"], ybox["x2"], ybox["y2"]),
+                f"노란바/{name}",
+            )
+            return True
+
+        fx, fy = getattr(self, "_hyundai_pw4_field_xy", None) or (w // 2, int(h * 0.30))
+        yw, yh = int(w * 0.82), max(48, int(h * 0.044))
+        self._store_2nd_page_key_map(
+            self._key_map_from_yellow_box(fx - yw // 2, fy - yh // 2, fx + yw // 2, fy + yh // 2),
+            "노란바추정",
+        )
+        return True
+
+    def _calibrate_2nd_page_keypad(self) -> bool:
+        """호환용: 키맵 재계산."""
+        return self._build_2nd_page_key_map()
+
+    def _wait_hyundai_2nd_page_and_focus(self) -> bool:
+        """[22-11b] 본인인증 화면인지 확인한 뒤에만 진입 성공."""
+        self._set_status("2차페이지 진입 확인")
+        self._log("  🔍 [22-11b] 2차페이지1/2/3 + 본인인증 마커 확인")
+        w, h = self._get_window_size()
+
+        for attempt in range(1, 10):
+            if self._stop_event.is_set():
+                return False
+
+            text_ok = self._has_hyundai_2nd_page_markers()
+            hit = self._match_best_among_images(IMG_HYUNDAI_2ND_PAGE, threshold=0.52)
+            accepted = False
+            name, score, cx, cy = "", 0.0, w // 2, int(h * 0.30)
+            if hit:
+                (cx, cy), name, score = hit
+                accepted = self._accept_2nd_page_hit(name, cy, score, h)
+
+            if accepted or text_ok:
+                if accepted:
+                    self._log(
+                        f"  ✅ [22-11b] 2차페이지 진입 성공: '{name}' "
+                        f"score={score:.4f} @ ({cx},{cy})"
+                    )
+                else:
+                    self._log("  ✅ [22-11b] 2차페이지 진입 성공: 본인인증 텍스트 마커")
+
+                self._hyundai_pw4_identity_mode = True
+                if name in ("2차페이지1", "2차페이지3") and accepted:
+                    fx, fy = cx, min(h - 10, cy + int(h * 0.015))
+                else:
+                    yellow = self._match_best_among_images(
+                        [IMG_HYUNDAI_2ND_PAGE[0], IMG_HYUNDAI_2ND_PAGE[2]],
+                        threshold=0.52,
+                        min_y=int(h * 0.16),
+                        max_y=int(h * 0.42),
+                    )
+                    if yellow:
+                        (fx, fy), yname, yscore = yellow
+                        self._log(f"  🎯 노란 입력란 '{yname}' score={yscore:.4f} @ ({fx},{fy})")
+                    else:
+                        fx, fy = w // 2, int(h * 0.30)
+
+                self._set_2nd_page_keypad_from_yellow(fx, fy)
+                self._log(f"  👉 [22-11b] 카드비밀번호 입력란 탭 ({fx},{fy})")
+                ah.tap_by_coords(self.driver, fx, fy, self._log)
+                time.sleep(0.8)
+                return True
+
+            self._log(f"  ↩ [22-11b] 본인인증 화면 아님 (시도 {attempt}/9)")
+            time.sleep(1.0)
+
+        self._log("❌ [22-11b] 2차비번 입력 화면 진입 실패")
+        return False
+
+    def _focus_hyundai_card_pw4_field(self) -> bool:
+        """[22-11] 현대카드비번 클릭 → 2차페이지 확인. 실패 시 1회 재시도."""
+        time.sleep(1.0)
+        for round_i in range(1, 3):
+            self._log(f"  🔁 [22-11] 진입 라운드 {round_i}/2")
+            if not self._click_hyundai_card_pw_entry():
+                continue
+            time.sleep(1.8)
+            if self._wait_hyundai_2nd_page_and_focus():
+                return True
+            self._log("  ⚠ [22-11] 클릭 후 2차페이지 미진입 → 현대카드비번 재클릭")
+        return False
+
+    def _tap_2nd_page_keypad_digit(self, digit: str) -> bool:
+        """본인인증 키패드: 2차페이지2 실측 키맵 우선."""
+        keymap = getattr(self, "_hyundai_pw4_key_map", None) or {}
+        if digit in keymap:
+            x, y = keymap[digit]
+        else:
+            origin = getattr(self, "_hyundai_pw4_key_origin", None)
+            layout = {
+                "1": (0, 0), "2": (1, 0), "3": (2, 0),
+                "4": (0, 1), "5": (1, 1), "6": (2, 1),
+                "7": (0, 2), "8": (1, 2), "9": (2, 2),
+                "0": (1, 3), "완료": (0, 3),
+            }
+            if digit not in layout:
+                return False
+            col, row = layout[digit]
+            if origin:
+                x1, y1, dx, dy = origin
+                x, y = x1 + col * dx, y1 + row * dy
+            else:
+                return False
+        self._log(f"    👉 키패드 '{digit}' 좌표탭 ({x},{y})")
+        ah.tap_by_coords(self.driver, x, y, self._log)
+        time.sleep(1.0)
+        return True
+
+    def _input_hyundai_identity_pw4(self, pin4: str) -> bool:
+        """2차페이지: 노란바 아래 실측 키패드로 4자리 입력."""
+        digits = ''.join(filter(str.isdigit, pin4 or ""))
+        if len(digits) != 4:
+            self._log(f"  ❌ [22-12] 2차비밀번호 자릿수 불일치: {len(digits)}자리 (기대 4)")
+            return False
+
+        w, h = self._get_window_size()
+        fx, fy = getattr(self, "_hyundai_pw4_field_xy", None) or (w // 2, int(h * 0.28))
+
+        self._log(f"  🔐 [22-12] 2차비밀번호 4자리 — 본인인증 키패드 좌표 (포커스={fx},{fy})")
+        ah.tap_by_coords(self.driver, fx, fy, self._log)
+        time.sleep(1.0)
+
+        if not self._build_2nd_page_key_map():
+            self._log("  ❌ [22-12] 키패드 좌표 계산 실패")
+            return False
+
+        ok = True
+        for i, ch in enumerate(digits):
+            self._log(f"  🔢 {i + 1}번째 자리 '{ch}'")
+            if not self._tap_2nd_page_keypad_digit(ch):
+                ok = False
+                break
+        if ok:
+            self._log("  ✅ [22-12] 본인인증 키패드 4자리 입력 완료")
+            return True
+
+        self._log("  ⚠ [22-12] 키맵 탭 실패 → keyevent")
+        try:
+            for ch in digits:
+                _run_cmd(
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", str(7 + int(ch))],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(0.25)
+            self._log("  ✅ [22-12] ADB keyevent 입력 완료")
+            return True
+        except Exception as e:
+            self._log(f"  ❌ [22-12] 4자리 입력 실패: {e}")
+            return False
+
+    def _click_hyundai_identity_confirm(self) -> bool:
+        """2차페이지: 키패드 좌하단 '완료' (PIN확인 현대확인 과 혼동 금지)."""
+        time.sleep(0.4)
+        if not getattr(self, "_hyundai_pw4_key_map", None):
+            self._build_2nd_page_key_map()
+        self._log("  👉 [22-13] 키패드 '완료' 좌표 탭")
+        if self._tap_2nd_page_keypad_digit("완료"):
+            time.sleep(1.5)
+
+        for xp in [
+            '//*[@text="완료"]',
+            '//android.widget.Button[@text="완료"]',
+            '//android.widget.Button[@text="확인"]',
+            '//*[@text="확인"]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ [2차페이지] 완료/확인 클릭: {xp}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
+                continue
+        return True
+
+    def _click_hyundai_pw_confirm(self) -> bool:
+        """현대확인 이미지 클릭 (현대비번 확인 / 2차페이지 완료)."""
+        # 2차페이지 모드에서만 완료/확인(본인인증) 경로 사용 — 22-9 PIN확인과 혼동 금지
+        if getattr(self, "_hyundai_pw4_identity_mode", False):
+            if self._click_hyundai_identity_confirm():
+                self._hyundai_pw4_identity_mode = False
+                return True
+
+        # 전체화면 템플릿은 클릭용이 아니라 화면 존재 확인용
+        if os.path.exists(IMG_HYUNDAI_PW_CONFIRM_FULL):
+            box = self._find_image_bbox(
+                IMG_HYUNDAI_PW_CONFIRM_FULL,
+                threshold=0.45,
+                save_crop=False,
+                crop_label="현대비번확인화면",
+            )
+            if box:
+                self._log("  ✅ [현대비번 확인] 화면 감지됨 → 확인 버튼 탐색")
+
+        if self._click_any_image_basic(IMG_HYUNDAI_CONFIRM, threshold=0.65, attempts=6, wait_after=5.0):
+            return True
+        # XPath 폴백
+        for xp in [
+            '//android.widget.Button[@text="확인"]',
+            '//*[@text="확인"]',
+            '//*[contains(@text,"확인")]',
+            '//android.widget.Button[contains(@text,"확인")]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=2):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ 확인 XPath 클릭: {xp}")
+                        time.sleep(2.0)
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _verify_hyundai_order_complete(self) -> bool:
+        """[22-14] 주문완료 되었습니다 존재 여부."""
+        xpaths = [
+            ORDER_COMPLETE_XPATH,
+            '//android.widget.TextView[contains(@text,"주문완료 되었습니다")]',
+            '//*[contains(@text,"주문완료 되었습니다")]',
+        ]
+        for xpath in xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    self._log(f"✅ [22-14] 주문완료 확인: {xpath}")
+                    return True
+            except Exception:
+                continue
+        self._log("❌ [22-14] '주문완료 되었습니다' 미발견 → 실패")
+        return False
+
+    def _process_kb_card_payment(self) -> bool:
+        """
+        국민카드 결제: 다른결재 → 일반결재 → 카드선택(kb국민1/2) → 결재하기
+        이후 PIN/비번 등 후속 작업 없이 종료 (성공 처리).
+        """
+        self._log("💳 [국민카드 결제] 프로세스 시작 (선택→결재하기 후 종료)")
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
+                
+        if self._skip_final_order_click():
+            self._log("🖐 테스트/수동시작 모드 → 국민카드 결제 최종 단계 생략")
+            return True
+
+        # 1) 다른결재
+        if not self._click_other_pay_button(max_scroll_attempts=20):
+            self._log("❌ [국민카드] 다른결재 버튼 미발견")
+            return False
+
+        # 2) 일반결재 체크
+        if not self._ensure_normal_pay_checked():
+            return False
+
+        # 3) 카드 드롭다운
+        if not self._open_card_select_dropdown(brand="kb"):
+            return False
+
+        # 4) kb국민1/2 선택
+        if not self._pick_kb_card():
+            return False
+
+        if self._card_placeholder_visible():
+            self._log("❌ [국민카드] 카드가 아직 '카드를 선택해주세요' → 결재하기 클릭 안 함")
+            return False
+
+        # 5) 결재하기 (위로 스크롤 금지, 아래로만 탐색)
+        if not self._click_do_pay_button_down_only(max_scroll_attempts=8):
+            self._log("❌ [국민카드] 결재하기 클릭 실패")
+            return False
+
+        self._log("✅ [국민카드] 결재하기 클릭 완료 → 후속 작업 없이 종료")
+        return True
+
+    def _process_hyundai_card_payment(self, second_password: str) -> bool:
+        """[단계 22] 현대카드 결제."""
+        self._log("💳 [현대카드 결제] 프로세스 시작")
+        self._hyundai_pw4_identity_mode = False
+        
+        # 간혹 발생하는 "모달 닫기" 팝업 처리
+        modal_xpaths = [
+            '//android.widget.Button[@text="모달 닫기"]',
+            '//android.widget.Button[@content-desc="모달 닫기"]',
+            '//*[@text="모달 닫기"]',
+            '//*[@content-desc="모달 닫기"]',
+        ]
+        for xp in modal_xpaths:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    self._log(f"  📌 '모달 닫기' 팝업 감지됨 -> 닫기 클릭")
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
+                
+        if self._skip_final_order_click():
+            self._log("🖐 테스트/수동시작 모드 → 현대카드 결제 최종 단계 생략")
+            return True
+
+        # 22-1 다른결재 / 다른결재4 / 다른결재수단2
+        if not self._click_other_pay_button(max_scroll_attempts=20):
+            self._log("❌ [22-1] 다른결재 버튼 미발견")
+            return False
+
+        # 22-2 일반결재 체크
+        if not self._ensure_normal_pay_checked():
+            return False
+
+        # 22-3 카드를 선택해주세요 드롭다운 열기
+        if not self._open_card_select_dropdown():
+            return False
+
+        # 22-4 목록에서 현대 클릭 + 선택 검증 (상단 y=193 오탐 금지)
+        if not self._pick_hyundai_card():
+            return False
+
+        if self._card_placeholder_visible():
+            self._log("❌ [22-4] 카드가 아직 '카드를 선택해주세요' → 결제하기 클릭 안 함")
+            return False
+
+        # 22-5 결재하기.png ~ 결재하기4.png (위로 스크롤 금지, 아래로만 탐색)
+        if not self._click_do_pay_button_down_only(max_scroll_attempts=8):
+            self._log("❌ [22-5] 결재하기 클릭 실패")
+            return False
+
+        # 22-6 현대핀1~5.png 클릭 (PIN번호 결제 버튼), 이후 최대 8초 대기
+        pin_btn_clicked = self._click_any_image_basic(IMG_HYUNDAI_PIN_BTN, threshold=0.70, attempts=6, wait_after=2.0)
+        if not pin_btn_clicked:
+            # XPath 폴백: "PIN번호 결제" 텍스트
+            pin_xpaths = [
+                '//*[contains(@text,"PIN번호 결제")]',
+                '//*[contains(@text,"PIN번호")]',
+                '//*[contains(@text,"핀번호")]',
+                '//*[contains(@content-desc,"PIN")]',
+            ]
+            for xp in pin_xpaths:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=2):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        if self._safe_click_element(el):
+                            self._log(f"  ✅ [22-6] XPath 폴백으로 핀 버튼 클릭: {xp}")
+                            pin_btn_clicked = True
+                            break
+                except Exception:
+                    continue
+        if not pin_btn_clicked:
+            self._log("❌ [22-6] 현대핀 버튼 미발견")
+            return False
+        self._log("  ⏳ [22-6] 핀 입력창 표시 대기 (8초)...")
+        time.sleep(8.0)
+
+        # 22-7 핀입력1~5.png 인식 후 탭 → 키보드/키패드 활성화
+        pin_names = " / ".join(n for _, n in IMG_HYUNDAI_PIN_INPUT)
+        self._log(f"  🔍 [22-7] 핀입력 탐색: {pin_names}")
+        pin_field_tapped = self._click_any_image_basic(
+            IMG_HYUNDAI_PIN_INPUT, threshold=0.60, attempts=4, wait_after=1.5
+        )
+
+        if not pin_field_tapped:
+            # 방법2: EditText XPath
+            for xp in ['//android.widget.EditText', '//*[@class="android.widget.EditText"]']:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=1):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        el.click()
+                        self._log(f"  ✅ [22-7] EditText 탭: {xp}")
+                        pin_field_tapped = True
+                        time.sleep(1.5)
+                        break
+                except Exception:
+                    continue
+
+        if not pin_field_tapped:
+            # 방법3: 화면 중앙 상단(○ 예상 위치) 강제 탭
+            w, h = self._get_window_size()
+            tap_x, tap_y = w // 2, int(h * 0.33)
+            self._log(f"  ⚠ [22-7] 이미지/XPath 미발견 → 화면 중앙({tap_x},{tap_y}) 강제 탭")
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            time.sleep(1.5)
+
+        # 22-8 현대숫자 6자리 PIN – 현대비번.png ROI 커팅 후 입력
+        if not self._input_hyundai_digits_with_fallback(HYUNDAI_PIN6, expected_len=6, use_keypad_crop=True):
+            self._log("❌ [22-8] 현대카드 6자리 PIN 입력 실패")
+            return False
+
+        # 22-9 현대확인 / 현대비번 확인
+        if not self._click_hyundai_pw_confirm():
+            self._log("❌ [22-9] 현대확인 이미지 미발견")
+            return False
+
+        # 22-10 현대결제하기1~4.png
+        if not self._click_any_image_basic(IMG_HYUNDAI_PAY_NOW, threshold=0.70, attempts=6, wait_after=2.0):
+            if not self._click_any_image_with_scroll(IMG_HYUNDAI_PAY_NOW, threshold=0.70, max_scroll_attempts=6):
+                self._log("❌ [22-10] 현대결제하기 이미지 미발견")
+                return False
+
+        # 22-10.5 안전한/추가인증 팝업 → 안전확인1~2 클릭 후 카드비번 진행
+        if not self._handle_hyundai_safe_auth_popup():
+            self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
+            return False
+
+        # 22-11a 현대카드비번1~7 클릭 → 22-11b 2차페이지1~3 인식 → 입력란 포커스
+        if not self._focus_hyundai_card_pw4_field():
+            self._log("❌ [22-11] 현대카드비번 클릭 또는 2차페이지 진입 실패")
+            return False
+        self._log("  ⏳ [22-11] 2차비밀번호 입력 준비 (1초)...")
+        time.sleep(1.0)
+
+        # 22-12 2차비밀번호 4자리
+        pin4 = ''.join(filter(str.isdigit, second_password or ""))
+        self._log("  🔐 [22-12] 2차비밀번호 입력 (키패드 4자리)")
+        if not self._input_hyundai_identity_pw4(pin4):
+            self._log("❌ [22-12] 2차비밀번호 4자리 입력 실패")
+            return False
+
+        # 22-13 완료/확인
+        if not self._click_hyundai_pw_confirm():
+            self._log("❌ [22-13] 완료/확인 버튼 미발견")
+            return False
+        self._log("  ⏳ [22-13] 추가 7초 대기...")
+        time.sleep(7.0)
+
+        # 22-14 주문완료 확인
+        return self._verify_hyundai_order_complete()
+
     # ─── 주문 루프 ────────────────────────────────────────────────────────────
 
     def _order_loop(self):
@@ -3156,37 +5383,23 @@ class NaverOrderWorker:
                 self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
                 break
 
-            self._log(f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, 폰ID={row.device_id!r}")
+            self._log(
+                f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
+                f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
+            )
             self._set_status(f"주문 중: {row.search_keyword}")
             self.has_dismissed_payment_benefit = False
 
             try:
-                success = False
-                max_retries = 3
-                for attempt in range(max_retries + 1):
-                    if self._stop_event.is_set():
-                        break
-                    
-                    if attempt > 0:
-                        self._log(f"  🔄 [{attempt}차 실패 재시도] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 진행...")
-                        try:
-                            ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
-                            time.sleep(2)
-                        except Exception:
-                            pass
-
-                    success = self._process_order_with_timeout(row)
-                    if success:
-                        if attempt > 0:
-                            self._log(f"  ✅ [재시도 성공!] {row.search_keyword} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
-                        break
+                # 23. 실패 시 재작업하지 않음 (1회만 시도)
+                success = self._process_order_with_timeout(row)
             except Exception as fatal_err:
                 self.order_manager.mark_failed(row.row_index)
                 self._log(f"❌ 치명적 오류: {fatal_err}")
                 raise
 
             if success:
-                if row.payment_method == "무통장":
+                if self._is_bank_transfer_payment(row.payment_method):
                     # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
                         if self._skip_final_order_click():
@@ -3202,19 +5415,18 @@ class NaverOrderWorker:
                     if order_confirmed:
                         self.order_manager.mark_success(row.row_index)
                         if self.manual_mode:
-                            self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                            self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
                         else:
                             self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
                     else:
                         self.order_manager.mark_failed(row.row_index)
                         self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
-                        self._log("⏳ [무통장 실패] 30초 대기 중...")
-                        time.sleep(30)
-                        continue
+                        self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
+                        break
                 else:
                     self.order_manager.mark_success(row.row_index)
                     if self.manual_mode:
-                        self._log(f"✅ [수동시작] 주문하기 미클릭 → Y 기록 완료: {row.search_keyword}")
+                        self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
                     else:
                         self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
@@ -3229,9 +5441,11 @@ class NaverOrderWorker:
                 time.sleep(30)
             else:
                 self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패 (총 {max_retries + 1}회 시도 모두 실패): {row.search_keyword} → F 기록")
+                self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
                 import gc
                 gc.collect()
+                break
 
         self._log("📋 주문 루프 종료")
 
@@ -3318,28 +5532,58 @@ class NaverOrderWorker:
             self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
         else:
             self._log("🔄 목표 배송지가 선택되어 있지 않아 변경을 시도합니다.")
-            self._click_change_button()
-            
+            if not self._click_change_button():
+                self._log("❌ 변경 버튼 클릭 실패 (주문/결제 화면 미진입 가능)")
+                return False
+
             # [단계 15] 스크롤 다운 → 제거 (배송지 목록이 바로 표시되므로 불필요)
-            
+
             if not self._select_delivery_address(row.recipient_name, row.phone):
                 self._log("❌ 배송지 선택 실패")
                 return False
 
+        # 수동시작: 배송지 선택(결제창 복귀)까지 완료하면 결제 단계 생략 → Y 기록
+        if self.manual_mode:
+            self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
+            return True
+
         # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)
         self._handle_delivery_memo()
 
-        # [단계 17] 전액사용 클릭 등 결제 방식 분기
-        if row.payment_method == "무통장":
+        # [단계 17] 결제 방식 분기
+        #  - 국민카드(2023) 등 → 국민카드
+        #  - 현대카드(591*) 등 → 현대카드
+        #  - 무통장 / 무통장 입금 → 무통장
+        #  - 머니 → 머니
+        #  - 페이포인트 / 포인트 → 포인트(전액사용)
+        pm = row.payment_method or ""
+        if self._is_kb_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 국민카드 ({pm!r})")
+            if not self._process_kb_card_payment():
+                self._log("❌ 국민카드 결제 진행 실패")
+                return False
+        elif self._is_hyundai_card_payment(pm):
+            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r})")
+            second_pw = getattr(row, "second_password", "") or ""
+            if not self._process_hyundai_card_payment(second_pw):
+                self._log("❌ 현대카드 결제 진행 실패")
+                return False
+        elif self._is_bank_transfer_payment(pm):
+            self._log(f"🏦 결제방식 분기: 무통장 ({pm!r})")
             if not self._process_bank_transfer():
                 self._log("❌ 무통장 결제 진행 실패")
                 return False
-        elif row.payment_method == "머니":
+        elif self._is_money_payment(pm):
+            self._log(f"💸 결제방식 분기: 머니 ({pm!r})")
             if not self._process_money_payment(row.password):
                 self._log("❌ 머니 결제 진행 실패")
                 return False
         else:
-            # 포인트 또는 기본 결제
+            # 페이포인트 / 포인트 / 기타 → 포인트(전액사용) 결제
+            if self._is_point_payment(pm):
+                self._log(f"🅿️ 결제방식 분기: 포인트/페이포인트 ({pm!r})")
+            else:
+                self._log(f"🅿️ 결제방식 분기: 기본(포인트/전액사용) ({pm!r})")
             if not self._click_full_use():
                 self._log("❌ 전액사용 버튼 클릭 실패")
                 return False
@@ -3521,34 +5765,32 @@ class NaverOrderWorker:
     def _scroll_gesture(self, direction: str, distance_ratio: float) -> bool:
         """UiAutomator2 네이티브 'mobile: scrollGesture' 수행.
 
-        시스템 제스처 라이브러리를 사용하므로 터치 슬롭이 보장되어
-        스크롤 도중 요소 클릭/롱클릭이 절대 발생하지 않습니다.
-        화면 중앙 밴드(세로 25%~75%)에서만 제스처를 수행하여
-        상단 헤더/하단 고정 결제바를 건드리지 않습니다.
+        화면 우측 안전 여백(가로 72%~92%, 세로 28%~72%)에서 수행하여
+        화면 중앙/좌측의 라디오버튼, 체크박스, 링크 클릭을 원천 방지합니다.
 
         Returns:
             제스처 수행 성공 여부 (드라이버 미지원/오류 시 False)
         """
         try:
             w, h = self._get_window_size()
-            top = int(h * 0.25)
-            area_h = int(h * 0.50)
-            percent = max(0.15, min(1.0, (h * distance_ratio) / area_h))
+            top = int(h * 0.28)
+            area_h = int(h * 0.44)
+            percent = max(0.15, min(0.85, (h * distance_ratio) / max(1, area_h)))
             self.driver.execute_script('mobile: scrollGesture', {
-                'left': int(w * 0.10),
+                'left': int(w * 0.72),
                 'top': top,
-                'width': int(w * 0.80),
+                'width': int(w * 0.20),
                 'height': area_h,
                 'direction': direction,
                 'percent': percent,
-                'speed': 1200,  # px/s. 낮은 속도 = 관성(fling) 없는 부드러운 드래그
+                'speed': 800,  # 낮은 속도 = 관성(fling) 없는 부드러운 드래그
             })
             return True
         except Exception:
             return False
 
-    def _adb_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 500):
-        """ADB input swipe (긴 duration = 관성 없는 드래그 스크롤)"""
+    def _adb_swipe(self, sx: int, sy: int, ex: int, ey: int, duration_ms: int = 800):
+        """ADB input swipe (충분한 duration = 탭/클릭 오인 없는 순수 드래그 스크롤)"""
         try:
             _run_cmd(
                 ["adb", "-s", self.device_id, "shell", "input", "swipe",
@@ -3567,26 +5809,63 @@ class NaverOrderWorker:
             pass
         return w, h
 
-    def _scroll_down(self, distance_ratio: float = 0.20):
-        """아래로 미세 스크롤 (요소 클릭이 발생하지 않는 방식).
+    def _scroll_down_fast(self, distance_ratio: float = 0.28):
+        """상품 리스트용 빠른 스크롤 (우측 여백 드래그)."""
+        w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
+        start_y = int(h * 0.72)
+        end_y = max(100, int(start_y - (h * distance_ratio)))
+        self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=350)
+        time.sleep(0.2)
 
-        1차: UiAutomator2 네이티브 scrollGesture (클릭 이벤트 미발생 보장)
-        폴백/재시도: ADB 장거리 저속 드래그 (이동 거리가 터치 슬롭을 크게
-        초과하므로 클릭으로 인식되지 않음)
-
-        스크롤 후 화면 지문을 비교하여 실제로 화면이 움직였는지 검증하고,
-        변화가 없으면 시작점(Y)을 바꿔 재시도합니다.
-        (결제화면의 가로 스크롤 카드영역/드롭다운 오버레이 등이 세로 스와이프를
-        가로채 스크롤이 무시되는 현상 대응)
+    def _scroll_down_safe(self, distance_ratio: float = 0.14):
+        """
+        결제/주문 화면용 안전 스크롤.
+        - 화면 우측 여백 밴드(약 72%~92%)에서만 드래그 → 중앙 라디오/체크박스 클릭 방지
+        - 웹뷰 콘텐츠 밴드(약 32%~62%)만 드래그 → 하단 네비/앱 밖으로 오버스크롤 방지
+        - 중간 거리 + 느린 duration → fling/관성으로 창 밖 이탈 방지
         """
         w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
+        start_y = int(h * 0.62)
+        end_y = max(int(h * 0.32), int(start_y - (h * max(0.08, min(0.18, distance_ratio)))))
+        self._log(
+            f"  ↕ [안전스크롤] down ({start_y}→{end_y}, ratio≈{distance_ratio:.2f})"
+        )
+        # 네이티브 제스처 우선 (우측 여백 영역)
+        try:
+            area_top = int(h * 0.32)
+            area_h = int(h * 0.36)
+            percent = max(0.18, min(0.48, (h * distance_ratio) / max(1, area_h)))
+            self.driver.execute_script('mobile: scrollGesture', {
+                'left': int(w * 0.72),
+                'top': area_top,
+                'width': int(w * 0.20),
+                'height': area_h,
+                'direction': 'down',
+                'percent': percent,
+                'speed': 750,
+            })
+        except Exception:
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=850)
+        time.sleep(0.85)
+
+    def _scroll_down(self, distance_ratio: float = 0.20):
+        """아래로 미세 스크롤 (요소 클릭 방지: 우측 안전 여백 드래그).
+
+        1차: UiAutomator2 네이티브 scrollGesture (우측 안전 여백)
+        폴백/재시도: ADB 장거리 저속 드래그 (우측 여백 safe_x = int(w * 0.88),
+        duration=800ms로 탭/클릭 오인 원천 차단)
+        """
+        w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
         before = self._capture_screen_fingerprint()
 
         # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
         if not self._scroll_gesture("down", distance_ratio):
             start_y = int(h * 0.72)
             end_y = max(100, int(start_y - (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
 
         if before is None:
             return
@@ -3595,12 +5874,12 @@ class NaverOrderWorker:
         if after is None or self._fingerprints_differ(before, after):
             return
 
-        # 화면 무변화 → 시작점을 바꿔 ADB 드래그 스와이프로 재시도
+        # 화면 무변화 → 시작점을 바꿔 ADB 드래그 스와이프로 재시도 (우측 여백 유지)
         for retry_idx, start_ratio in enumerate((0.60, 0.50), start=1):
             self._log(f"  ⚠ [스크롤 다운] 화면 변화 없음 → 시작점 변경 재시도 ({retry_idx}/2, y={int(start_ratio*100)}%)")
             start_y = int(h * start_ratio)
             end_y = max(100, int(start_y - (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
             time.sleep(0.7)
             after = self._capture_screen_fingerprint()
             if after is None or self._fingerprints_differ(before, after):
@@ -3610,15 +5889,16 @@ class NaverOrderWorker:
         self._log("  ⚠ [스크롤 다운] 재시도에도 화면이 움직이지 않음 (페이지 끝 또는 스크롤 불가 상태)")
 
     def _scroll_up(self, distance_ratio: float = 0.4):
-        """위로 스크롤 (화면을 아래로 내림). 요소 클릭 미발생 방식 + 무변화 시 재시도"""
+        """위로 스크롤 (화면을 아래로 내림). 요소 클릭 방지: 우측 안전 여백 드래그"""
         w, h = self._get_window_size()
+        safe_x = int(w * 0.88)
         before = self._capture_screen_fingerprint()
 
-        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그
+        # 1차: 네이티브 scrollGesture, 미지원 시 ADB 드래그 (우측 여백)
         if not self._scroll_gesture("up", distance_ratio):
             start_y = int(h * 0.3)
             end_y = min(h - 100, int(start_y + (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
 
         if before is None:
             return
@@ -3631,7 +5911,7 @@ class NaverOrderWorker:
             self._log(f"  ⚠ [스크롤 업] 화면 변화 없음 → 시작점 변경 재시도 ({retry_idx}/2, y={int(start_ratio*100)}%)")
             start_y = int(h * start_ratio)
             end_y = min(h - 100, int(start_y + (h * distance_ratio)))
-            self._adb_swipe(w // 2, start_y, w // 2, end_y, duration_ms=700)
+            self._adb_swipe(safe_x, start_y, safe_x, end_y, duration_ms=800)
             time.sleep(0.7)
             after = self._capture_screen_fingerprint()
             if after is None or self._fingerprints_differ(before, after):
