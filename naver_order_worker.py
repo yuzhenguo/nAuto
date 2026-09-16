@@ -88,6 +88,12 @@ IMG_CART_ADD = [
     (IMG_CART2, "장바구니2"),
     (IMG_CART3, "장바구니3"),
 ]
+IMG_CONFIRM1 = os.path.join(_IMG_DIR, "확인1.png")
+IMG_CONFIRM2 = os.path.join(_IMG_DIR, "확인2.png")
+IMG_CART_CLEAR_CONFIRM = [
+    (IMG_CONFIRM1, "확인1"),
+    (IMG_CONFIRM2, "확인2"),
+]
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
 IMG_DELIVERY_MEMO2 = os.path.join(_IMG_DIR, "배송메모선택2.png")  # 배송메모 선택 팝업 타이틀
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
@@ -345,6 +351,20 @@ CART_ICON_XPATHS = [
 CART_ORDER_BTN_XPATHS = [
     '//android.widget.Button[contains(@text,"주문하기")]',
     '//*[contains(@text,"주문하기") and contains(@text,"상품")]',
+]
+# 마이쇼핑 → 장바구니 진입 (naver_address_auto 와 동일, 상품체크/주문하기는 하지 않음)
+CART_ENTRY_XPATHS = [
+    '//android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"]',
+    '//android.widget.Button[contains(@text, "장바구니")]',
+    '//*[contains(@content-desc, "장바구니")]',
+]
+CART_SELECT_DELETE_XPATHS = [
+    '//android.widget.Button[@text="선택 삭제"]',
+    '//android.widget.Button[contains(@text,"선택 삭제")]',
+]
+CART_CONTINUE_SHOPPING_XPATHS = [
+    '//android.widget.Button[@text="쇼핑 계속하기"]',
+    '//android.widget.Button[contains(@text,"쇼핑 계속하기")]',
 ]
 SEARCH_INPUT_TEXT_XPATH = '//android.widget.EditText[@resource-id="input_text"]'
 
@@ -2072,6 +2092,131 @@ class NaverOrderWorker:
         self._log(f"✅ 주문 완료: {row.search_keyword}")
         return True
 
+    def _xpath_exists(self, xpaths: list, timeout: float = 3.0) -> bool:
+        for xp in xpaths:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=timeout):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _click_first_xpath(self, xpaths: list, timeout: float = 4.0) -> bool:
+        for xp in xpaths:
+            try:
+                if not ah.element_exists(self.driver, xp, timeout=timeout):
+                    continue
+                if ah.wait_and_click(self.driver, xp, timeout=4, log_callback=self._log):
+                    self._log(f"  ✅ XPath 클릭: {xp}")
+                    return True
+                for el in self.driver.find_elements(By.XPATH, xp):
+                    if self._safe_click_element(el):
+                        self._log(f"  ✅ XPath 좌표 클릭: {xp}")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _open_cart_from_my_shopping(self) -> bool:
+        """마이쇼핑에서 장바구니 화면만 진입 (상품체크/주문하기 없음)."""
+        self._set_status("장바구니 클릭")
+        self._log("🔍 [장바구니 클리어] 마이쇼핑 장바구니 버튼 탐색")
+        self._dismiss_popups()
+        cart_clicked = False
+        for attempt in range(1, 4):
+            self._dismiss_popups()
+            if self._click_first_xpath(CART_ENTRY_XPATHS, timeout=3.0):
+                cart_clicked = True
+                time.sleep(3)
+                break
+            self._log(f"  ⚠ 장바구니 버튼 미발견 ({attempt}/3)")
+            time.sleep(1.5)
+
+        if not cart_clicked:
+            self._log("  🔄 장바구니 버튼 미발견 → 메인 복구 후 스토어/마이쇼핑 재진입")
+            try:
+                ah.go_to_main_page(self.driver, self._log)
+            except Exception:
+                pass
+            time.sleep(3)
+            self._dismiss_popups()
+            if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+            self._dismiss_popups()
+            if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+            self._dismiss_popups()
+            if self._click_first_xpath(CART_ENTRY_XPATHS, timeout=4.0):
+                cart_clicked = True
+                time.sleep(3)
+
+        if not cart_clicked:
+            self._log("❌ 장바구니 버튼을 최종적으로 찾지 못했습니다")
+            return False
+        self._dismiss_popups()
+        self._log("✅ 장바구니 화면 진입 (상품체크/주문하기 생략)")
+        return True
+
+    def _click_cart_clear_confirm(self) -> bool:
+        """확인1.png / 확인2.png 중 하나 인식되면 클릭."""
+        w_h = 2400
+        try:
+            w_h = self.driver.get_window_size()["height"]
+        except Exception:
+            pass
+        return self._click_any_image_basic(
+            IMG_CART_CLEAR_CONFIRM,
+            threshold=0.70,
+            attempts=3,
+            wait_after=0.0,
+            min_y=int(w_h * 0.30),
+            max_y=int(w_h * 0.90),
+        )
+
+    def _clear_cart_before_batch(self, login_id: str = "") -> bool:
+        """묶음 작업 전 1회: 장바구니 진입 → 선택 삭제 → 확인×2 → 쇼핑 계속하기 → 앱 재시작."""
+        self._set_status("장바구니 클리어")
+        self._log("🧹 [장바구니 클리어] 묶음 주문 전 기존 장바구니 비우기")
+        if not self._open_cart_from_my_shopping():
+            return False
+
+        if self._xpath_exists(CART_CONTINUE_SHOPPING_XPATHS, timeout=2.0) and not self._xpath_exists(
+            CART_SELECT_DELETE_XPATHS, timeout=1.5
+        ):
+            self._log("✅ [장바구니 클리어] 이미 비어 있음 (쇼핑 계속하기)")
+        else:
+            if not self._click_first_xpath(CART_SELECT_DELETE_XPATHS, timeout=4.0):
+                if self._xpath_exists(CART_CONTINUE_SHOPPING_XPATHS, timeout=2.0):
+                    self._log("✅ [장바구니 클리어] 선택 삭제 없음 → 이미 비어 있음")
+                else:
+                    self._log("❌ [장바구니 클리어] 선택 삭제 버튼 미발견")
+                    return False
+            else:
+                self._log("  ✅ 선택 삭제 클릭")
+                time.sleep(2.0)
+                if self._click_cart_clear_confirm():
+                    self._log("  ✅ 확인(1차) 클릭")
+                else:
+                    self._log("  ⚠ 확인1/2 1차 미발견")
+                time.sleep(2.0)
+                if self._click_cart_clear_confirm():
+                    self._log("  ✅ 확인(2차) 클릭")
+                else:
+                    self._log("  ⚠ 확인1/2 2차 미발견")
+                time.sleep(2.0)
+                if not self._xpath_exists(CART_CONTINUE_SHOPPING_XPATHS, timeout=4.0):
+                    self._log("❌ [장바구니 클리어] 쇼핑 계속하기 미발견 → 실패")
+                    return False
+                self._log("✅ [장바구니 클리어] 쇼핑 계속하기 확인 → 성공")
+
+        self._log("🔄 [장바구니 클리어] 앱 종료 후 기존 묶음 작업 재개")
+        if not self._go_main_and_enter_store(login_id=login_id):
+            self._log("❌ [장바구니 클리어] 앱 재시작/스토어 진입 실패")
+            return False
+        return True
+
     def _process_cart_batch(self, rows: list) -> bool:
         """같은 수취인/순번/아이디 상품을 장바구니에 모은 뒤 한 번 결제."""
         if not rows:
@@ -2084,6 +2229,9 @@ class NaverOrderWorker:
         )
         if not self._go_main_and_enter_store(login_id=first.login_id):
             self._log("❌ 계정 전환 또는 메인 페이지/스토어/마이쇼핑 진입 실패")
+            return False
+        if not self._clear_cart_before_batch(login_id=first.login_id):
+            self._log("❌ 장바구니 클리어 실패 → 묶음 작업 중단")
             return False
 
         for i, row in enumerate(rows):
