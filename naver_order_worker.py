@@ -5420,12 +5420,22 @@ class NaverOrderWorker:
                     self.order_manager.mark_success(row.row_index)
                     if self.manual_mode:
                         self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
+                    elif self._is_kb_card_payment(row.payment_method or ""):
+                        self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
                     else:
                         self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
 
                 # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
                 if self.manual_mode:
                     self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
+                    break
+
+                # 국민카드(반자동 모드): 결재하기 클릭 후 사용자가 직접 개별 핸드폰
+                # '시작' 버튼을 눌러 다음 작업을 진행하도록 워커 종료
+                if self._is_kb_card_payment(row.payment_method or ""):
+                    self._log("🖐 [국민카드] 반자동 모드 → Y 기록 완료, 워커 종료 (다음 시작은 개별 핸드폰 시작 버튼으로)")
+                    import gc
+                    gc.collect()
                     break
 
                 self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
