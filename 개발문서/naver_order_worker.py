@@ -426,13 +426,6 @@ class NaverOrderWorker:
         else:
             self._log("🚀 자동 주문 워커 시작")
 
-        # ── 재부팅 후 핫스팟 활성 여부 사전 확인 (활성.PNG 이미지 인식) ──
-        if os.path.exists(IMG_ACTIVE):
-            self._log(f"🔍 [활성.PNG] 핫스팟 활성 상태 사전 확인 중...")
-            if _check_image_exists_on_device(self.device_id, IMG_ACTIVE, threshold=0.65):
-                self._log("✅ [활성.PNG] 인식 성공 → 핫스팟 활성 확인, 다음 작업으로 진행")
-            else:
-                self._log("ℹ️ [활성.PNG] 미감지 → 핫스팟 미활성 또는 이미지 없음, 계속 진행")
 
         max_restarts = 10
 

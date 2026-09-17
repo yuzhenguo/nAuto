@@ -1323,64 +1323,87 @@ class MainApp(tk.Tk):
             time.sleep(2.5)
             tree = get_ui_nodes("ui_tether_direct.xml")
 
-        # Step 3: 모바일 핫스팟 스위치 ON 클릭 (활성.png/활성.PNG 이미지 인식 시 즉시 중단 후 다음 단계 진입)
-        tpl_path = os.path.join(os.path.dirname(__file__), "활성.PNG")
-        if not os.path.exists(tpl_path):
-            tpl_path = os.path.join(os.path.dirname(__file__), "활성.png")
-        if not os.path.exists(tpl_path):
-            tpl_path = os.path.join(os.path.dirname(__file__), "naver_address_auto", "활성.PNG")
-        if not os.path.exists(tpl_path):
-            tpl_path = os.path.join(os.path.dirname(__file__), "naver_address_auto", "활성.png")
+        def check_inactive_switch(tree_node):
+            """//android.widget.Switch[@content-desc="사용 안 함"] 존재 여부 확인
+            존재하면 하스팟 아직 비활성 상태 -> (True, node) 반환
+            """
+            if tree_node is None:
+                return False, None
+            for node in tree_node.iter('node'):
+                cls = node.attrib.get('class', '')
+                desc = node.attrib.get('content-desc', '')
+                res_id = node.attrib.get('resource-id', '')
+                tag = getattr(node, 'tag', '')
+                is_switch = 'Switch' in cls or tag.endswith('Switch') or 'switch_widget' in res_id
+                if is_switch and (desc == "사용 안 함" or "사용 안 함" in desc):
+                    return True, node
+            return False, None
 
-        # 사전 검사: 이미 핫스팟이 켜져있으면 매크로 탭 없이 바로 완료 및 탈출
-        if check_image_exists_on_device(did, tpl_path, threshold=0.48):
-            self._on_worker_log(did, "✅ [이미지 인식] '활성.PNG' 사전 감지 성공! 핫스팟 이미 활성화됨 -> 반복 탭 중단 및 다음 단계 진행")
+        def check_active_switch(tree_node):
+            """스위치가 켜진 상태(content-desc='사용 중' 또는 checked='true')인지 확인"""
+            if tree_node is None:
+                return False, None
+            for node in tree_node.iter('node'):
+                cls = node.attrib.get('class', '')
+                desc = node.attrib.get('content-desc', '')
+                checked = node.attrib.get('checked', '')
+                res_id = node.attrib.get('resource-id', '')
+                tag = getattr(node, 'tag', '')
+                is_switch = 'Switch' in cls or tag.endswith('Switch') or 'switch_widget' in res_id
+                if is_switch and ("사용 중" in desc or checked == 'true'):
+                    return True, node
+            return False, None
+
+        # Step 3: 모바일 핫스팟 스위치 상태 확인 및 ON 클릭
+        # //android.widget.Switch[@content-desc="사용 안 함"] 존재하면 하스팟 아직 비활성
+        is_inactive, switch_node = check_inactive_switch(tree)
+        is_active, _ = check_active_switch(tree)
+
+        # 사전 검사: '사용 안 함' 스위치가 없고 활성 스위치가 확인되면 이미 켜져있는 상태
+        if tree is not None and not is_inactive and is_active:
+            self._on_worker_log(did, "✅ [XML 검증] 모바일 핫스팟 이미 활성화됨 (Switch '사용 안 함' 없음) -> 다음 단계 진행")
             return True
+        elif is_inactive:
+            self._on_worker_log(did, "ℹ️ [XML 검증] 모바일 핫스팟 아직 비활성 (//android.widget.Switch[@content-desc='사용 안 함'] 감지) -> 핫스팟 켜기 시도")
 
         for attempt in range(1, 11):
             wake_and_keep_screen_on(did)
-            # 이미지 인식 검사: 활성.png 이미지가 발견되면 즉시 종료 및 다음 단계 진입
-            if check_image_exists_on_device(did, tpl_path, threshold=0.48):
-                self._on_worker_log(did, f"✅ [이미지 인식] '활성.PNG' 상태 감지 완료! ({attempt}회차) -> 반복 탭 중단 및 다음 단계 진행")
-                return True
 
-            if tree is None or attempt > 1:
+            if attempt > 1:
                 tree = get_ui_nodes(f"ui_tether_retry{attempt}.xml")
+                is_inactive, switch_node = check_inactive_switch(tree)
+                is_active, _ = check_active_switch(tree)
+                if tree is not None and not is_inactive and is_active:
+                    self._on_worker_log(did, f"✅ [XML 검증] 모바일 핫스팟 ON 감지 완료! ({attempt}회차) -> 반복 탭 중단 및 다음 단계 진행")
+                    return True
 
-            switch_node = None
+            target_switch = switch_node
             title_node = None
 
-            if tree is not None:
+            if target_switch is None and tree is not None:
                 for node in tree.iter('node'):
                     desc = node.attrib.get('content-desc', '')
                     res_id = node.attrib.get('resource-id', '')
                     cls = node.attrib.get('class', '')
                     text = node.attrib.get('text', '')
 
-                    if (desc == "모바일 핫스팟" and ("Switch" in cls or "switch_widget" in res_id)) or \
-                       (res_id == "android:id/switch_widget" and desc == "모바일 핫스팟") or \
-                       ("Switch" in cls and desc == "모바일 핫스팟"):
-                        switch_node = node
+                    if ("Switch" in cls or "switch_widget" in res_id) and ("사용 안 함" in desc or desc == "모바일 핫스팟"):
+                        target_switch = node
                         break
                     if text == "모바일 핫스팟":
                         title_node = node
 
-                if switch_node is None:
+                if target_switch is None:
                     for node in tree.iter('node'):
                         if "Switch" in node.attrib.get('class', '') or "switch_widget" in node.attrib.get('resource-id', ''):
-                            switch_node = node
+                            target_switch = node
                             break
 
-            # 이미 활성화(checked="true") 상태인지 체크
-            if switch_node is not None and switch_node.attrib.get('checked') == 'true':
-                self._on_worker_log(did, f"✅ [XML 검증] 모바일 핫스팟 ON 감지 완료! ({attempt}회차) -> 반복 탭 중단 및 다음 단계 진행")
-                return True
-
             # 스위치 탭 수행
-            if switch_node is not None:
-                center = get_center(switch_node)
+            if target_switch is not None:
+                center = get_center(target_switch)
                 if center:
-                    tap_center(center[0], center[1], f"핫스팟 스위치 ON 탭 ({attempt}/10)")
+                    tap_center(center[0], center[1], f"핫스팟 스위치('사용 안 함') ON 탭 ({attempt}/10)")
                 else:
                     tap_center(912, 381, f"핫스팟 스위치 우측 좌표 탭 ({attempt}/10)")
             elif title_node is not None:
@@ -1406,21 +1429,19 @@ class MainApp(tk.Tk):
                             time.sleep(2.0)
                             break
 
-            # 탭 수행 후 이미지 인식 재확인
-            if check_image_exists_on_device(did, tpl_path, threshold=0.48):
-                self._on_worker_log(did, f"✅ [이미지 인식] 탭 후 '활성.PNG' 감지 성공! ({attempt}회차) -> 반복 탭 중단 및 다음 단계 진행")
-                return True
-
-            # 탭 후 활성화 여부 다시 재검증
+            # 탭 후 활성화 여부 재검증: //android.widget.Switch[@content-desc="사용 안 함"] 존재 시 아직 비활성
             verify_tree = get_ui_nodes(f"ui_verify{attempt}.xml")
             if verify_tree is not None:
-                for node in verify_tree.iter('node'):
-                    desc = node.attrib.get('content-desc', '')
-                    res_id = node.attrib.get('resource-id', '')
-                    checked = node.attrib.get('checked', '')
-                    if (desc == "모바일 핫스팟" or "switch_widget" in res_id) and checked == 'true':
-                        self._on_worker_log(did, f"✅ [XML 검증] 핫스팟 켜기 성공! ({attempt}회차) -> 반복 탭 중단 및 다음 단계 진행")
-                        return True
+                still_inactive, _ = check_inactive_switch(verify_tree)
+                is_on, _ = check_active_switch(verify_tree)
+                if not still_inactive and is_on:
+                    self._on_worker_log(did, f"✅ [XML 검증] 핫스팟 켜기 성공! (Switch '사용 중' 확인됨) ({attempt}회차) -> 다음 단계 진행")
+                    return True
+                elif not still_inactive:
+                    self._on_worker_log(did, f"✅ [XML 검증] 핫스팟 켜기 성공! ('사용 안 함' 스위치 사라짐) ({attempt}회차) -> 다음 단계 진행")
+                    return True
+                else:
+                    self._on_worker_log(did, f"ℹ️ 핫스팟 아직 비활성 상태 (//android.widget.Switch[@content-desc='사용 안 함'] 존재, {attempt}/10회차)")
 
         self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")
         subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"],
