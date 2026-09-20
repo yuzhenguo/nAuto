@@ -358,6 +358,8 @@ class NaverOrderWorker:
         self.test_mode      = test_mode
         # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
         self.manual_mode    = manual_mode
+        self.current_payment_method = ""
+        self.current_row    = None
         self.driver         = None
         self._stop_event    = threading.Event()
         self._ui_gen        = 0  # GUI 세대 (중지 후 재시작 시 stale done 무시)
@@ -499,6 +501,16 @@ class NaverOrderWorker:
 
     def stop(self):
         self._stop_event.set()
+        cur_row = getattr(self, "current_row", None)
+        if cur_row and getattr(cur_row, "row_index", None):
+            try:
+                self.order_manager.mark_cancelled(cur_row.row_index)
+                self._log(f"⏹ 정지됨: row={cur_row.row_index} ({cur_row.search_keyword}) → C 기록")
+            except Exception as e:
+                self._log(f"⚠ 취소 상태(C) 기록 실패: {e}")
+            self.current_row = None
+        self.current_payment_method = ""
+        self._set_status("취소됨", "-")
         self._log("⏹ 중지 요청됨")
         try:
             if self.driver:
@@ -515,7 +527,7 @@ class NaverOrderWorker:
         """[단계 3] 메인 페이지 진입, 7초 대기 및 3.1 웰컴 모달 처리 -> [단계 3.2] 계정 전환 -> [단계 4~6] 스토어/마이쇼핑 진입"""
         self._set_status("메인 페이지 이동 중")
         ah.force_stop_and_restart_app(self.driver, self.device_id, self._log)
-        time.sleep(3)
+        time.sleep(2)
 
         # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
         self._check_and_close_welcome_modals(step_label="3.1")
@@ -535,10 +547,10 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
             self._log("📌 네이버 플러스 스토어 탭 감지 → 클릭")
             ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=7, log_callback=self._log)
-            time.sleep(3)
+            time.sleep(2)
         else:
             self._log("⏭ 스토어 탭 없음 (이미 스토어 화면)")
-            time.sleep(2)
+            time.sleep(1)
 
         # [단계 5] 팝업 처리
         self._dismiss_popups()
@@ -548,7 +560,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
             self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
-            time.sleep(5)
+            time.sleep(3)
         else:
             self._log("⚠ 마이쇼핑 버튼 미발견")
             time.sleep(2)
@@ -944,43 +956,8 @@ class NaverOrderWorker:
 
         tap_coords = None
 
-        # (사용자 요청으로 검색입력.png 등 이미지 매칭 방식은 제외됨)
-
-        # 2순위: OCR 탐색 (상품명, 브랜드, 검색 등)
-        if not tap_coords:
-            self._log("🔍 [OCR] '상품명' 또는 '브랜드' 등 텍스트 검색 시도")
-            try:
-                import cv2, numpy as np
-                from paddleocr import PaddleOCR
-                res = _run_cmd(
-                    ["adb", "-s", self.device_id, "exec-out", "screencap", "-p"],
-                    capture_output=True, timeout=8
-                )
-                if res.stdout and len(res.stdout) > 100:
-                    img_arr = np.frombuffer(res.stdout, np.uint8)
-                    screen = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-                    if screen is not None:
-                        ocr_engine = PaddleOCR(use_angle_cls=True, lang="korean")
-                        results = ocr_engine.ocr(screen, cls=True)
-                        if results:
-                            for page in results:
-                                if not page: continue
-                                for item in page:
-                                    box = item[0]
-                                    text_info = item[1]
-                                    text = text_info[0].replace(" ", "")
-                                    conf = float(text_info[1])
-                                    if conf > 0.5 and any(kw in text for kw in ["상품", "브랜드", "쇼핑몰", "검색어", "입력"]):
-                                        cx = int((box[0][0] + box[2][0]) / 2)
-                                        cy = int((box[0][1] + box[2][1]) / 2)
-                                        tap_coords = (cx, cy)
-                                        self._log(f"  ✅ [OCR] '{text}' 발견 → 좌표: {tap_coords}")
-                                        break
-                                if tap_coords: break
-            except Exception as e:
-                self._log(f"  ⚠ [OCR 검색] 오류: {e}")
-
-        # 3순위: EditText XPath
+        # (사용자 요청으로 검색입력.png 등 이미지 매칭 및 OCR 검색 제외됨)
+        # 1순위: EditText XPath 탐색
         if not tap_coords:
             search_xpaths = [
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
@@ -1660,7 +1637,7 @@ class NaverOrderWorker:
                         continue
                     if self._safe_click_element(el):
                         self._log(f"  ✅ 하단 구매 CTA 클릭 (text={txt!r}, x={cx}, y={cy})")
-                        time.sleep(5)
+                        time.sleep(2)
                         return True
             except Exception:
                 continue
@@ -1722,7 +1699,7 @@ class NaverOrderWorker:
         ]
 
         def _confirm_after_click(label: str) -> bool:
-            time.sleep(4.0)
+            time.sleep(3.0)
             if self._is_order_pay_screen():
                 self._log(f"  ✅ {label} 후 주문/결제 화면 확인")
                 return True
@@ -1831,11 +1808,11 @@ class NaverOrderWorker:
                     self._log(f"  📌 변경 버튼 발견 (text={txt!r}, x={cx}, y={cy})")
                     if ah.tap_by_coords(self.driver, cx, cy, self._log):
                         self._log("✅ 변경 버튼 좌표 클릭 완료")
-                        time.sleep(2.5)
+                        time.sleep(1.5)
                         return True
                     if self._safe_click_element(el):
                         self._log("✅ 변경 버튼 클릭 완료")
-                        time.sleep(2.5)
+                        time.sleep(1.5)
                         return True
             except Exception:
                 continue
@@ -2345,7 +2322,7 @@ class NaverOrderWorker:
                         f"→ ({cx}, {cy}) bounds={bb}"
                     )
                     self._soft_tap(cx, cy)
-                    time.sleep(2.5)
+                    time.sleep(1.5)
                     return True
                 except Exception:
                     continue
@@ -2371,7 +2348,7 @@ class NaverOrderWorker:
         scroll_max = 8  # 스크롤 횟수 증가 (5 → 8)
 
         # ── 화면 안정화 대기 (변경 버튼 클릭 후 팝업/페이지 로딩) ──
-        time.sleep(1.5)
+        time.sleep(1)
 
         def _try_and_verify() -> bool:
             # 안전 영역 스크롤 후 재시도 포함: 최대 3번 탐색 시도
@@ -2385,7 +2362,7 @@ class NaverOrderWorker:
                 return False
 
             self._log("  ⏳ 클릭 후 결제창 복귀·수취인 확인 대기 (3초)...")
-            time.sleep(3.0)
+            time.sleep(2.0)
 
             # 성공 조건: 반드시 결제 화면 '배송지명'이 목표 수취인과 일치해야 함.
             # (팝업만 닫히거나 '결제하기' 텍스트만 보이면 SONG TAO 등 엉뚱한 배송지로
@@ -2447,7 +2424,7 @@ class NaverOrderWorker:
                     self._log("  ✅ 스크롤 후 결제창 배송지명 매칭 → 선택 완료")
                     return True
                 if self._find_recipient_on_screen(recipient_name, phone_digits):
-                    time.sleep(3.0)
+                    time.sleep(2.0)
                     if _recipient_confirmed():
                         self._log("  ✅ 재탐색 후 배송지명 매칭 확인")
                         return True
@@ -2601,7 +2578,7 @@ class NaverOrderWorker:
                     self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, cx, cy, self._log)
                     self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
-                    time.sleep(2)
+                    time.sleep(1)
                     return True
 
             # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
@@ -2625,7 +2602,7 @@ class NaverOrderWorker:
                                 self._log(f"  🎯 전액사용 XPath 발견: {xpath} (y={cy}) -> 클릭 시도")
                                 if self._safe_click_element(el):
                                     self._log("✅ [단계 17] 전액사용 XPath 클릭 완료 (3초 대기)")
-                                    time.sleep(2)
+                                    time.sleep(1)
                                     return True
                 except Exception:
                     continue
@@ -2653,7 +2630,7 @@ class NaverOrderWorker:
         if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
             ah.wait_and_click(self.driver, PAY_BTN_XPATH, timeout=5, log_callback=self._log)
             self._log("✅ 결제하기 버튼 클릭 완료")
-            time.sleep(3)
+            time.sleep(2)
             return True
 
         # 폴백: 좌표
@@ -2664,7 +2641,7 @@ class NaverOrderWorker:
             tap_y = int(h * 0.92)
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
             self._log(f"  ✅ 결제하기 좌표 탭 ({tap_x}, {tap_y})")
-            time.sleep(3)
+            time.sleep(2)
             return True
         except Exception as e:
             self._log(f"  ❌ 결제하기 클릭 실패: {e}")
@@ -2819,7 +2796,7 @@ class NaverOrderWorker:
 
         # ── 비밀번호 키패드 완전 표시 대기 (3초) ──
         self._log("  ⏳ 키패드 완전 표시 대기 (3초)...")
-        time.sleep(3.0)
+        time.sleep(2.0)
 
         MAX_DIGIT_RETRY = 3   # 숫자 1개당 최대 재시도 횟수 (UI 과부하 방지)
         RETRY_INTERVAL  = 0.8 # 재시도 간격 (초)
@@ -2995,7 +2972,7 @@ class NaverOrderWorker:
 
                     self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(2)
+                    time.sleep(1)
                     return True
 
             self._log(f"  ⬇ {name} 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
@@ -3052,7 +3029,7 @@ class NaverOrderWorker:
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        time.sleep(2)
+                        time.sleep(1)
                         return True
 
             self._log(f"  ⬇ [{names_str}] 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
@@ -3096,7 +3073,7 @@ class NaverOrderWorker:
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({cx}, {cy}) -> 결재하기 탭 클릭")
                         ah.tap_by_coords(self.driver, cx, cy, self._log)
-                        time.sleep(3.0)
+                        time.sleep(2.0)
                         return True
 
             self._log(f"  ⬇ [결재하기] 미발견 -> 밑으로 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
@@ -3272,7 +3249,7 @@ class NaverOrderWorker:
         (잔존 감지/재시도 생략 — 안전한2 상단 오인으로 루프 방지)
         """
         self._log("  ⏳ [안전인증] 현대결제하기 후 3초 대기...")
-        time.sleep(3.0)
+        time.sleep(2.0)
 
         detect_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_DETECT) + " / 안전결재3"
         confirm_names = " / ".join(n for _, n in IMG_HYUNDAI_SAFE_CONFIRM)
@@ -3347,7 +3324,7 @@ class NaverOrderWorker:
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        time.sleep(2)
+                        time.sleep(1)
                         return True
 
             # 2. XPath 매칭 폴백
@@ -5376,22 +5353,31 @@ class NaverOrderWorker:
                 self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
                 break
 
+            self.current_row = row
+            self.current_payment_method = str(row.payment_method or "").strip()
+            pay_tag = f"[{self.current_payment_method}] " if self.current_payment_method else ""
             self._log(
                 f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
                 f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
             )
-            self._set_status(f"주문 중: {row.search_keyword}")
+            self._set_status(f"{pay_tag}주문 중: {row.search_keyword}", self.current_payment_method)
             self.has_dismissed_payment_benefit = False
 
             try:
                 # 23. 실패 시 재작업하지 않음 (1회만 시도)
                 success = self._process_order_with_timeout(row)
             except Exception as fatal_err:
-                self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 치명적 오류: {fatal_err}")
+                if self._stop_event.is_set():
+                    self.order_manager.mark_cancelled(row.row_index)
+                    self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                else:
+                    self.order_manager.mark_failed(row.row_index)
+                    self._log(f"❌ 치명적 오류: {fatal_err}")
+                self.current_row = None
                 raise
 
             if success:
+                self.current_row = None
                 if self._is_bank_transfer_payment(row.payment_method):
                     # 무통장: 주문번호 확인되어야 최종 성공 처리
                     try:
@@ -5412,9 +5398,13 @@ class NaverOrderWorker:
                         else:
                             self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
                     else:
-                        self.order_manager.mark_failed(row.row_index)
-                        self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
-                        self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
+                        if self._stop_event.is_set():
+                            self.order_manager.mark_cancelled(row.row_index)
+                            self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                        else:
+                            self.order_manager.mark_failed(row.row_index)
+                            self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
+                        self._log("⏹ 작업 종료")
                         break
                 else:
                     self.order_manager.mark_success(row.row_index)
@@ -5438,18 +5428,26 @@ class NaverOrderWorker:
                     gc.collect()
                     break
 
-                self._log("⏳ [주문 성공] 완료 후 30초 대기 중...")
+                self._log("⏳ [주문 성공] 완료 후 8초 대기 중...")
                 import gc
                 gc.collect()
-                time.sleep(30)
+                time.sleep(8)
             else:
-                self.order_manager.mark_failed(row.row_index)
-                self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
-                self._log("⏹ F 기록 → 다음 작업 없이 워커 종료")
+                if self._stop_event.is_set():
+                    self.order_manager.mark_cancelled(row.row_index)
+                    self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                else:
+                    self.order_manager.mark_failed(row.row_index)
+                    self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                self.current_row = None
+                self._log("⏹ 작업 종료")
                 import gc
                 gc.collect()
                 break
 
+        self.current_row = None
+        self.current_payment_method = ""
+        self._set_status("대기 중", "-")
         self._log("📋 주문 루프 종료")
 
 
@@ -5945,6 +5943,14 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-    def _set_status(self, status: str):
+    def _set_status(self, status: str, payment_method: str = None):
+        if payment_method is None:
+            payment_method = getattr(self, "current_payment_method", "")
+        if payment_method and payment_method != "-" and not status.startswith(f"[{payment_method}]"):
+            if any(k in status for k in ["주문", "이동", "클릭", "선택", "입력", "인증", "결제", "대기", "조회"]):
+                status = f"[{payment_method}] {status}"
         if self._status_cb:
-            self._status_cb(self.device_id, status)
+            try:
+                self._status_cb(self.device_id, status, payment_method)
+            except TypeError:
+                self._status_cb(self.device_id, status)

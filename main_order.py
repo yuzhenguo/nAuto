@@ -68,25 +68,42 @@ class DevicePanel(tk.Frame):
         hdr = tk.Frame(self, bg=CLR_SURFACE2, padx=10, pady=6)
         hdr.pack(fill=tk.X)
 
+        # 상태 도트
         self.status_dot = tk.Label(hdr, text="●", fg=CLR_TEXT_MUTE,
                                    bg=CLR_SURFACE2, font=("Segoe UI", 11))
         self.status_dot.pack(side=tk.LEFT)
 
-        title = f"  {self.device_id}"
-        if self.remark:
-            title += f" ({self.remark})"
-        tk.Label(hdr, text=title,
-                 fg=CLR_TEXT, bg=CLR_SURFACE2,
-                 font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        # 비고 우선 표기 (비고가 있으면 비고, 없으면 기기 ID)
+        title = f"  {self.remark}" if self.remark else f"  {self.device_id}"
+        self.title_label = tk.Label(hdr, text=title,
+                                    fg=CLR_TEXT, bg=CLR_SURFACE2,
+                                    font=("Segoe UI", 10, "bold"))
+        self.title_label.pack(side=tk.LEFT)
 
-        # 개별 시작 / 정지
+        # 간략 작업 카운트 (1/3 형태)
+        self.task_count_label = tk.Label(
+            hdr, text="0/0",
+            fg=CLR_PRIMARY, bg=CLR_SURFACE2,
+            font=("Segoe UI", 9, "bold")
+        )
+        self.task_count_label.pack(side=tk.LEFT, padx=(6, 4))
+
+        # 현재 작업 중인 결재방식
+        self.payment_label = tk.Label(
+            hdr, text="결재: -", fg=CLR_TEXT_MUTE,
+            bg=CLR_SURFACE, font=("Segoe UI", 8, "bold"),
+            padx=5, pady=1
+        )
+        self.payment_label.pack(side=tk.LEFT, padx=(4, 0))
+
+        # 개별 시작 / 정지 (우측)
         btn_wrap = tk.Frame(hdr, bg=CLR_SURFACE2)
-        btn_wrap.pack(side=tk.RIGHT, padx=(8, 0))
+        btn_wrap.pack(side=tk.RIGHT, padx=(4, 0))
 
         self.stop_btn = tk.Button(
             btn_wrap, text="⏹ 정지", command=self._click_stop,
             bg=CLR_ERROR, fg="#ffffff", font=("Segoe UI", 8, "bold"),
-            relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            relief=tk.FLAT, cursor="hand2", padx=6, pady=2,
             state=tk.DISABLED, activebackground="#da3633",
         )
         self.stop_btn.pack(side=tk.RIGHT, padx=2)
@@ -94,14 +111,10 @@ class DevicePanel(tk.Frame):
         self.start_btn = tk.Button(
             btn_wrap, text="▶ 시작", command=self._click_start,
             bg=CLR_NAVER, fg="#ffffff", font=("Segoe UI", 8, "bold"),
-            relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            relief=tk.FLAT, cursor="hand2", padx=6, pady=2,
             activebackground="#02b350",
         )
         self.start_btn.pack(side=tk.RIGHT, padx=2)
-
-        tk.Label(hdr, text=f"PORT:{self.port}",
-                 fg=CLR_TEXT_MUTE, bg=CLR_SURFACE2,
-                 font=("Segoe UI", 8)).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.status_label = tk.Label(
             self, text="대기 중", fg=CLR_TEXT_MUTE,
@@ -135,6 +148,7 @@ class DevicePanel(tk.Frame):
     def set_running(self, running: bool):
         """개별 시작/정지 버튼 상태 갱신"""
         self._running = bool(running)
+        self._update_task_count_ui()
         try:
             if self._running:
                 self.start_btn.config(state=tk.DISABLED)
@@ -175,7 +189,7 @@ class DevicePanel(tk.Frame):
         self.status_label.config(text=status)
         if any(k in status for k in ["완료", "성공"]):
             dot_color = CLR_SUCCESS
-        elif any(k in status for k in ["실패", "오류"]):
+        elif any(k in status for k in ["실패", "오류", "취소"]):
             dot_color = CLR_ERROR
         elif any(k in status for k in ["중", "클릭", "입력", "주문", "선택"]):
             dot_color = CLR_PRIMARY
@@ -186,10 +200,85 @@ class DevicePanel(tk.Frame):
         self.status_dot.config(fg=dot_color)
         self.status_label.config(fg=CLR_TEXT)
 
+    def set_task_counts(self, total: int, pending: int):
+        """총 잔여는 표기 안하고 1/3 이렇게 간략하게 표기"""
+        self._total_tasks = total
+        self._pending_tasks = pending
+        self._update_task_count_ui()
+
+    def _update_task_count_ui(self):
+        total = getattr(self, "_total_tasks", 0)
+        pending = getattr(self, "_pending_tasks", 0)
+        if total == 0:
+            self.task_count_label.config(text="0/0", fg=CLR_TEXT_MUTE)
+            return
+
+        done = max(0, total - pending)
+        if self._running and pending > 0:
+            current = min(done + 1, total)
+        else:
+            current = done
+
+        color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
+        self.task_count_label.config(text=f"{current}/{total}", fg=color)
+
+    def set_payment_method(self, method: str):
+        """현재 작업 중인 결재방식 표시"""
+        m = str(method or "").strip()
+        if m and m != "-":
+            self.payment_label.config(text=f"결재: {m}", fg="#38bdf8", bg="#1e293b")
+        else:
+            self.payment_label.config(text="결재: -", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE)
+
     def set_idle(self):
         self.status_dot.config(fg=CLR_TEXT_MUTE)
         self.status_label.config(text="대기 중", fg=CLR_TEXT_MUTE)
+        self.set_payment_method("-")
         self.set_running(False)
+
+
+class DynamicSemaphore:
+    """동적으로 동시 작업 슬롯 수를 조절할 수 있는 세마포어"""
+    def __init__(self, initial_value: int = 8):
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._limit = max(1, int(initial_value))
+        self._current = 0
+
+    @property
+    def limit(self) -> int:
+        with self._lock:
+            return self._limit
+
+    def set_limit(self, new_limit: int):
+        with self._lock:
+            self._limit = max(1, int(new_limit))
+            self._cond.notify_all()
+
+    def acquire(self, timeout=None, stop_check=None) -> bool:
+        """stop_check()가 True를 반환하면 대기를 즉시 중단하고 False 반환"""
+        with self._lock:
+            while self._current >= self._limit:
+                if stop_check and stop_check():
+                    return False
+                self._cond.wait(timeout=1.0)
+                if stop_check and stop_check():
+                    return False
+            self._current += 1
+            return True
+
+    def release(self):
+        with self._lock:
+            if self._current > 0:
+                self._current -= 1
+            self._cond.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
 
 
 # ─── 스크롤 가능 프레임 ───────────────────────────────────────────────────────
@@ -297,9 +386,11 @@ class MainApp(tk.Tk):
         self.worker_threads: dict = {}
         self.worker_gen: dict = {}  # device_id -> 세대번호 (재시작 시 stale done 무시)
         self.device_panels: dict = {}
+        self.device_task_labels: dict = {}
         self.running_ports: set = set()
         self.running: bool = False
-        self.worker_semaphore = threading.Semaphore(8)  # CPU 부하 감소를 위해 동시 실행 최대 8대 제한
+        self.max_workers_var = tk.IntVar(value=8)
+        self.worker_semaphore = DynamicSemaphore(8)  # 동시 실행 최대 기기 수 동적 제어
 
         # ── UI 응답성 유지: 로그/상태 배치 처리 큐 ──────────────────────────
         # 워커 스레드가 빠르게 로그를 보낼 때 tkinter 이벤트 큐가 폭발하는 것을 방지.
@@ -444,6 +535,14 @@ class MainApp(tk.Tk):
             w.destroy()
 
         self.device_check_vars = {}
+        self.device_task_labels = {}
+
+        device_counts = {}
+        if self.order_manager:
+            try:
+                device_counts = self.order_manager.get_all_devices_task_counts()
+            except Exception:
+                device_counts = {}
 
         is_desc = getattr(self, "sort_desc", False)
         sorted_devices = sorted(
@@ -520,6 +619,18 @@ class MainApp(tk.Tk):
                 font=("Segoe UI", 9), width=7, anchor="center"
             ).pack(side=tk.LEFT)
 
+            # 기기별 작업수 (총작업 / 잔여수)
+            dev_cnt = device_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+            t_cnt, p_cnt = dev_cnt.get("total", 0), dev_cnt.get("pending", 0)
+            cnt_color = CLR_SUCCESS if p_cnt == 0 and t_cnt > 0 else (CLR_PRIMARY if p_cnt > 0 else CLR_TEXT_MUTE)
+            cnt_lbl = tk.Label(
+                row_frame, text=f"총 {t_cnt} / 잔여 {p_cnt}",
+                fg=cnt_color, bg=row_bg,
+                font=("Segoe UI", 8, "bold"), width=13, anchor="center"
+            )
+            cnt_lbl.pack(side=tk.LEFT, padx=(2, 4))
+            self.device_task_labels[did] = cnt_lbl
+
             # 테더링 여부 체크박스 (시안/스카이블루 고대비 색상 적용)
             tether_var = tk.BooleanVar(value=info.get("tethering", True))
             tether_chk = tk.Checkbutton(
@@ -576,6 +687,27 @@ class MainApp(tk.Tk):
         right_ctrl = tk.Frame(ctrl, bg=CLR_SURFACE)
         right_ctrl.pack(side=tk.RIGHT)
 
+        # 동시 작업 횟수 설정
+        concur_frame = tk.Frame(right_ctrl, bg=CLR_SURFACE)
+        concur_frame.pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(
+            concur_frame, text="동시 작업:",
+            fg=CLR_TEXT, bg=CLR_SURFACE, font=("Segoe UI", 9, "bold")
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.max_workers_spin = tk.Spinbox(
+            concur_frame, from_=1, to=30, textvariable=self.max_workers_var,
+            width=3, font=("Segoe UI", 9, "bold"), bg=CLR_SURFACE2, fg="#38bdf8",
+            insertbackground=CLR_TEXT, relief=tk.FLAT, justify="center",
+            command=self._on_max_workers_changed
+        )
+        self.max_workers_spin.pack(side=tk.LEFT)
+        self.max_workers_spin.bind("<KeyRelease>", lambda e: self._on_max_workers_changed())
+        tk.Label(
+            concur_frame, text="대",
+            fg=CLR_TEXT_MUTE, bg=CLR_SURFACE, font=("Segoe UI", 9)
+        ).pack(side=tk.LEFT, padx=(2, 0))
+
         self.test_mode_var = tk.BooleanVar(value=False)
         self.test_mode_chk = tk.Checkbutton(
             right_ctrl, text="테스트 모드", variable=self.test_mode_var,
@@ -626,13 +758,14 @@ class MainApp(tk.Tk):
 
         self.summary_labels = {}
         for key, label, color in [
-            ("total",   "전체",    CLR_TEXT),
-            ("pending", "대기",    CLR_WARNING),
-            ("done",    "완료(Y)", CLR_SUCCESS),
-            ("failed",  "실패(F)", CLR_ERROR),
+            ("total",     "전체",     CLR_TEXT),
+            ("pending",   "대기",     CLR_WARNING),
+            ("done",      "완료(Y)",  CLR_SUCCESS),
+            ("failed",    "실패(F)",  CLR_ERROR),
+            ("cancelled", "취소(C)",  "#f43f5e"),
         ]:
             lf = tk.Frame(summary_bar, bg=CLR_SURFACE2)
-            lf.pack(side=tk.LEFT, padx=16)
+            lf.pack(side=tk.LEFT, padx=14)
             tk.Label(lf, text=label + ":", fg=CLR_TEXT_MUTE,
                      bg=CLR_SURFACE2, font=("Segoe UI", 9)).pack(side=tk.LEFT)
             lbl = tk.Label(lf, text="0", fg=color,
@@ -653,7 +786,7 @@ class MainApp(tk.Tk):
 
         # ── 좌측: 기기 선택 패널 ──────────────────────────────────────────────
         self.dev_list_frame = tk.Frame(
-            body_frame, bg=CLR_SURFACE, width=440,
+            body_frame, bg=CLR_SURFACE, width=540,
             highlightbackground=CLR_BORDER, highlightthickness=1
         )
         self.dev_list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
@@ -684,9 +817,11 @@ class MainApp(tk.Tk):
         tk.Label(col_hdr, text="ADB", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
                  font=("Segoe UI", 8, "bold"), width=3).pack(side=tk.LEFT)
         tk.Label(col_hdr, text="기기 ID", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-                 font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
+                 font=("Segoe UI", 9, "bold"), width=13, anchor="w").pack(side=tk.LEFT)
         tk.Label(col_hdr, text="상태", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
                  font=("Segoe UI", 9, "bold"), width=7, anchor="center").pack(side=tk.LEFT)
+        tk.Label(col_hdr, text="작업(총/잔여)", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
+                 font=("Segoe UI", 9, "bold"), width=13, anchor="center").pack(side=tk.LEFT)
         sort_icon = " ▼" if getattr(self, "sort_desc", False) else " ▲"
         lbl_remark = tk.Label(col_hdr, text=f"비고{sort_icon}", fg=CLR_PRIMARY, bg=CLR_SURFACE,
                               font=("Segoe UI", 9, "bold"), cursor="hand2", anchor="w")
@@ -756,6 +891,13 @@ class MainApp(tk.Tk):
         selected_devices = self._get_selected_devices()
         count = len(selected_devices)
 
+        dev_counts = {}
+        if self.order_manager:
+            try:
+                dev_counts = self.order_manager.get_all_devices_task_counts()
+            except Exception:
+                dev_counts = {}
+
         if count == 0:
             tk.Label(
                 self.panels_frame,
@@ -778,6 +920,8 @@ class MainApp(tk.Tk):
                 highlightbackground=CLR_BORDER,
                 highlightthickness=1
             )
+            c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+            panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
             row = i // cols
             col = i % cols
             panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
@@ -835,6 +979,15 @@ class MainApp(tk.Tk):
             return 1
 
     # ─── 작업 제어 ────────────────────────────────────────────────────────────
+
+    def _on_max_workers_changed(self):
+        """동시 작업 횟수 UI 변경 시 세마포어 실시간 반영"""
+        try:
+            val = int(self.max_workers_var.get())
+            if hasattr(self, "worker_semaphore") and self.worker_semaphore:
+                self.worker_semaphore.set_limit(val)
+        except Exception:
+            pass
 
     def _start_manual(self):
         """수동시작: 배송지 선택(결제창 복귀)까지 진행 → 엑셀 Y 기록 후 종료"""
@@ -918,19 +1071,33 @@ class MainApp(tk.Tk):
                 self.device_panels[device_id].set_idle()
                 self.device_panels[device_id].append_log("✅ 중지 완료 → 다시 시작 가능")
             return
+        # 현재 작업 중인 행이 있으면 즉시 취소(C) 기록
+        cur_row = getattr(worker, "current_row", None)
+        if cur_row and getattr(cur_row, "row_index", None):
+            try:
+                self.order_manager.mark_cancelled(cur_row.row_index)
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].append_log(
+                        f"⏹ 작업 취소(C 기록): row={cur_row.row_index} ({cur_row.search_keyword})"
+                    )
+            except Exception:
+                pass
+            worker.current_row = None
+
         try:
             worker.stop()
         except Exception:
             pass
         if device_id in self.device_panels:
             self.device_panels[device_id].append_log("⏹ 개별 중지 요청됨 (종료 대기 중...)")
-            self.device_panels[device_id].set_status("중지 중...")
+            self.device_panels[device_id].set_status("취소/중지 중...")
             # 정지 버튼만 비활성 — 종료 완료 후 시작 가능
             try:
                 self.device_panels[device_id].stop_btn.config(state=tk.DISABLED)
             except Exception:
                 pass
-        self._log_status(f"⏹ 개별 중지: {device_id}")
+        self._log_status(f"⏹ 개별 중지(취소): {device_id}")
+        self._refresh_summary()
         # 최대 15초 후에도 스레드가 안 죽으면 UI만 풀어 재시작 허용
         self.after(15000, lambda d=device_id, g=getattr(worker, "_ui_gen", None):
                    self._force_unlock_device_if_stuck(d, g))
@@ -984,6 +1151,7 @@ class MainApp(tk.Tk):
             if not confirm:
                 return
 
+        self._on_max_workers_changed()
         self.running = True
         self.start_btn.config(state=tk.DISABLED)
         if hasattr(self, "manual_start_btn"):
@@ -1056,42 +1224,46 @@ class MainApp(tk.Tk):
         max_retries = 5
         tried_ports: list = []
 
-        self._on_worker_log(did, "⏳ CPU 부하 방지: 실행 대기 중 (최대 8대 동시 실행 제한)")
+        limit_val = getattr(self.worker_semaphore, "limit", 8)
+        self._on_worker_log(did, f"⏳ CPU 부하 방지: 실행 대기 중 (최대 {limit_val}대 동시 실행 제한)")
+        acquired = False
         try:
-            with self.worker_semaphore:
-                if worker._stop_event.is_set():
-                    self._on_worker_log(did, "⏹ 중지 요청 - 세마포어 대기 후 즉시 종료")
-                else:
-                    for attempt in range(1, max_retries + 1):
-                        if worker._stop_event.is_set():
-                            self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
+            acquired = self.worker_semaphore.acquire(stop_check=lambda: worker._stop_event.is_set())
+            if not acquired or worker._stop_event.is_set():
+                self._on_worker_log(did, "⏹ 중지 요청 - 세마포어 대기 후 즉시 종료")
+            else:
+                for attempt in range(1, max_retries + 1):
+                    if worker._stop_event.is_set():
+                        self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
+                        break
+
+                    port = self._new_random_port(tried_ports)
+                    tried_ports.append(port)
+                    worker.appium_port = port
+
+                    self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
+
+                    try:
+                        self._start_appium_server(port)
+                        if not self._sleep_worker_interruptible(worker, 5):
+                            self._on_worker_log(did, "⏹ 중지 요청 - Appium 대기 중단")
                             break
 
-                        port = self._new_random_port(tried_ports)
-                        tried_ports.append(port)
-                        worker.appium_port = port
-
-                        self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
-
-                        try:
-                            self._start_appium_server(port)
-                            if not self._sleep_worker_interruptible(worker, 5):
-                                self._on_worker_log(did, "⏹ 중지 요청 - Appium 대기 중단")
+                        if worker.run():
+                            break
+                        else:
+                            if worker._stop_event.is_set():
                                 break
-
-                            if worker.run():
-                                break
-                            else:
-                                if worker._stop_event.is_set():
-                                    break
-                                self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
-                        except Exception as e:
-                            self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
-                        finally:
-                            self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
-                            self._kill_process_on_port(port)
-                            self._sleep_worker_interruptible(worker, 1.0)
+                            self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
+                    except Exception as e:
+                        self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
+                    finally:
+                        self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
+                        self._kill_process_on_port(port)
+                        self._sleep_worker_interruptible(worker, 1.0)
         finally:
+            if acquired:
+                self.worker_semaphore.release()
             # 개별 기기 종료 UI 갱신 (세대번호로 stale done 무시)
             self.after(0, lambda d=did, g=gen: self._on_device_worker_done(d, g))
 
@@ -1125,19 +1297,31 @@ class MainApp(tk.Tk):
     def _stop_all(self):
         self._log_status("⏹ 전체 중지 요청 중...")
         for did, worker in list(self.workers.items()):
+            cur_row = getattr(worker, "current_row", None)
+            if cur_row and getattr(cur_row, "row_index", None):
+                try:
+                    self.order_manager.mark_cancelled(cur_row.row_index)
+                    if did in self.device_panels:
+                        self.device_panels[did].append_log(
+                            f"⏹ 작업 취소(C 기록): row={cur_row.row_index} ({cur_row.search_keyword})"
+                        )
+                except Exception:
+                    pass
+                worker.current_row = None
             try:
                 worker.stop()
             except Exception:
                 pass
             if did in self.device_panels:
                 self.device_panels[did].append_log("⏹ 중지 요청됨 (종료 대기 중...)")
-                self.device_panels[did].set_status("중지 중...")
+                self.device_panels[did].set_status("취소/중지 중...")
                 try:
                     self.device_panels[did].stop_btn.config(state=tk.DISABLED)
                 except Exception:
                     pass
             self.after(15000, lambda d=did, g=getattr(worker, "_ui_gen", None):
                        self._force_unlock_device_if_stuck(d, g))
+        self._refresh_summary()
 
     def _on_all_done(self):
         """레거시 호환 (전체 완료 팝업용 — 개별 종료는 _on_device_worker_done 사용)"""
@@ -1179,9 +1363,16 @@ class MainApp(tk.Tk):
         processed_s = 0
         try:
             while processed_s < 10:
-                device_id, status = self._status_queue.get_nowait()
+                item = self._status_queue.get_nowait()
+                if len(item) == 3:
+                    device_id, status, pay_method = item
+                else:
+                    device_id, status = item
+                    pay_method = None
                 if device_id in self.device_panels:
                     self.device_panels[device_id].set_status(status)
+                    if pay_method is not None:
+                        self.device_panels[device_id].set_payment_method(pay_method)
                 # need_summary = True
                 processed_s += 1
         except queue.Empty:
@@ -1197,9 +1388,9 @@ class MainApp(tk.Tk):
         """워커 스레드에서 호출 → 큐에 적재 (thread-safe)"""
         self._log_queue.put((device_id, message))
 
-    def _on_worker_status(self, device_id: str, status: str):
+    def _on_worker_status(self, device_id: str, status: str, payment_method: str = None):
         """워커 스레드에서 호출 → 큐에 적재 (thread-safe)"""
-        self._status_queue.put((device_id, status))
+        self._status_queue.put((device_id, status, payment_method))
 
     # ─── ADB 조회 ─────────────────────────────────────────────────────────────
 
@@ -1581,6 +1772,18 @@ class MainApp(tk.Tk):
             summary = self.order_manager.get_summary()
             for key, lbl in self.summary_labels.items():
                 lbl.config(text=str(summary.get(key, 0)))
+
+            dev_counts = self.order_manager.get_all_devices_task_counts()
+            if hasattr(self, "device_panels"):
+                for did, panel in self.device_panels.items():
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
+            if hasattr(self, "device_task_labels"):
+                for did, lbl in self.device_task_labels.items():
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    t, p = c.get("total", 0), c.get("pending", 0)
+                    color = CLR_SUCCESS if p == 0 and t > 0 else (CLR_PRIMARY if p > 0 else CLR_TEXT_MUTE)
+                    lbl.config(text=f"총 {t} / 잔여 {p}", fg=color)
         except Exception:
             pass
 
