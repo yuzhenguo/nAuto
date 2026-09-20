@@ -162,7 +162,7 @@ def _detect_columns(ws) -> dict:
 
 class OrderManager:
     """
-    스레드 안전한 결재목록 엑셀 관리자.
+    스레드 안전한 결재목록 엑셀 관리자 (초고속 인메모리 + 큐 기반 백그라운드 저장).
     헤더 자동 감지 + COL_* 상수 폴백.
     """
 
@@ -170,6 +170,14 @@ class OrderManager:
         self.xlsx_path = xlsx_path
         self._lock = threading.Lock()
         self._col_map: Optional[dict] = None  # 캐시
+        self._memory_rows: List[OrderRow] = []
+        self._write_queue = queue.Queue()
+        
+        self._load_into_memory()
+        
+        # 엑셀 저장을 전담하는 백그라운드 큐 스레드 시작
+        self._writer_thread = threading.Thread(target=self._excel_writer_loop, daemon=True)
+        self._writer_thread.start()
 
     def _get_col_map(self, ws) -> dict:
         if self._col_map is None:
@@ -193,26 +201,21 @@ class OrderManager:
             return str(val).strip()
         return str(val).strip()
 
-    def get_pending_rows(self, device_id: str = "") -> List[OrderRow]:
-        """완료여부가 공백인 미처리 행 목록 반환.
-        device_id가 지정되면 엑셀의 폰ID 컬럼 값과 일치하는 행만 반환.
-        """
+    def _load_into_memory(self):
+        """프로그램 시작 시 엑셀 데이터를 메모리로 한 번에 로드"""
         with self._lock:
-            rows = []
+            self._memory_rows.clear()
             try:
-                wb = openpyxl.load_workbook(self.xlsx_path)
+                wb = openpyxl.load_workbook(self.xlsx_path, data_only=True)
                 ws = wb.active
                 cm = self._get_col_map(ws)
 
-                # 헤더 여부 확인 (1행이 헤더이면 2행부터 시작)
                 start_row = 2 if ws.max_row > 1 else 1
-                # 1행 첫 셀이 숫자면 헤더 없음 → 1행부터 처리
                 first_cell = ws.cell(1, cm["search_keyword"]).value
                 if first_cell and str(first_cell).strip().isdigit():
                     start_row = 1
 
                 for row_idx in range(start_row, ws.max_row + 1):
-                    # 검색어 컬럼이 비면 데이터 끝
                     keyword_val = ws.cell(row_idx, cm["search_keyword"]).value
                     if not keyword_val or self._str(keyword_val) == "":
                         break
@@ -220,20 +223,11 @@ class OrderManager:
                     status_val = ws.cell(row_idx, cm["status"]).value
                     status_str = self._str(status_val)
 
-                    # 완료여부가 공백/None인 행만 처리 (Y, F, 기타 값은 모두 건너뜀)
-                    if status_val is None or status_str.upper() in ("NONE", ""):
-                        pass  # 미처리 행 → 작업 대상
-                    else:
-                        continue  # 이미 처리된 행(Y/F/기타) → 건너뜀
-
-                    # 폰ID 필터링: 대소문자 무시, 엑셀 폰ID가 비어 있으면 현재 기기에 할당 가능
                     row_device_id = ""
                     if "device_id" in cm:
                         row_device_id = self._str(ws.cell(row_idx, cm["device_id"]).value)
-                    if device_id and not _device_ids_match(row_device_id, device_id):
-                        continue
 
-                    rows.append(OrderRow(
+                    self._memory_rows.append(OrderRow(
                         row_index      = row_idx,
                         search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
                         seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
@@ -248,192 +242,110 @@ class OrderManager:
                         second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
                     ))
             except Exception as e:
-                print(f"[OrderManager] 엑셀 읽기 오류: {e}")
+                print(f"[OrderManager] 초기 엑셀 로드 오류: {e}")
+
+    def get_pending_rows(self, device_id: str = "") -> List[OrderRow]:
+        """완료여부가 공백인 미처리 행 목록 반환 (메모리에서 즉시 반환)"""
+        with self._lock:
+            rows = []
+            for row in self._memory_rows:
+                if row.status.upper() in ("NONE", ""):
+                    if device_id and not _device_ids_match(row.device_id, device_id):
+                        continue
+                    rows.append(row)
             return rows
 
     def get_next_pending(self, device_id: str = "") -> Optional[OrderRow]:
-        """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상.
-        
-        ⚠️ 단순 조회만 하므로 동시 접근 시 여러 기기가 같은 행을 가져갈 수 있음.
-        병행 처리에서는 claim_next_pending() 사용을 권장.
-        """
         rows = self.get_pending_rows(device_id=device_id)
         return rows[0] if rows else None
 
     def claim_next_pending(self, device_id: str = "") -> Optional[OrderRow]:
         """
-        미처리 행 중 첫 번째를 원자적으로 예약하여 반환.
-        조회 즉시 완료여부를 'W' (Working)로 마킹하여 다른 기기가 같은 행을 가져가지 않도록 함.
-        병행 처리 시 레이스 컨디션 방지용.
+        미처리 행 중 첫 번째를 원자적으로 예약하여 반환. (초고속 인메모리 락프리 처리)
         """
         with self._lock:
-            try:
-                wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
-                cm = self._get_col_map(ws)
-
-                start_row = 2 if ws.max_row > 1 else 1
-                first_cell = ws.cell(1, cm["search_keyword"]).value
-                if first_cell and str(first_cell).strip().isdigit():
-                    start_row = 1
-
-                for row_idx in range(start_row, ws.max_row + 1):
-                    keyword_val = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not keyword_val or self._str(keyword_val) == "":
-                        break
-
-                    status_val = ws.cell(row_idx, cm["status"]).value
-                    status_str = self._str(status_val)
-
-                    # 공백/None인 행만 대상 (W/Y/F/C는 이미 처리중이거나 완료)
-                    if status_val is not None and status_str.upper() not in ("NONE", ""):
+            for row in self._memory_rows:
+                if row.status.upper() in ("NONE", ""):
+                    if device_id and not _device_ids_match(row.device_id, device_id):
                         continue
-
-                    # 폰ID 필터링
-                    row_device_id = ""
-                    if "device_id" in cm:
-                        row_device_id = self._str(ws.cell(row_idx, cm["device_id"]).value)
-                    if device_id and not _device_ids_match(row_device_id, device_id):
-                        continue
-
-                    # ✅ 원자적 예약: 즉시 'W'로 마킹 후 저장
-                    ws.cell(row_idx, cm["status"]).value = "W"
-                    wb.save(self.xlsx_path)
-
-                    return OrderRow(
-                        row_index      = row_idx,
-                        search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
-                        seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
-                        product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
-                        recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
-                        phone          = self._str(ws.cell(row_idx, cm["phone"]).value),
-                        password       = self._str_pin(ws.cell(row_idx, cm["password"]).value),
-                        status         = status_str,
-                        payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
-                        device_id      = row_device_id,
-                        login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
-                        second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
-                    )
-            except Exception as e:
-                print(f"[OrderManager] claim_next_pending 오류: {e}")
+                    
+                    # 상태를 W(작업중)로 변경하고 백그라운드 쓰기 큐에 전송
+                    row.status = "W"
+                    self._write_queue.put((row.row_index, "W"))
+                    return row
             return None
 
     def describe_pending_filter(self, device_id: str) -> str:
-        """기기 필터로 0건일 때 원인 파악용 요약 문자열"""
         all_pending = self.get_pending_rows()
         matched = self.get_pending_rows(device_id=device_id)
         excel_ids = sorted({(r.device_id or "(빈값)") for r in all_pending})
         return (
-            f"엑셀 pending={len(all_pending)}건, "
+            f"메모리 pending={len(all_pending)}건, "
             f"기기 '{device_id}' 매칭={len(matched)}건, "
-            f"엑셀 폰ID 목록={excel_ids}"
+            f"메모리 폰ID 목록={excel_ids}"
         )
 
     def mark_success(self, row_index: int):
-        """해당 행 완료여부를 Y로 업데이트"""
         self._update_status(row_index, "Y")
 
     def mark_failed(self, row_index: int):
-        """해당 행 완료여부를 F로 업데이트"""
         self._update_status(row_index, "F")
 
     def mark_cancelled(self, row_index: int):
-        """해당 행 완료여부를 C로 업데이트 (정지/취소)"""
         self._update_status(row_index, "C")
 
     def _update_status(self, row_index: int, status: str):
-        """완료여부 컬럼 업데이트 (스레드 안전)"""
         with self._lock:
-            try:
-                wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
-                cm = self._get_col_map(ws)
-                ws.cell(row_index, cm["status"]).value = status
-                wb.save(self.xlsx_path)
-            except Exception as e:
-                print(f"[OrderManager] 엑셀 쓰기 오류 (row={row_index}): {e}")
+            for row in self._memory_rows:
+                if row.row_index == row_index:
+                    row.status = status
+                    self._write_queue.put((row_index, status))
+                    break
 
     def get_summary(self) -> dict:
-        """전체 현황 요약 (W=작업중은 pending에 포함)"""
+        """전체 현황 요약 (메모리 집계)"""
         with self._lock:
             summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0, "pending": 0, "working": 0}
-            try:
-                wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
-                cm = self._get_col_map(ws)
-                start_row = 2
-                first_cell = ws.cell(1, cm["search_keyword"]).value
-                if first_cell and str(first_cell).strip().isdigit():
-                    start_row = 1
-                for row_idx in range(start_row, ws.max_row + 1):
-                    kw = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not kw or str(kw).strip() == "":
-                        break
-                    summary["total"] += 1
-                    st = str(ws.cell(row_idx, cm["status"]).value or "").strip().upper()
-                    if st == "Y":
-                        summary["done"] += 1
-                    elif st == "F":
-                        summary["failed"] += 1
-                    elif st == "C":
-                        summary["cancelled"] += 1
-                    elif st == "W":
-                        summary["working"] += 1
-                        summary["pending"] += 1  # 작업중도 미완료로 카운트
-                    else:
-                        summary["pending"] += 1
-            except Exception as e:
-                print(f"[OrderManager] 현황 조회 오류: {e}")
+            for row in self._memory_rows:
+                summary["total"] += 1
+                st = str(row.status).strip().upper()
+                if st == "Y":
+                    summary["done"] += 1
+                elif st == "F":
+                    summary["failed"] += 1
+                elif st == "C":
+                    summary["cancelled"] += 1
+                elif st == "W":
+                    summary["working"] += 1
+                    summary["pending"] += 1
+                else:
+                    summary["pending"] += 1
             return summary
 
     def get_all_devices_task_counts(self) -> dict:
-        """
-        폰ID별 작업 현황 집계 반환 (스레드 안전)
-        반환 예: { "RFCT41X3T3W": {"total": 10, "pending": 4, "done": 5, "failed": 1, "cancelled": 0}, ... }
-        """
+        """기기ID별 작업 현황 집계 반환 (메모리 집계)"""
         with self._lock:
             counts = {}
-            try:
-                wb = openpyxl.load_workbook(self.xlsx_path)
-                ws = wb.active
-                cm = self._get_col_map(ws)
-                start_row = 2 if ws.max_row > 1 else 1
-                first_cell = ws.cell(1, cm["search_keyword"]).value
-                if first_cell and str(first_cell).strip().isdigit():
-                    start_row = 1
-
-                for row_idx in range(start_row, ws.max_row + 1):
-                    kw = ws.cell(row_idx, cm["search_keyword"]).value
-                    recip = ws.cell(row_idx, cm["recipient_name"]).value if "recipient_name" in cm else None
-                    if (not kw or str(kw).strip() == "") and (not recip or str(recip).strip() == ""):
-                        break
-
-                    status = ws.cell(row_idx, cm["status"]).value if "status" in cm else ""
-                    status_str = str(status).strip().upper() if status else ""
-
-                    dev = ws.cell(row_idx, cm["device_id"]).value if "device_id" in cm else ""
-                    dev_key = str(dev).strip().upper() if dev else ""
-
-                    if dev_key not in counts:
-                        counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0}
-
-                    counts[dev_key]["total"] += 1
-                    if status_str == "Y":
-                        counts[dev_key]["done"] += 1
-                    elif status_str == "F":
-                        counts[dev_key]["failed"] += 1
-                    elif status_str == "C":
-                        counts[dev_key]["cancelled"] += 1
-                    elif status_str == "W":
-                        counts[dev_key]["pending"] += 1  # 작업중도 미완료로 카운트
-                    else:
-                        counts[dev_key]["pending"] += 1
-            except Exception as e:
-                print(f"[OrderManager] 기기별 현황 집계 오류: {e}")
+            for row in self._memory_rows:
+                dev_key = str(row.device_id).strip().upper() if row.device_id else ""
+                if dev_key not in counts:
+                    counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0}
+                
+                counts[dev_key]["total"] += 1
+                st = str(row.status).strip().upper()
+                if st == "Y":
+                    counts[dev_key]["done"] += 1
+                elif st == "F":
+                    counts[dev_key]["failed"] += 1
+                elif st == "C":
+                    counts[dev_key]["cancelled"] += 1
+                elif st == "W":
+                    counts[dev_key]["pending"] += 1
+                else:
+                    counts[dev_key]["pending"] += 1
             return counts
 
     def get_device_task_counts(self, device_id: str) -> dict:
-        """특정 기기ID의 {total, pending, done, failed} 반환"""
         norm_id = str(device_id).strip().upper() if device_id else ""
         all_counts = self.get_all_devices_task_counts()
         if norm_id in all_counts:
@@ -441,5 +353,27 @@ class OrderManager:
         for k, v in all_counts.items():
             if k == norm_id:
                 return v
-        return {"total": 0, "pending": 0, "done": 0, "failed": 0}
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0}
+
+    def _excel_writer_loop(self):
+        """백그라운드에서 큐에 쌓인 상태 업데이트를 일괄(Batch)로 엑셀에 저장"""
+        while True:
+            updates = []
+            updates.append(self._write_queue.get())
+            while not self._write_queue.empty():
+                try:
+                    updates.append(self._write_queue.get_nowait())
+                except queue.Empty:
+                    break
+            
+            try:
+                # 단 한 번만 엑셀을 열어서 모든 변경사항을 반영
+                wb = openpyxl.load_workbook(self.xlsx_path)
+                ws = wb.active
+                cm = self._col_map if self._col_map else _detect_columns(ws)
+                for (row_idx, status) in updates:
+                    ws.cell(row_idx, cm["status"]).value = status
+                wb.save(self.xlsx_path)
+            except Exception as e:
+                print(f"[OrderManager] 백그라운드 엑셀 저장 오류: {e}")
 
