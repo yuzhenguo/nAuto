@@ -254,6 +254,44 @@ if not os.path.exists(IMG_ACTIVE):
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+
+# ─── 전역 비동기 로그 라이터 ──────────────────────────────────────────────────
+# 각 워커가 직접 파일을 열고 닫으면 I/O 경합으로 직렬화됨.
+# 전역 큐에 로그를 쌓고 전용 백그라운드 스레드가 배치로 파일에 기록.
+import queue as _queue
+
+_LOG_WRITE_QUEUE: _queue.Queue = _queue.Queue()
+
+def _global_log_writer():
+    """전역 로그 파일 기록 스레드 (비동기, 배치 처리)"""
+    import datetime
+    pending: dict = {}  # path → [lines]
+    while True:
+        try:
+            item = _LOG_WRITE_QUEUE.get(timeout=0.3)
+            if item is None:
+                break
+            path, line = item
+            if path not in pending:
+                pending[path] = []
+            pending[path].append(line)
+        except _queue.Empty:
+            pass
+        # 큐가 비면 또는 일정 이상 쌓이면 파일에 플러시
+        if pending:
+            for path, lines in pending.items():
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write("".join(lines))
+                except Exception:
+                    pass
+            pending.clear()
+
+_log_writer_thread = threading.Thread(target=_global_log_writer, daemon=True, name="GlobalLogWriter")
+_log_writer_thread.start()
+
+
 def _run_cmd(cmd, **kwargs):
     """Windows GUI/GDI 프로세스 핸들 누수 방지 안전 subprocess 래퍼"""
     if sys.platform == "win32" and "creationflags" not in kwargs:
@@ -886,28 +924,27 @@ class NaverOrderWorker:
         self._log(f"  ⚠ UiAutomator2 안정화 대기 {max_wait}초 초과, 계속 진행합니다.")
 
     def _check_and_close_welcome_modals(self, step_label: str = "3.1/7.1"):
-        """3.1 및 7.1 웰컴 모달 / 팝업 버튼 발견 시 클릭"""
-        for xpath in WELCOME_MODAL_XPATHS:
-            try:
-                if ah.element_exists(self.driver, xpath, timeout=2):
-                    self._log(f"📌 [{step_label}] 웰컴 모달/팝업 버튼 발견 → 클릭 시도: {xpath[:50]}")
-                    ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                    time.sleep(1.0)
-            except Exception as e:
-                self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {e}")
+        """3.1 및 7.1 웰컴 모달 / 팝업 버튼 발견 시 클릭 (통합 xpath 1회 대기, 미발견 시 최소 지연)"""
+        union_xpath = " | ".join(WELCOME_MODAL_XPATHS)
+        try:
+            if ah.element_exists(self.driver, union_xpath, timeout=1):
+                self._log(f"📌 [{step_label}] 웰컴 모달/팝업 버튼 발견 → 클릭 시도")
+                ah.wait_and_click(self.driver, union_xpath, timeout=1, log_callback=self._log)
+                time.sleep(0.5)
+        except Exception as e:
+            self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {e}")
 
     def _dismiss_popups(self):
-        """하루/7일 동안 보지 않기 팝업 처리"""
-        for xpath in [HIDE_BTN_1DAY, HIDE_BTN_7DAY]:
-            if ah.element_exists(self.driver, xpath, timeout=5):
-                label = "하루" if "하루" in xpath else "7일"
-                self._log(f"📌 '{label} 동안 보지 않기' 팝업 감지 → 클릭")
-                ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
-                time.sleep(1.5)
-        # 한 번 더 하루 보지 않기 확인 (문서 요구사항)
-        if ah.element_exists(self.driver, HIDE_BTN_1DAY, timeout=3):
-            ah.wait_and_click(self.driver, HIDE_BTN_1DAY, timeout=5, log_callback=self._log)
-            time.sleep(1.5)
+        """하루/7일 동안 보지 않기 팝업 처리 (통합 xpath 1회 대기, 미발견 시 최소 지연)"""
+        union_xpath = f"{HIDE_BTN_1DAY} | {HIDE_BTN_7DAY}"
+        # 팝업이 순차로 뜨는 경우(하루 닫으면 7일이 뜨는 등)를 대비해 최대 2회, 없으면 즉시 종료
+        for _ in range(2):
+            if ah.element_exists(self.driver, union_xpath, timeout=1):
+                self._log("📌 '보지 않기' 팝업 감지 → 클릭")
+                ah.wait_and_click(self.driver, union_xpath, timeout=1, log_callback=self._log)
+                time.sleep(0.5)
+            else:
+                break
 
     # ─── 단계 7: 마이쇼핑 검색 버튼 클릭 ────────────────────────────────────
 
@@ -5942,16 +5979,15 @@ class NaverOrderWorker:
             self._log_cb(self.device_id, message)
         else:
             print(full_msg)
-        # 로그 파일 기록
+        # 로그 파일 기록 - 비동기 큐 방식으로 직렬화 해소
         try:
             import datetime
-            today_folder = datetime.datetime.now().strftime("%Y%m%d")
+            _now = datetime.datetime.now()
+            today_folder = _now.strftime("%Y%m%d")
             log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", today_folder)
-            os.makedirs(log_dir, exist_ok=True)
             log_path = os.path.join(log_dir, f"naver_order_기기{self.machine_num}_{self.device_id}.log")
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{now}] {full_msg}\n")
+            ts = _now.strftime("%Y-%m-%d %H:%M:%S")
+            _LOG_WRITE_QUEUE.put_nowait((log_path, f"[{ts}] {full_msg}\n"))
         except Exception:
             pass
 
