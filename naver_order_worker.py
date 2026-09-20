@@ -425,6 +425,67 @@ class NaverOrderWorker:
             time.sleep(min(slice_sec, max(0.05, end - time.time())))
         return not self._stop_event.is_set()
 
+    @staticmethod
+    def _is_connection_refused(err) -> bool:
+        if isinstance(err, ConnectionRefusedError):
+            return True
+        s = str(err)
+        keys = (
+            "대상 컴퓨터에서 연결을 거부",
+            "연결을 거부했으므로 연결하지 못했습니다",
+            "actively refused",
+            "Connection refused",
+            "ECONNREFUSED",
+            "WinError 10061",
+            "errno 10061",
+            "[Errno 10061]",
+        )
+        low = s.lower()
+        return any((k.lower() in low) if k.isascii() else (k in s) for k in keys)
+
+    @staticmethod
+    def _is_driver_session_error(err) -> bool:
+        s = str(err)
+        keys = (
+            "The session identified by",
+            "is not known",
+            "NoSuchDriverException",
+            "NoSuchDriverError",
+            "InvalidSessionIdException",
+            "invalid session id",
+            "A session is either terminated or not started",
+        )
+        low = s.lower()
+        return any((k.lower() in low) if k.isascii() else (k in s) for k in keys)
+
+    def _mark_conn_failed(self, row, reason: str = ""):
+        if not row:
+            return
+        self.order_manager.mark_conn_failed(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 연결실패{extra}: {getattr(row, 'search_keyword', '')} → H 기록")
+        self._set_status("연결실패")
+
+    def _mark_driver_error(self, row, reason: str = ""):
+        if not row:
+            return
+        self.order_manager.mark_driver_error(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 드라이브에러{extra}: {getattr(row, 'search_keyword', '')} → E 기록")
+        self._set_status("드라이브에러")
+
+    def _mark_next_pending_conn_failed(self):
+        row = None
+        try:
+            row = self.order_manager.claim_next_pending(device_id=self.device_id)
+        except Exception:
+            try:
+                row = self.order_manager.get_next_pending(device_id=self.device_id)
+            except Exception:
+                row = None
+        if row:
+            self._mark_conn_failed(row, "드라이버 연결 거부")
+
     def _create_driver(self):
         """Appium 드라이버 생성 (stop_event 지원 여부와 무관하게 호환)."""
         global ah
@@ -492,7 +553,20 @@ class NaverOrderWorker:
                     self._log("⏹ 중지 요청으로 드라이버 연결 중단")
                     break
                 self._log(f"❌ 드라이버 연결 실패: {e}")
-                self._set_status("연결 실패")
+                if self._is_connection_refused(e):
+                    self._set_status("연결실패")
+                    if self.current_row:
+                        self._mark_conn_failed(self.current_row, "연결 거부")
+                        self.current_row = None
+                    elif attempt >= max_restarts:
+                        self._mark_next_pending_conn_failed()
+                elif self._is_driver_session_error(e):
+                    self._set_status("드라이브에러")
+                    if self.current_row:
+                        self._mark_driver_error(self.current_row, "세션 소실")
+                        self.current_row = None
+                else:
+                    self._set_status("연결 실패")
                 if attempt < max_restarts:
                     if not self._sleep_interruptible(10):
                         self._log("⏹ 중지 요청 → 재연결 대기 중단")
@@ -936,7 +1010,9 @@ class NaverOrderWorker:
                 ah.wait_and_click(self.driver, union_xpath, timeout=1, log_callback=self._log)
                 time.sleep(0.5)
         except Exception as e:
-            self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {e}")
+            self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {str(e).splitlines()[0]}")
+            if self._is_driver_session_error(e) or self._is_connection_refused(e):
+                raise
 
     def _dismiss_popups(self):
         """하루/7일 동안 보지 않기 팝업 처리 (통합 xpath 1회 대기, 미발견 시 최소 지연)"""
@@ -5444,6 +5520,10 @@ class NaverOrderWorker:
                     if self._stop_event.is_set():
                         self.order_manager.mark_cancelled(row.row_index)
                         self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                    elif self._is_connection_refused(fatal_err):
+                        self._mark_conn_failed(row, "대상 컴퓨터 연결 거부")
+                    elif self._is_driver_session_error(fatal_err):
+                        self._mark_driver_error(row, "세션 소실")
                     else:
                         self.order_manager.mark_failed(row.row_index)
                         self._log(f"❌ 치명적 오류: {fatal_err}")
@@ -5556,15 +5636,33 @@ class NaverOrderWorker:
             return False
 
         if exception[0]:
+            err_one = str(exception[0]).splitlines()[0]
             FATAL_PATTERNS = [
                 "A session is either terminated or not started",
                 "UiAutomation not connected",
                 "instrumentation process is not running",
+                "NoSuchDriverError",
+                "NoSuchDriverException",
+                "The session identified by",
+                "InvalidSessionIdException",
+                "invalid session id",
+                "대상 컴퓨터에서 연결을 거부",
+                "연결을 거부했으므로 연결하지 못했습니다",
+                "actively refused",
+                "Connection refused",
+                "ECONNREFUSED",
+                "WinError 10061",
             ]
             err_str = str(exception[0])
-            if any(p in err_str for p in FATAL_PATTERNS):
+            if self._is_connection_refused(exception[0]):
+                self._log(f"❌ 처리 중 예외: {err_one}")
+                self._log("🔴 [연결실패] 대상 컴퓨터 연결 거부 감지 → H 기록 후 재연결")
                 raise exception[0]
-            self._log(f"❌ 처리 중 예외: {exception[0]}")
+            if self._is_driver_session_error(exception[0]) or any(p in err_str for p in FATAL_PATTERNS):
+                self._log(f"❌ 처리 중 예외: {err_one}")
+                self._log("🔴 [드라이브에러] 세션 소실 감지 → E 기록 후 재연결")
+                raise exception[0]
+            self._log(f"❌ 처리 중 예외: {err_one}")
             return False
 
         return result[0]

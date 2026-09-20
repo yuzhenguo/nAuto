@@ -883,8 +883,10 @@ class MainApp(tk.Tk):
             ("total",     "전체",     CLR_TEXT),
             ("pending",   "대기",     CLR_WARNING),
             ("done",      "완료(Y)",  CLR_SUCCESS),
-            ("failed",    "실패(F)",  CLR_ERROR),
-            ("cancelled", "취소(C)",  "#f43f5e"),
+            ("failed",       "실패(F)",       CLR_ERROR),
+            ("cancelled",    "취소(C)",       "#f43f5e"),
+            ("conn_failed",  "연결실패(H)",   CLR_ERROR),
+            ("driver_error", "드라이브에러(E)", CLR_ERROR),
         ]:
             lf = tk.Frame(summary_bar, bg=CLR_SURFACE2)
             lf.pack(side=tk.LEFT, padx=14)

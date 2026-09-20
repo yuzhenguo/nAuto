@@ -10,7 +10,7 @@ order_manager.py
   전화번호    : 수취인 전화번호
   비밀번호    : 결제 비밀번호 (숫자, 예: 123456)
   2차비밀번호 : 현대카드 2차 비밀번호 (4자리)
-  완료여부    : 공백=미처리, Y=완료, F=실패
+  완료여부    : 공백=미처리, Y=완료, F=실패, C=취소, H=연결실패, E=드라이브에러
 
 헤더가 없거나 컬럼명이 다를 경우 컬럼 인덱스로 직접 지정 가능 (아래 COL_* 상수 참고)
 """
@@ -294,6 +294,12 @@ class OrderManager:
     def mark_cancelled(self, row_index: int):
         self._update_status(row_index, "C")
 
+    def mark_conn_failed(self, row_index: int):
+        self._update_status(row_index, "H")
+
+    def mark_driver_error(self, row_index: int):
+        self._update_status(row_index, "E")
+
     def _update_status(self, row_index: int, status: str):
         with self._lock:
             for row in self._memory_rows:
@@ -305,7 +311,8 @@ class OrderManager:
     def get_summary(self) -> dict:
         """전체 현황 요약 (메모리 집계)"""
         with self._lock:
-            summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0, "pending": 0, "working": 0}
+            summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0,
+                       "pending": 0, "working": 0, "conn_failed": 0, "driver_error": 0}
             for row in self._memory_rows:
                 summary["total"] += 1
                 st = str(row.status).strip().upper()
@@ -315,6 +322,10 @@ class OrderManager:
                     summary["failed"] += 1
                 elif st == "C":
                     summary["cancelled"] += 1
+                elif st == "H":
+                    summary["conn_failed"] += 1
+                elif st == "E":
+                    summary["driver_error"] += 1
                 elif st == "W":
                     summary["working"] += 1
                     summary["pending"] += 1
@@ -329,7 +340,10 @@ class OrderManager:
             for row in self._memory_rows:
                 dev_key = str(row.device_id).strip().upper() if row.device_id else ""
                 if dev_key not in counts:
-                    counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0}
+                    counts[dev_key] = {
+                        "total": 0, "pending": 0, "done": 0, "failed": 0,
+                        "cancelled": 0, "conn_failed": 0, "driver_error": 0,
+                    }
                 
                 counts[dev_key]["total"] += 1
                 st = str(row.status).strip().upper()
@@ -339,6 +353,10 @@ class OrderManager:
                     counts[dev_key]["failed"] += 1
                 elif st == "C":
                     counts[dev_key]["cancelled"] += 1
+                elif st == "H":
+                    counts[dev_key]["conn_failed"] += 1
+                elif st == "E":
+                    counts[dev_key]["driver_error"] += 1
                 elif st == "W":
                     counts[dev_key]["pending"] += 1
                 else:
@@ -353,7 +371,7 @@ class OrderManager:
         for k, v in all_counts.items():
             if k == norm_id:
                 return v
-        return {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0}
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0, "conn_failed": 0, "driver_error": 0}
 
     def _excel_writer_loop(self):
         """백그라운드에서 큐에 쌓인 상태 업데이트를 일괄(Batch)로 엑셀에 저장"""
