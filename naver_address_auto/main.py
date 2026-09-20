@@ -12,6 +12,8 @@ import time
 import os
 import sys
 import random
+import socket
+from collections import defaultdict
 from datetime import datetime
 import json
 import queue
@@ -22,7 +24,10 @@ class SysOutQueueWriter:
         self.original_out = original_out
         self.q = q
     def write(self, msg):
-        self.q.put((self.original_out, msg))
+        try:
+            self.q.put_nowait((self.original_out, msg))
+        except queue.Full:
+            pass
     def flush(self):
         pass
 
@@ -58,6 +63,7 @@ CLR_WORKING   = "#38bdf8"     # 작업 중인 기기 강조 색상 (선명한 �
 
 class DevicePanel(tk.Frame):
     """기기 1대 상태 패널"""
+    MAX_LOG_LINES = 400
 
     def __init__(self, parent, device_id: str, port: int, **kwargs):
         super().__init__(parent, bg=CLR_SURFACE, **kwargs)
@@ -115,19 +121,28 @@ class DevicePanel(tk.Frame):
 
     def append_log(self, message: str):
         """로그 메시지 추가"""
-        tag = "normal"
-        if "✅" in message or "성공" in message or "완료" in message:
-            tag = "success"
-        elif "❌" in message or "실패" in message or "오류" in message:
-            tag = "error"
-        elif "⚠" in message or "타임아웃" in message:
-            tag = "warning"
-        elif "🚀" in message or "📌" in message or "📋" in message:
-            tag = "info"
+        self.append_logs([message])
 
-        ts = datetime.now().strftime("%H:%M:%S")
+    def append_logs(self, messages):
+        """여러 로그를 한 번에 삽입해 UI 부하를 줄인다."""
+        if not messages:
+            return
         self.log_box.config(state=tk.NORMAL)
-        self.log_box.insert(tk.END, f"[{ts}] {message}\n", tag)
+        for message in messages:
+            tag = "normal"
+            if "✅" in message or "성공" in message or "완료" in message:
+                tag = "success"
+            elif "❌" in message or "실패" in message or "오류" in message:
+                tag = "error"
+            elif "⚠" in message or "타임아웃" in message:
+                tag = "warning"
+            elif "🚀" in message or "📌" in message or "📋" in message:
+                tag = "info"
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.log_box.insert(tk.END, f"[{ts}] {message}\n", tag)
+        line_count = int(self.log_box.index(tk.END).split(".")[0]) - 1
+        if line_count > self.MAX_LOG_LINES:
+            self.log_box.delete("1.0", f"{line_count - self.MAX_LOG_LINES + 1}.0")
         self.log_box.see(tk.END)
         self.log_box.config(state=tk.DISABLED)
 
@@ -315,7 +330,7 @@ class PrioritySlotManager:
                     with self.lock:
                         self.waiters = [w for w in self.waiters if w[1] != did]
                     return False
-                if event.wait(timeout=0.2):
+                if event.wait(timeout=0.05):
                     return True
         return True
 
@@ -361,15 +376,16 @@ class MainApp(tk.Tk):
         self.device_panels: dict = {}
         self.running_ports = set()
         self.running = False
-        self.max_workers = 8  # 기본 최대 동시 작업 기기 수
+        self.max_workers = 20  # 기본 최대 동시 작업 기기 수
         self.slot_manager = PrioritySlotManager(self.max_workers)
         self.slot_manager.set_priority_fn(self._get_device_priority)
         self.working_devices: set = set()  # 현재 작업 중인 기기 ID 집합
         self.device_id_labels: dict = {}   # 좌측 기기 ID 라벨 위젯 매핑
+        self._rearrange_job = None
 
-        self._log_queue = queue.Queue()
-        self._status_queue = queue.Queue()
-        self._sys_out_queue = queue.Queue()
+        self._log_queue = queue.Queue(maxsize=8000)
+        self._status_queue = queue.Queue(maxsize=2000)
+        self._sys_out_queue = queue.Queue(maxsize=4000)
         
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
@@ -653,7 +669,7 @@ class MainApp(tk.Tk):
             font=("Segoe UI", 9, "bold")
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        self.max_workers_var = tk.IntVar(value=8)
+        self.max_workers_var = tk.IntVar(value=20)
         self.max_workers_spin = tk.Spinbox(
             max_worker_frame, from_=1, to=50,
             textvariable=self.max_workers_var,
@@ -914,8 +930,8 @@ class MainApp(tk.Tk):
         try:
             self.max_workers = max(1, int(self.max_workers_var.get()))
         except Exception:
-            self.max_workers = 8
-            self.max_workers_var.set(8)
+            self.max_workers = 20
+            self.max_workers_var.set(20)
         self.slot_manager.reset()
         self.slot_manager.set_limit(self.max_workers)
         if hasattr(self, "max_workers_spin"):
@@ -927,9 +943,9 @@ class MainApp(tk.Tk):
         self._rebuild_device_panels()
         self._log_status("🚀 자동화 시작")
 
-        # 기존 Appium 잔류 서버 정리 (5723~5740 등 이전 포트 다 계속 사용 중일 수 있음)
-        self._log_status("🧹 이전 Appium 서버 정리 중...")
-        self._cleanup_old_appium_ports()
+        # 기존 Appium 잔류 서버 정리는 백그라운드에서 수행 (시작 대기 제거)
+        self._log_status("🧹 이전 Appium 서버 백그라운드 정리 중...")
+        threading.Thread(target=self._cleanup_old_appium_ports, daemon=True).start()
 
         # 잔여량 많은 기기 순으로 정렬하여 워커 시작 (우선순위 처리)
         device_counts = {}
@@ -971,10 +987,6 @@ class MainApp(tk.Tk):
             t = threading.Thread(target=self._run_worker, args=(worker,), daemon=True)
             self.worker_threads[did] = t
             t.start()
-            
-            # 워커 스레드가 시작되어 슬롯 큐에 순서대로 진입할 수 있도록 아주 짧은 대기를 줍니다.
-            # 이 대기가 없으면 동시에 시작된 스레드들이 무작위 순서로 첫 슬롯을 차지합니다.
-            time.sleep(0.05)
 
             if did in self.device_panels:
                 pending = device_counts.get(did.strip().upper(), {}).get("pending", 0)
@@ -1005,7 +1017,8 @@ class MainApp(tk.Tk):
 
             try:
                 self._start_appium_server(port)
-                time.sleep(3)  # Appium 완전 기동 대기
+                if not self._wait_appium_ready(port, timeout=8.0):
+                    self._on_worker_log(did, f"⚠ Appium 포트 {port} 준비 대기 시간 초과")
 
                 if worker.run():
                     success = True
@@ -1017,7 +1030,6 @@ class MainApp(tk.Tk):
             finally:
                 self._on_worker_log(did, f"⏹ Appium 종료 중 (port={port})...")
                 self._kill_process_on_port(port)
-                time.sleep(1)
 
         if not success and not worker._stop_event.is_set():
             self._on_worker_log(did, f"❌ {max_retries}회 시도 모두 실패")
@@ -1089,8 +1101,13 @@ class MainApp(tk.Tk):
                     fg_color = CLR_TEXT if conn else CLR_TEXT_MUTE
                     lbl.config(fg=fg_color, font=("Segoe UI", 9, "bold" if conn else "normal"))
 
-            # 2. 우측 패널 재배치 (작업 중인 기기 상단 + 비고 정렬 순)
-            self._rearrange_device_panels()
+            # 2. 우측 패널 재배치 (작업 중인 기기 상단 + 비고 정렬 순) - 디바운스
+            if self._rearrange_job:
+                try:
+                    self.after_cancel(self._rearrange_job)
+                except Exception:
+                    pass
+            self._rearrange_job = self.after(250, self._rearrange_device_panels)
 
         self.after(0, _update)
 
@@ -1098,37 +1115,36 @@ class MainApp(tk.Tk):
 
     def _flush_queues(self):
         """일정 주기마다 로그, 상태, 콘솔 출력 큐를 배치로 비워 UI에 반영 (병목 방지)"""
-        # 1. UI 로그 배치 처리
+        # 1. UI 로그 배치 처리 (기기별 묶음 삽입)
         processed = 0
+        log_batches = defaultdict(list)
         try:
-            while processed < 30:
+            while processed < 120:
                 device_id, message = self._log_queue.get_nowait()
-                if device_id in self.device_panels:
-                    self.device_panels[device_id].append_log(message)
+                log_batches[device_id].append(message)
                 processed += 1
         except queue.Empty:
             pass
+        for device_id, messages in log_batches.items():
+            panel = self.device_panels.get(device_id)
+            if panel:
+                panel.append_logs(messages)
 
-        # 2. UI 상태 배치 처리
+        # 2. UI 상태 배치 처리 (요약은 5초 타이머에 위임)
         processed_s = 0
-        need_summary = False
         try:
-            while processed_s < 10:
+            while processed_s < 40:
                 device_id, status = self._status_queue.get_nowait()
                 if device_id in self.device_panels:
                     self.device_panels[device_id].set_status(status)
-                need_summary = True
                 processed_s += 1
         except queue.Empty:
             pass
-            
-        if need_summary:
-            self._refresh_summary()
 
         # 3. 콘솔 큐 배치 처리
         processed_c = 0
         try:
-            while processed_c < 100:
+            while processed_c < 200:
                 orig_out, msg = self._sys_out_queue.get_nowait()
                 orig_out.write(msg)
                 processed_c += 1
@@ -1139,13 +1155,19 @@ class MainApp(tk.Tk):
             self._orig_stdout.flush()
             self._orig_stderr.flush()
 
-        self.after(50, self._flush_queues)
+        self.after(40, self._flush_queues)
 
     def _on_worker_log(self, device_id: str, message: str):
-        self._log_queue.put((device_id, message))
+        try:
+            self._log_queue.put_nowait((device_id, message))
+        except queue.Full:
+            pass
 
     def _on_worker_status(self, device_id: str, status: str):
-        self._status_queue.put((device_id, status))
+        try:
+            self._status_queue.put_nowait((device_id, status))
+        except queue.Full:
+            pass
 
     # ─── ADB 조회 ─────────────────────────────────────────────────────────────
 
@@ -1503,6 +1525,19 @@ class MainApp(tk.Tk):
                 lbl.config(text=str(summary.get(key, 0)))
 
             dev_counts = self.address_manager.get_all_devices_task_counts()
+
+            # 프로그램 최초 실행 시: 잔여 0보다 큰 기기만 자동 체크
+            if not getattr(self, "_initial_auto_select_done", False) and dev_counts:
+                for did in self.devices_data:
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    p = c.get("pending", 0)
+                    self.devices_data[did]["selected"] = (p > 0)
+                    if hasattr(self, "device_check_vars") and did in self.device_check_vars:
+                        self.device_check_vars[did].set(p > 0)
+                self._save_devices_config()
+                self._update_selected_count_label()
+                self._initial_auto_select_done = True
+
             if hasattr(self, "device_panels"):
                 for did, panel in self.device_panels.items():
                     c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
@@ -1544,32 +1579,44 @@ class MainApp(tk.Tk):
         return self._new_random_port(list(exclude) if exclude else [])
 
     def _cleanup_old_appium_ports(self):
-        """이전에 사용했던 알려진 포트 범위의 Appium 프로세스 정리"""
-        # 쿠팡 기본 포트 범위 및 이전 실행 잔류 포트 정리
-        cleanup_ports = list(range(5720, 5740)) + list(range(9200, 9220))
-        for port in cleanup_ports:
+        """이전에 사용했던 알려진 포트 범위의 Appium 프로세스 정리 (netstat 1회)"""
+        cleanup_ports = {str(p) for p in list(range(5720, 5740)) + list(range(9200, 9220))}
+        try:
+            result = subprocess.run(
+                ["cmd", "/c", "netstat -ano"],
+                capture_output=True, text=True, timeout=8
+            )
+            pids = set()
+            for line in (result.stdout or "").splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                addr_parts = parts[1].rsplit(":", 1)
+                if len(addr_parts) == 2 and addr_parts[1] in cleanup_ports:
+                    pid = parts[-1]
+                    if pid.isdigit():
+                        pids.add(pid)
+            for pid in pids:
+                subprocess.run(["taskkill", "/F", "/PID", pid],
+                               capture_output=True, timeout=2)
+        except Exception:
+            pass
+
+    def _wait_appium_ready(self, port: int, timeout: float = 8.0) -> bool:
+        """포트가 열릴 때까지 폴링 (고정 sleep 대체)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
             try:
-                result = subprocess.run(
-                    ["cmd", "/c", f"netstat -ano | findstr :{port}"],
-                    capture_output=True, text=True, timeout=2
-                )
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        local_addr = parts[1]
-                        addr_parts = local_addr.rsplit(":", 1)
-                        if len(addr_parts) == 2 and addr_parts[1] == str(port):
-                            pid = parts[-1]
-                            subprocess.run(["taskkill", "/F", "/PID", pid],
-                                           capture_output=True, timeout=2)
-            except Exception:
-                pass
-        time.sleep(1)
+                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                    time.sleep(0.15)
+                    return True
+            except OSError:
+                time.sleep(0.1)
+        return False
 
     def _start_appium_server(self, port: int):
         """지정한 포트로 Appium 서버 실행"""
         self._kill_process_on_port(port)
-        time.sleep(1)
         self.running_ports.add(port)
         try:
             startupinfo = None

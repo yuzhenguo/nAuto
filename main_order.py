@@ -2026,6 +2026,19 @@ class MainApp(tk.Tk):
                 lbl.config(text=str(summary.get(key, 0)))
 
             dev_counts = self.order_manager.get_all_devices_task_counts()
+            
+            # 프로그램 최초 실행 시: 잔여 0보다 큰 기기만 자동 체크
+            if not getattr(self, "_initial_auto_select_done", False) and dev_counts:
+                for did in self.devices_data:
+                    c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
+                    p = c.get("pending", 0)
+                    self.devices_data[did]["selected"] = (p > 0)
+                    if hasattr(self, "device_check_vars") and did in self.device_check_vars:
+                        self.device_check_vars[did].set(p > 0)
+                self._save_devices_config()
+                self._update_selected_count_label()
+                self._initial_auto_select_done = True
+
             if hasattr(self, "device_panels"):
                 for did, panel in self.device_panels.items():
                     c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})

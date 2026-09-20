@@ -18,7 +18,69 @@ import threading
 
 import subprocess
 
+import queue
+
+from datetime import datetime
+
 from typing import Callable, Optional
+
+
+class _AsyncFileLogger:
+    """워커 스레드를 막지 않는 비동기 파일 로그."""
+
+    def __init__(self):
+        self._q = queue.Queue(maxsize=20000)
+        t = threading.Thread(target=self._loop, name="addr-file-log", daemon=True)
+        t.start()
+
+    def emit(self, log_path: str, line: str):
+        try:
+            self._q.put_nowait((log_path, line))
+        except queue.Full:
+            pass
+
+    def _loop(self):
+        handles = {}
+        last_flush = time.time()
+        while True:
+            try:
+                item = self._q.get(timeout=0.4)
+            except queue.Empty:
+                now = time.time()
+                if now - last_flush >= 0.4:
+                    for fh in handles.values():
+                        try:
+                            fh.flush()
+                        except Exception:
+                            pass
+                    last_flush = now
+                continue
+            batch = [item]
+            while len(batch) < 100:
+                try:
+                    batch.append(self._q.get_nowait())
+                except queue.Empty:
+                    break
+            for path, line in batch:
+                fh = handles.get(path)
+                if fh is None:
+                    try:
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        fh = open(path, "a", encoding="utf-8", buffering=32768)
+                        handles[path] = fh
+                    except Exception:
+                        continue
+                try:
+                    fh.write(line)
+                except Exception:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+                    handles.pop(path, None)
+
+
+_FILE_LOGGER = _AsyncFileLogger()
 
 
 
@@ -1586,6 +1648,8 @@ class NaverWorker:
                 try:
                     success = False
                     max_retries = 3
+                    self._skip_row_retry = False  # 재시도 생략 플래그 초기화
+                    
                     for attempt in range(max_retries + 1):
                         if self._stop_event.is_set():
                             break
@@ -1604,6 +1668,11 @@ class NaverWorker:
                         if success:
                             if attempt > 0:
                                 self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
+                            break
+                            
+                        # 수취인 입력 실패 등 특정 조건에서 재시도를 생략하도록 설정된 경우
+                        if getattr(self, '_skip_row_retry', False):
+                            self._log("  ℹ [안내] 수취인 입력창 미발견으로 인한 재시도 생략 적용 → 즉시 실패 처리")
                             break
 
                 except Exception as fatal_err:
@@ -1625,7 +1694,6 @@ class NaverWorker:
             finally:
                 if self._release_slot_cb and slot_held:
                     self._release_slot_cb(self.device_id)
-                    time.sleep(0.1)
 
         self._log("📋 등록 루프 종료")
 
@@ -1940,7 +2008,8 @@ class NaverWorker:
                 self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
                 time.sleep(0.5)
             else:
-                self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행")
+                self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행 (실패 시 재시도 생략)")
+                self._skip_row_retry = True
 
 
 
@@ -3375,15 +3444,11 @@ class NaverWorker:
 
             print(full_msg)
 
-        # 로그 파일로도 함께 기록 저장
         try:
-            import datetime
             log_dir = os.path.join(os.path.dirname(__file__), "logs")
-            os.makedirs(log_dir, exist_ok=True)
             log_file_path = os.path.join(log_dir, f"naver_worker_{self.device_id}.log")
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(log_file_path, "a", encoding="utf-8") as f_log:
-                f_log.write(f"[{now_str}] {full_msg}\n")
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _FILE_LOGGER.emit(log_file_path, f"[{now_str}] {full_msg}\n")
         except Exception:
             pass
 

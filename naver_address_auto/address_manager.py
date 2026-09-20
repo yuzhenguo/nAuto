@@ -17,6 +17,7 @@ import threading
 import openpyxl
 import os
 import queue
+import time
 from typing import Optional
 
 
@@ -69,6 +70,7 @@ class AddressManager:
         self.xlsx_path = xlsx_path
         self._lock = threading.Lock()
         self._memory_rows = []
+        self._counts_by_device = {}
         self._write_queue = queue.Queue()
         
         self._load_into_memory()
@@ -117,8 +119,48 @@ class AddressManager:
                         delete_existing=delete_existing,
                         naver_id=str(naver_id).strip() if naver_id else ""
                     ))
+                self._rebuild_counts_locked()
             except Exception as e:
                 print(f"[AddressManager] 초기 엑셀 로드 오류: {e}")
+                self._rebuild_counts_locked()
+
+    @staticmethod
+    def _empty_count():
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0}
+
+    def _rebuild_counts_locked(self):
+        counts = {}
+        for row in self._memory_rows:
+            dev_key = str(row.device_id).strip().upper() if row.device_id else ""
+            if dev_key not in counts:
+                counts[dev_key] = self._empty_count()
+            counts[dev_key]["total"] += 1
+            st = str(row.status).strip().upper()
+            if st == "Y":
+                counts[dev_key]["done"] += 1
+            elif st == "F":
+                counts[dev_key]["failed"] += 1
+            else:
+                counts[dev_key]["pending"] += 1
+        self._counts_by_device = counts
+
+    def _move_status_count_locked(self, device_id: str, old_status: str, new_status: str):
+        dev_key = str(device_id).strip().upper() if device_id else ""
+        bucket = self._counts_by_device.setdefault(dev_key, self._empty_count())
+
+        def _kind(st: str) -> str:
+            s = str(st).strip().upper()
+            if s == "Y":
+                return "done"
+            if s == "F":
+                return "failed"
+            return "pending"
+
+        old_k, new_k = _kind(old_status), _kind(new_status)
+        if old_k == new_k:
+            return
+        bucket[old_k] = max(0, bucket[old_k] - 1)
+        bucket[new_k] += 1
 
     def get_pending_rows_for_device(self, device_id: str) -> list:
         """
@@ -137,8 +179,10 @@ class AddressManager:
         with self._lock:
             for row in self._memory_rows:
                 if row.status == "" and (device_id == "" or row.device_id == device_id):
-                    # 즉시 'W'(작업중) 상태로 변경하여 다른 기기/스레드가 선점하지 못하도록 보호 (Lock-free 병행 최적화)
+                    # 즉시 'W'(작업중) 상태로 변경하여 다른 기기/스레드가 선점하지 못하도록 보호
+                    old_status = row.status
                     row.status = "W"
+                    self._move_status_count_locked(row.device_id, old_status, "W")
                     self._write_queue.put((row.row_index, "W"))
                     return row
             return None
@@ -156,7 +200,9 @@ class AddressManager:
         with self._lock:
             for row in self._memory_rows:
                 if row.row_index == row_index:
+                    old_status = row.status
                     row.status = status
+                    self._move_status_count_locked(row.device_id, old_status, status)
                     self._write_queue.put((row_index, status))
                     break
 
@@ -168,15 +214,11 @@ class AddressManager:
         """전체 현황 요약 반환 (GUI 표시용 - 메모리 집계)"""
         with self._lock:
             summary = {"total": 0, "done": 0, "failed": 0, "pending": 0}
-            for row in self._memory_rows:
-                summary["total"] += 1
-                st = str(row.status).strip().upper()
-                if st == "Y":
-                    summary["done"] += 1
-                elif st == "F":
-                    summary["failed"] += 1
-                else:
-                    summary["pending"] += 1
+            for c in self._counts_by_device.values():
+                summary["total"] += c["total"]
+                summary["done"] += c["done"]
+                summary["failed"] += c["failed"]
+                summary["pending"] += c["pending"]
             return summary
 
     def get_all_devices_task_counts(self) -> dict:
@@ -184,41 +226,26 @@ class AddressManager:
         기기ID별 작업 현황 집계 반환 (스레드 안전, 인메모리)
         """
         with self._lock:
-            counts = {}
-            for row in self._memory_rows:
-                dev_key = str(row.device_id).strip().upper() if row.device_id else ""
-                if dev_key not in counts:
-                    counts[dev_key] = {"total": 0, "pending": 0, "done": 0, "failed": 0}
-
-                counts[dev_key]["total"] += 1
-                st = str(row.status).strip().upper()
-                if st == "Y":
-                    counts[dev_key]["done"] += 1
-                elif st == "F":
-                    counts[dev_key]["failed"] += 1
-                else:
-                    counts[dev_key]["pending"] += 1
-            return counts
+            return {k: dict(v) for k, v in self._counts_by_device.items()}
 
     def get_device_task_counts(self, device_id: str) -> dict:
         """특정 기기ID의 {total, pending, done, failed} 반환"""
         norm_id = str(device_id).strip().upper() if device_id else ""
-        all_counts = self.get_all_devices_task_counts()
-        if norm_id in all_counts:
-            return all_counts[norm_id]
-        for k, v in all_counts.items():
-            if k == norm_id:
-                return v
-        return {"total": 0, "pending": 0, "done": 0, "failed": 0}
+        with self._lock:
+            c = self._counts_by_device.get(norm_id)
+            return dict(c) if c else {"total": 0, "pending": 0, "done": 0, "failed": 0}
 
     def _excel_writer_loop(self):
         """백그라운드에서 큐에 쌓인 상태 업데이트를 일괄(Batch)로 엑셀에 저장"""
         while True:
-            updates = []
-            updates.append(self._write_queue.get())
-            while not self._write_queue.empty():
+            updates = [self._write_queue.get()]
+            deadline = time.time() + 0.2
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
                 try:
-                    updates.append(self._write_queue.get_nowait())
+                    updates.append(self._write_queue.get(timeout=remaining))
                 except queue.Empty:
                     break
             
