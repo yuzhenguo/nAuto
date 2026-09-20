@@ -46,6 +46,7 @@ CLR_ERROR     = "#f85149"
 CLR_TEXT      = "#c9d1d9"
 CLR_TEXT_MUTE = "#8b949e"
 CLR_NAVER     = "#03c75a"
+CLR_WORKING   = "#38bdf8"     # 작업 중인 기기 강조 색상 (선명한 스카이블루/파란색)
 
 
 # ─── 기기 로그 패널 ───────────────────────────────────────────────────────────
@@ -219,6 +220,13 @@ class DevicePanel(tk.Frame):
         else:
             current = done
 
+    def set_working(self, is_working: bool):
+        """작업 중일 때 테두리 강조"""
+        if is_working:
+            self.configure(highlightbackground=CLR_WORKING, highlightthickness=2)
+        else:
+            self.configure(highlightbackground=CLR_BORDER, highlightthickness=1)
+
         color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
         self.task_count_label.config(text=f"{current}/{total}", fg=color)
 
@@ -391,6 +399,8 @@ class MainApp(tk.Tk):
         self.running: bool = False
         self.max_workers_var = tk.IntVar(value=8)
         self.worker_semaphore = DynamicSemaphore(8)  # 동시 실행 최대 기기 수 동적 제어
+        self.working_devices: set = set()            # 현재 실제 작업 중인 기기 ID 집합
+        self.device_id_labels: dict = {}             # 좌측 기기 ID 라벨 위젯 매핑
 
         # ── UI 응답성 유지: 로그/상태 배치 처리 큐 ──────────────────────────
         # 워커 스레드가 빠르게 로그를 보낼 때 tkinter 이벤트 큐가 폭발하는 것을 방지.
@@ -536,6 +546,7 @@ class MainApp(tk.Tk):
 
         self.device_check_vars = {}
         self.device_task_labels = {}
+        self.device_id_labels = {}
 
         device_counts = {}
         if self.order_manager:
@@ -594,14 +605,25 @@ class MainApp(tk.Tk):
                      font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 6))
 
             # 기기 ID
-            id_fg = CLR_TEXT if is_connected else CLR_TEXT_MUTE
-            id_font_weight = "bold" if is_connected else "normal"
-            tk.Label(
+            is_working = did in getattr(self, "working_devices", set())
+            if is_working:
+                id_fg = CLR_WORKING
+                id_font_weight = "bold"
+            elif is_connected:
+                id_fg = CLR_TEXT
+                id_font_weight = "bold"
+            else:
+                id_fg = CLR_TEXT_MUTE
+                id_font_weight = "normal"
+
+            id_lbl = tk.Label(
                 row_frame, text=did,
                 fg=id_fg, bg=row_bg,
                 font=("Segoe UI", 9, id_font_weight),
                 width=14, anchor="w"
-            ).pack(side=tk.LEFT)
+            )
+            id_lbl.pack(side=tk.LEFT)
+            self.device_id_labels[did] = id_lbl
 
             # 복사 버튼
             tk.Button(
@@ -882,6 +904,12 @@ class MainApp(tk.Tk):
 
     # ─── 기기 패널 관리 ──────────────────────────────────────────────────────
 
+    def _panel_sort_key(self, did: str):
+        """1차: 작업 중인 기기 우선(상단), 2차: 비고 정렬 순서"""
+        is_working = did in getattr(self, "working_devices", set())
+        info = self.devices_data.get(did, {})
+        return (0 if is_working else 1, self._remark_sort_key((did, info)))
+
     def _rebuild_device_panels(self):
         """선택된 기기에 맞게 우측 패널 재구성"""
         for w in self.panels_frame.winfo_children():
@@ -906,8 +934,9 @@ class MainApp(tk.Tk):
             ).pack(expand=True, pady=60)
             return
 
+        sorted_devices = sorted(selected_devices, key=self._panel_sort_key)
         cols = min(count, 3)
-        for i, did in enumerate(selected_devices):
+        for i, did in enumerate(sorted_devices):
             remark = self.devices_data.get(did, {}).get("remark", "")
             port = self._get_port_for_device(i)
 
@@ -922,6 +951,8 @@ class MainApp(tk.Tk):
             )
             c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
             panel.set_task_counts(c.get("total", 0), c.get("pending", 0))
+            is_working = did in getattr(self, "working_devices", set())
+            panel.set_working(is_working)
             row = i // cols
             col = i % cols
             panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
@@ -934,6 +965,27 @@ class MainApp(tk.Tk):
 
             self.panels_frame.rowconfigure(row, weight=1)
             self.panels_frame.columnconfigure(col, weight=1)
+
+    def _rearrange_device_panels(self):
+        """작업 중인 기기 패널을 상단으로 올리고 비고 정렬 순서대로 재배치"""
+        if not self.device_panels:
+            return
+
+        sorted_dids = sorted(self.device_panels.keys(), key=self._panel_sort_key)
+        count = len(sorted_dids)
+        cols = min(count, 3) if count > 0 else 1
+
+        for i, did in enumerate(sorted_dids):
+            panel = self.device_panels[did]
+            is_working = did in getattr(self, "working_devices", set())
+            panel.set_working(is_working)
+            row = i // cols
+            col = i % cols
+            panel.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            self.panels_frame.rowconfigure(row, weight=1)
+            self.panels_frame.columnconfigure(col, weight=1)
+
+        self.panels_scroll_frame.canvas.configure(scrollregion=self.panels_scroll_frame.canvas.bbox("all"))
 
     def _get_selected_devices(self) -> list:
         """선택된 기기를 비고 번호 오름차순(1번부터)으로 반환"""
@@ -1164,8 +1216,28 @@ class MainApp(tk.Tk):
         else:
             self._log_status("🚀 자동 주문 시작")
 
+        # 잔여량 많은 순(내림차순), 비고 작은 순(오름차순)으로 정렬하여 워커 시작
+        dev_task_counts = {}
+        if self.order_manager:
+            try:
+                dev_task_counts = self.order_manager.get_all_devices_task_counts()
+            except Exception:
+                dev_task_counts = {}
+
+        def _worker_priority_key(did):
+            key = did.strip().upper()
+            pending = dev_task_counts.get(key, {}).get("pending", 0)
+            info = self.devices_data.get(did, {})
+            remark_key = self._remark_sort_key((did, info))
+            # 1차: pending 내림차순 (-pending)
+            # 2차: remark 오름차순 (remark_key)
+            return (-pending, remark_key)
+
+        sorted_devices = sorted(selected_devices, key=_worker_priority_key)
+        self._log_status(f"📊 잔여 많은 순/비고 작은 순 정렬 완료: {[(d, dev_task_counts.get(d.strip().upper(), {}).get('pending', 0)) for d in sorted_devices]}")
+
         used_ports: set = set(self.running_ports) if hasattr(self, "running_ports") else set()
-        for i, did in enumerate(selected_devices):
+        for i, did in enumerate(sorted_devices):
             if self._is_device_running(did):
                 w = self.workers.get(did)
                 if w is not None and w._stop_event.is_set():
@@ -1232,35 +1304,39 @@ class MainApp(tk.Tk):
             if not acquired or worker._stop_event.is_set():
                 self._on_worker_log(did, "⏹ 중지 요청 - 세마포어 대기 후 즉시 종료")
             else:
-                for attempt in range(1, max_retries + 1):
-                    if worker._stop_event.is_set():
-                        self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
-                        break
-
-                    port = self._new_random_port(tried_ports)
-                    tried_ports.append(port)
-                    worker.appium_port = port
-
-                    self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
-
-                    try:
-                        self._start_appium_server(port)
-                        if not self._sleep_worker_interruptible(worker, 5):
-                            self._on_worker_log(did, "⏹ 중지 요청 - Appium 대기 중단")
+                self._set_device_working(did, True)
+                try:
+                    for attempt in range(1, max_retries + 1):
+                        if worker._stop_event.is_set():
+                            self._on_worker_log(did, "⏹ 중지 요청 - 재시도 중단")
                             break
 
-                        if worker.run():
-                            break
-                        else:
-                            if worker._stop_event.is_set():
+                        port = self._new_random_port(tried_ports)
+                        tried_ports.append(port)
+                        worker.appium_port = port
+
+                        self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 포트 {port}")
+
+                        try:
+                            self._start_appium_server(port)
+                            if not self._sleep_worker_interruptible(worker, 5):
+                                self._on_worker_log(did, "⏹ 중지 요청 - Appium 대기 중단")
                                 break
-                            self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
-                    except Exception as e:
-                        self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
-                    finally:
-                        self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
-                        self._kill_process_on_port(port)
-                        self._sleep_worker_interruptible(worker, 1.0)
+
+                            if worker.run():
+                                break
+                            else:
+                                if worker._stop_event.is_set():
+                                    break
+                                self._on_worker_log(did, f"⚠ [{attempt}회] 재시도...")
+                        except Exception as e:
+                            self._on_worker_log(did, f"❌ [{attempt}회] 예외: {str(e)[:120]}")
+                        finally:
+                            self._on_worker_log(did, f"⏹ Appium 종료 (port={port})...")
+                            self._kill_process_on_port(port)
+                            self._sleep_worker_interruptible(worker, 1.0)
+                finally:
+                    self._set_device_working(did, False)
         finally:
             if acquired:
                 self.worker_semaphore.release()
@@ -1279,6 +1355,9 @@ class MainApp(tk.Tk):
 
         self.workers.pop(device_id, None)
         self.worker_threads.pop(device_id, None)
+        if hasattr(self, "working_devices"):
+            self.working_devices.discard(device_id)
+
         if device_id in self.device_panels:
             self.device_panels[device_id].set_running(False)
             self.device_panels[device_id].set_idle()
@@ -1287,12 +1366,41 @@ class MainApp(tk.Tk):
 
         if not self._any_worker_running():
             self.running = False
+            if hasattr(self, "working_devices"):
+                self.working_devices.clear()
             self.start_btn.config(state=tk.NORMAL)
             if hasattr(self, "manual_start_btn"):
                 self.manual_start_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
+            self._rearrange_device_panels()
             self._draw_device_list()
             self._log_status("✅ 실행 중인 기기 없음")
+
+    def _set_device_working(self, device_id: str, is_working: bool):
+        """기기의 작업 중 상태에 따라 좌측 기기 ID 라벨 색상(파란색) 및 우측 패널 위치 재정렬"""
+        if not hasattr(self, "working_devices"):
+            self.working_devices = set()
+
+        if is_working:
+            self.working_devices.add(device_id)
+        else:
+            self.working_devices.discard(device_id)
+
+        def _update():
+            # 1. 좌측 기기 ID 색상 업데이트
+            if hasattr(self, "device_id_labels") and device_id in self.device_id_labels:
+                lbl = self.device_id_labels[device_id]
+                conn = self.devices_data.get(device_id, {}).get("connected", False)
+                if is_working:
+                    lbl.config(fg=CLR_WORKING, font=("Segoe UI", 9, "bold"))
+                else:
+                    fg_color = CLR_TEXT if conn else CLR_TEXT_MUTE
+                    lbl.config(fg=fg_color, font=("Segoe UI", 9, "bold" if conn else "normal"))
+
+            # 2. 우측 패널 재배치 (작업 중인 기기 상단 + 비고 정렬 순)
+            self._rearrange_device_panels()
+
+        self.after(0, _update)
 
     def _stop_all(self):
         self._log_status("⏹ 전체 중지 요청 중...")

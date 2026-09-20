@@ -453,7 +453,7 @@ class NaverWorker:
 
         ah.go_to_main_page(self.driver, self._log)
 
-        time.sleep(7)
+        time.sleep(4)
 
         # [단계 3.1] 웰컴 모달 / 팝업 발견 시 클릭
         self._check_and_close_welcome_modals(step_label="3.1")
@@ -465,7 +465,7 @@ class NaverWorker:
                 return False
             # 계정 전환 성공 후 메인 페이지로 이동
             ah.go_to_main_page(self.driver, self._log)
-            time.sleep(3)
+            time.sleep(2)
 
 
         # [단계 3] 네이버 플러스 스토어 탭 버튼이 존재하면 클릭
@@ -476,7 +476,7 @@ class NaverWorker:
 
             ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=7, log_callback=self._log)
 
-            time.sleep(5)
+            time.sleep(3)
 
         else:
 
@@ -503,8 +503,8 @@ class NaverWorker:
                 if ah.element_exists(self.driver, xpath, timeout=4):
                     self._log("📌 마이쇼핑 버튼 발견 → 클릭")
                     ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log)
-                    self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
-                    time.sleep(5)
+                    self._log("✅ 마이쇼핑 클릭 완료 (3초 대기)")
+                    time.sleep(3)
                     my_shopping_clicked = True
                     break
             if my_shopping_clicked:
@@ -551,7 +551,7 @@ class NaverWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 메뉴 버튼 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 menu_clicked = True
                 break
 
@@ -613,7 +613,7 @@ class NaverWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 설정 버튼 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 setting_clicked = True
                 break
 
@@ -633,7 +633,7 @@ class NaverWorker:
             if ah.element_exists(self.driver, xpath, timeout=4):
                 self._log("  📌 로그인 아이디 관리 링크 발견 -> 클릭")
                 ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log)
-                time.sleep(3)
+                time.sleep(2)
                 mgmt_clicked = True
                 break
 
@@ -899,9 +899,9 @@ class NaverWorker:
         ]
         for xpath in back_btn_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=3):
-                self._log("  📌 아이디선택 화면 상단 뒤로/버튼 발견 -> 클릭 (2초 대기)")
+                self._log("  📌 아이디선택 화면 상단 뒤로/버튼 발견 -> 클릭 (1.5초 대기)")
                 ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                time.sleep(2)
+                time.sleep(1.5)
                 break
 
         # 7. //android.widget.ImageView[@content-desc="이전"] 발견하면 클릭 (2초 대기)
@@ -911,9 +911,9 @@ class NaverWorker:
         ]
         for xpath in prev_btn_xpaths:
             if ah.element_exists(self.driver, xpath, timeout=3):
-                self._log("  📌 설정 화면 '이전' 버튼 발견 -> 클릭 (2초 대기)")
+                self._log("  📌 설정 화면 '이전' 버튼 발견 -> 클릭 (1.5초 대기)")
                 ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
-                time.sleep(2)
+                time.sleep(1.5)
                 break
 
         return True
@@ -1041,7 +1041,7 @@ class NaverWorker:
                     self._log(f"📌 장바구니 버튼 발견 ({xpath[:45]}) → 클릭 (시도 {attempt}/3)")
                     if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
                         cart_clicked = True
-                        time.sleep(3)
+                        time.sleep(2)
                         break
 
             if cart_clicked:
@@ -1051,7 +1051,7 @@ class NaverWorker:
             time.sleep(1.5)
 
         if not cart_clicked:
-            self._log("  🔄 장바구니 버튼 미발견 -> 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
+            self._log("  🔄 장바구니 버튼 미발견 → 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
             ah.go_to_main_page(self.driver, self._log)
             time.sleep(3)
             self._dismiss_hide_popup(max_count=2)
@@ -1108,7 +1108,7 @@ class NaverWorker:
                 self._log(f"📌 주문하기 버튼 발견 ({xpath[:55]}) → 클릭")
                 if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
                     order_clicked = True
-                    time.sleep(3)
+                    time.sleep(2)
                     break
         if not order_clicked:
             self._log("  ℹ 주문하기 버튼 미발견 → 건너뛰고 계속 진행")
@@ -1128,7 +1128,7 @@ class NaverWorker:
                 self._log(f"📌 변경 버튼 발견 ({xpath[:40]}) → 클릭")
                 if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
                     change_clicked = True
-                    time.sleep(3)
+                    time.sleep(2)
                     break
         if not change_clicked:
             self._log("  ℹ 변경 버튼 미발견 → 건너뛰고 계속 진행")
@@ -1734,7 +1734,7 @@ class NaverWorker:
 
             return False
 
-        time.sleep(3)
+        time.sleep(2)
 
 
 
@@ -1764,9 +1764,9 @@ class NaverWorker:
 
                 return False
 
-            # 팝업 렌더링 대기 (2→5초)
+            # 팝업 렌더링 대기
 
-            time.sleep(5)
+            time.sleep(3)
 
         elif (ah.element_exists(self.driver, SEARCH_BTN_XPATH, timeout=5)
               or ah.element_exists(self.driver, '//*[contains(@text, "주소를 검색해주세요")]', timeout=2)):
@@ -1802,9 +1802,9 @@ class NaverWorker:
 
             return False
 
-        self._log("  ⏳ 검색 버튼 클릭 후 3.5초 대기 (결과 로딩)")
+        self._log("  ⏳ 검색 버튼 클릭 후 2.5초 대기 (결과 로딩)")
 
-        time.sleep(3.5)
+        time.sleep(2.5)
 
 
 
@@ -1826,9 +1826,9 @@ class NaverWorker:
 
         
 
-        # 선택 클릭 완료 후 2초 대기
+        # 선택 클릭 완료 후 1초 대기
 
-        time.sleep(2.0)
+        time.sleep(1.0)
 
 
 
@@ -1868,7 +1868,7 @@ class NaverWorker:
 
             self._log("  ⌨ 키보드 숨기기 실행 완료")
 
-            time.sleep(1.0)
+            time.sleep(0.5)
 
         except Exception:
 
@@ -1904,7 +1904,7 @@ class NaverWorker:
                 self._log("  ❌ 선택완료 버튼 매칭 실패 → 주소 등록 작업 실패 처리")
                 return False
 
-        time.sleep(2)
+        time.sleep(1.5)
 
         # 신규 레이아웃: 주소 선택 후 '이름을 입력해주세요' 화면에서 수취인 입력
         # XPath: //android.widget.EditText[@resource-id="receiver"]
@@ -1912,7 +1912,7 @@ class NaverWorker:
             self._set_status(f"수취인 입력: {row.name}")
             if self._input_receiver_name(row.name):
                 self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
-                time.sleep(1)
+                time.sleep(0.5)
             else:
                 self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행")
 
@@ -1926,7 +1926,7 @@ class NaverWorker:
         contact_ok = self._input_contact_mid_last(row)
         if contact_ok:
             self._log("  ✅ [연락처] 010 선택 + contact-1 (중간+마지막) 입력 완료")
-            time.sleep(1)
+            time.sleep(0.5)
         else:
             self._log("  ℹ contact-1 미발견 → 구 레이아웃(분할 전화번호) 입력 시도")
 
@@ -2005,7 +2005,7 @@ class NaverWorker:
                     self._log("  ❌ 전화번호 마지막 4자리 입력 최종 실패")
 
         # [단계 21] 저장하기 버튼 클릭 (연락처입력.xml 하단)
-        time.sleep(2)
+        time.sleep(1.5)
         self._set_status("저장하기 클릭")
         if not ah.element_exists(self.driver, SAVE_BTN_XPATH, timeout=3):
             self._log("  ⬇ 저장하기 버튼 미노출 → 스크롤 다운")
@@ -2026,7 +2026,7 @@ class NaverWorker:
             self._log("❌ 저장하기/등록 버튼 클릭 실패")
             return False
 
-        time.sleep(2.5)
+        time.sleep(1.5)
 
         # 중복 배송지 팝업 ("회원의 배송지 목록에 동일한 주소가 존재해서...") 감지 시 확인 버튼 처리
         duplicate_pop_xpaths = [
@@ -2062,7 +2062,7 @@ class NaverWorker:
             return True
 
         self._log(f"✅ {row.name} 배송지 등록 완료")
-        time.sleep(2)
+        time.sleep(1.5)
         return True
 
 
