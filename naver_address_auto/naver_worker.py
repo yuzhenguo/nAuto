@@ -298,6 +298,65 @@ class NaverWorker:
 
         self.is_initialized = False
 
+        self.current_row = None
+
+
+    @staticmethod
+    def _is_connection_refused(err) -> bool:
+        if isinstance(err, ConnectionRefusedError):
+            return True
+        s = str(err)
+        keys = (
+            "대상 컴퓨터에서 연결을 거부",
+            "연결을 거부했으므로 연결하지 못했습니다",
+            "actively refused",
+            "Connection refused",
+            "ECONNREFUSED",
+            "WinError 10061",
+            "errno 10061",
+            "[Errno 10061]",
+        )
+        low = s.lower()
+        return any((k.lower() in low) if k.isascii() else (k in s) for k in keys)
+
+    @staticmethod
+    def _is_driver_session_error(err) -> bool:
+        s = str(err)
+        keys = (
+            "The session identified by",
+            "is not known",
+            "NoSuchDriverException",
+            "NoSuchDriverError",
+            "InvalidSessionIdException",
+            "invalid session id",
+            "A session is either terminated or not started",
+        )
+        low = s.lower()
+        return any((k.lower() in low) if k.isascii() else (k in s) for k in keys)
+
+    def _mark_conn_failed(self, row: Optional[AddressRow], reason: str = ""):
+        if not row:
+            return
+        self.address_manager.mark_conn_failed(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 연결실패{extra}: {row.name} → H 기록")
+        self._set_status("연결실패")
+
+    def _mark_driver_error(self, row: Optional[AddressRow], reason: str = ""):
+        if not row:
+            return
+        self.address_manager.mark_driver_error(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 드라이브에러{extra}: {row.name} → E 기록")
+        self._set_status("드라이브에러")
+
+    def _mark_next_pending_conn_failed(self):
+        """연결 단계에서 거부된 경우, 다음 미처리 행 1건을 H로 기록."""
+        row = self.address_manager.get_next_pending_row(self.device_id)
+        if not row:
+            return
+        self._mark_conn_failed(row, "드라이버 연결 거부")
+
 
 
     # ─── 공개 메서드 ──────────────────────────────────────────────────────────
@@ -340,7 +399,15 @@ class NaverWorker:
 
                 self._log(f"❌ 드라이버 연결 실패: {e}")
 
-                self._set_status("연결 실패")
+                if self._is_connection_refused(e):
+                    self._set_status("연결실패")
+                    if self.current_row:
+                        self._mark_conn_failed(self.current_row, "연결 거부")
+                        self.current_row = None
+                    elif attempt >= max_restarts:
+                        self._mark_next_pending_conn_failed()
+                else:
+                    self._set_status("연결 실패")
 
                 if attempt < max_restarts:
 
@@ -984,7 +1051,9 @@ class NaverWorker:
                     ah.wait_and_click(self.driver, xpath, timeout=3, log_callback=self._log)
                     time.sleep(1.5)
             except Exception as e:
-                self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {e}")
+                self._log(f"  ⚠ [{step_label}] 모달 닫기 예외: {str(e).splitlines()[0]}")
+                if self._is_driver_session_error(e) or self._is_connection_refused(e):
+                    raise
 
 
     def _dismiss_hide_popup(self, max_count: int = 2):
@@ -1644,6 +1713,7 @@ class NaverWorker:
 
                 self._log(f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, name={row.name}")
                 self._set_status(f"등록 중: {row.name} (총 {t_cnt} / 잔여 {p_cnt})")
+                self.current_row = row
 
                 try:
                     success = False
@@ -1676,9 +1746,14 @@ class NaverWorker:
                             break
 
                 except Exception as fatal_err:
-                    # 치명적 세션/서버 에러 → 현재 행을 F 처리 후 루프 밖으로 전파
-                    self.address_manager.mark_failed(row.row_index)
-                    self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
+                    # 치명적 세션/서버 에러 → 현재 행 처리 후 루프 밖으로 전파
+                    if self._is_connection_refused(fatal_err):
+                        self._mark_conn_failed(row, "대상 컴퓨터 연결 거부")
+                    elif self._is_driver_session_error(fatal_err):
+                        self._mark_driver_error(row, "세션 소실")
+                    else:
+                        self.address_manager.mark_failed(row.row_index)
+                        self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
                     self._log(f"🔴 [등록 루프] 치명적 오류로 루프 중단 → run() 재연결 유도")
                     raise  # run()의 except Exception as e 로 전파
 
@@ -1687,11 +1762,15 @@ class NaverWorker:
                     self._log(f"✅ 성공: {row.name} → Y 기록")
                 else:
                     self.address_manager.mark_failed(row.row_index)
-                    self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
+                    if getattr(self, '_skip_row_retry', False):
+                        self._log(f"❌ 수취인 입력창 미발견 → F 기록 (재시도 없음): {row.name}")
+                    else:
+                        self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
 
                 counts_after = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
-                self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
+                self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)}, 연결실패 {counts_after.get('conn_failed', 0)}, 드라이브에러 {counts_after.get('driver_error', 0)})")
             finally:
+                self.current_row = None
                 if self._release_slot_cb and slot_held:
                     self._release_slot_cb(self.device_id)
 
@@ -1741,7 +1820,8 @@ class NaverWorker:
 
         if exception[0]:
 
-            self._log(f"❌ 처리 중 예외: {exception[0]}")
+            err_one = str(exception[0]).splitlines()[0]
+            self._log(f"❌ 처리 중 예외: {err_one}")
 
             # ── 치명적 세션/서버 에러 감지 → 상위로 전파 (재연결 유도) ──
             err_str = str(exception[0])
@@ -1749,12 +1829,27 @@ class NaverWorker:
                 "instrumentation process is not running",
                 "A session is either terminated or not started",
                 "NoSuchDriverError",
+                "NoSuchDriverException",
+                "The session identified by",
+                "InvalidSessionIdException",
+                "invalid session id",
                 "UnknownError",
                 "UiAutomation not connected",
                 "cannot be proxied to UiAutomator2",
+                "대상 컴퓨터에서 연결을 거부",
+                "연결을 거부했으므로 연결하지 못했습니다",
+                "actively refused",
+                "Connection refused",
+                "ECONNREFUSED",
+                "WinError 10061",
             ]
-            if any(p in err_str for p in FATAL_PATTERNS):
-                self._log("🔴 [치명적 오류] UiAutomator2/세션 크래시 감지 → 재연결을 위해 예외 전파")
+            if self._is_connection_refused(exception[0]) or self._is_driver_session_error(exception[0]) or any(p in err_str for p in FATAL_PATTERNS):
+                if self._is_connection_refused(exception[0]):
+                    self._log("🔴 [연결실패] 대상 컴퓨터 연결 거부 감지 → H 기록 후 재연결")
+                elif self._is_driver_session_error(exception[0]):
+                    self._log("🔴 [드라이브에러] 세션 소실 감지 → E 기록 후 재연결")
+                else:
+                    self._log("🔴 [치명적 오류] UiAutomator2/세션 크래시 감지 → 재연결을 위해 예외 전파")
                 raise exception[0]  # run() 루프가 재연결 처리
 
             return False
@@ -2008,8 +2103,9 @@ class NaverWorker:
                 self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
                 time.sleep(0.5)
             else:
-                self._log("  ⚠ [신규 레이아웃] 수취인 입력 실패 → 계속 진행 (실패 시 재시도 생략)")
+                self._log("❌ 수취인 입력창(receiver / receiver_name) 미발견 → 즉시 F 종료")
                 self._skip_row_retry = True
+                return False
 
 
 

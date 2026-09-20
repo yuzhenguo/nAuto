@@ -7,7 +7,7 @@ address_manager.py
   3열: 우편번호
   4열: 휴대폰 번호 (010-xxxx-xxxx)
   5열: 상세 주소
-  6열: 작업 상태 (공백=미작업, Y=성공, F=실패)
+  6열: 작업 상태 (공백=미작업, Y=성공, F=실패, H=연결실패, E=드라이브에러, W=작업중)
   7열: 핸드폰 디바이스 ID
   8열: (예비)
   9열: 주소초기화 여부 (Y=기존 배송지 모두 삭제, 공백=유지)
@@ -126,7 +126,7 @@ class AddressManager:
 
     @staticmethod
     def _empty_count():
-        return {"total": 0, "pending": 0, "done": 0, "failed": 0}
+        return {"total": 0, "pending": 0, "done": 0, "failed": 0, "conn_failed": 0, "driver_error": 0}
 
     def _rebuild_counts_locked(self):
         counts = {}
@@ -140,6 +140,10 @@ class AddressManager:
                 counts[dev_key]["done"] += 1
             elif st == "F":
                 counts[dev_key]["failed"] += 1
+            elif st == "H":
+                counts[dev_key]["conn_failed"] += 1
+            elif st == "E":
+                counts[dev_key]["driver_error"] += 1
             else:
                 counts[dev_key]["pending"] += 1
         self._counts_by_device = counts
@@ -154,6 +158,10 @@ class AddressManager:
                 return "done"
             if s == "F":
                 return "failed"
+            if s == "H":
+                return "conn_failed"
+            if s == "E":
+                return "driver_error"
             return "pending"
 
         old_k, new_k = _kind(old_status), _kind(new_status)
@@ -195,6 +203,14 @@ class AddressManager:
         """해당 행의 6열을 F로 업데이트"""
         self._update_status(row_index, "F")
 
+    def mark_conn_failed(self, row_index: int):
+        """해당 행의 6열을 H(연결실패)로 업데이트"""
+        self._update_status(row_index, "H")
+
+    def mark_driver_error(self, row_index: int):
+        """해당 행의 6열을 E(드라이브에러)로 업데이트"""
+        self._update_status(row_index, "E")
+
     def _update_status(self, row_index: int, status: str):
         """6열 상태값 업데이트 (메모리 반영 후 백그라운드 큐 전송)"""
         with self._lock:
@@ -213,12 +229,14 @@ class AddressManager:
     def get_all_rows_summary(self) -> dict:
         """전체 현황 요약 반환 (GUI 표시용 - 메모리 집계)"""
         with self._lock:
-            summary = {"total": 0, "done": 0, "failed": 0, "pending": 0}
+            summary = {"total": 0, "done": 0, "failed": 0, "pending": 0, "conn_failed": 0, "driver_error": 0}
             for c in self._counts_by_device.values():
                 summary["total"] += c["total"]
                 summary["done"] += c["done"]
                 summary["failed"] += c["failed"]
                 summary["pending"] += c["pending"]
+                summary["conn_failed"] += c.get("conn_failed", 0)
+                summary["driver_error"] += c.get("driver_error", 0)
             return summary
 
     def get_all_devices_task_counts(self) -> dict:
@@ -233,7 +251,7 @@ class AddressManager:
         norm_id = str(device_id).strip().upper() if device_id else ""
         with self._lock:
             c = self._counts_by_device.get(norm_id)
-            return dict(c) if c else {"total": 0, "pending": 0, "done": 0, "failed": 0}
+            return dict(c) if c else {"total": 0, "pending": 0, "done": 0, "failed": 0, "conn_failed": 0, "driver_error": 0}
 
     def _excel_writer_loop(self):
         """백그라운드에서 큐에 쌓인 상태 업데이트를 일괄(Batch)로 엑셀에 저장"""

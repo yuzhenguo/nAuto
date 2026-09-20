@@ -716,10 +716,12 @@ class MainApp(tk.Tk):
 
         self.summary_labels = {}
         for key, label, color in [
-            ("total",   "전체",    CLR_TEXT),
-            ("pending", "대기",    CLR_WARNING),
-            ("done",    "성공(Y)", CLR_SUCCESS),
-            ("failed",  "실패(F)", CLR_ERROR),
+            ("total",       "전체",       CLR_TEXT),
+            ("pending",     "대기",       CLR_WARNING),
+            ("done",        "성공(Y)",    CLR_SUCCESS),
+            ("failed",      "실패(F)",    CLR_ERROR),
+            ("conn_failed",  "연결실패(H)",  CLR_ERROR),
+            ("driver_error", "드라이브에러(E)", CLR_ERROR),
         ]:
             lf = tk.Frame(summary_bar, bg=CLR_SURFACE2)
             lf.pack(side=tk.LEFT, padx=16)
