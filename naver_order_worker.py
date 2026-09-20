@@ -5333,17 +5333,29 @@ class NaverOrderWorker:
             pass
 
         while not self._stop_event.is_set():
-            # OrderManager 버전에 따라 device_id 인자 지원 여부 호환
+            # claim_next_pending: 조회와 동시에 'W'로 원자적 예약 → 여러 기기 동시처리 시 중복 방지
+            row = None
             try:
-                row = self.order_manager.get_next_pending(device_id=self.device_id)
+                row = self.order_manager.claim_next_pending(device_id=self.device_id)
+            except AttributeError:
+                # 구버전 OrderManager 폴백: get_next_pending 사용
+                try:
+                    row = self.order_manager.get_next_pending(device_id=self.device_id)
+                except TypeError:
+                    try:
+                        rows = self.order_manager.get_pending_rows(device_id=self.device_id)
+                    except TypeError:
+                        rows = self.order_manager.get_pending_rows()
+                        rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
+                    row = rows[0] if rows else None
             except TypeError:
-                # 구버전: device_id 미지원 → 전체 pending에서 기기ID 필터
                 try:
                     rows = self.order_manager.get_pending_rows(device_id=self.device_id)
                 except TypeError:
                     rows = self.order_manager.get_pending_rows()
                     rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
                 row = rows[0] if rows else None
+
             if not row:
                 try:
                     extra = self.order_manager.describe_pending_filter(self.device_id)

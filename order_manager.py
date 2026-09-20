@@ -252,9 +252,71 @@ class OrderManager:
             return rows
 
     def get_next_pending(self, device_id: str = "") -> Optional[OrderRow]:
-        """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상."""
+        """미처리 행 중 첫 번째 반환. device_id를 지정하면 해당 폰ID 행만 대상.
+        
+        ⚠️ 단순 조회만 하므로 동시 접근 시 여러 기기가 같은 행을 가져갈 수 있음.
+        병행 처리에서는 claim_next_pending() 사용을 권장.
+        """
         rows = self.get_pending_rows(device_id=device_id)
         return rows[0] if rows else None
+
+    def claim_next_pending(self, device_id: str = "") -> Optional[OrderRow]:
+        """
+        미처리 행 중 첫 번째를 원자적으로 예약하여 반환.
+        조회 즉시 완료여부를 'W' (Working)로 마킹하여 다른 기기가 같은 행을 가져가지 않도록 함.
+        병행 처리 시 레이스 컨디션 방지용.
+        """
+        with self._lock:
+            try:
+                wb = openpyxl.load_workbook(self.xlsx_path)
+                ws = wb.active
+                cm = self._get_col_map(ws)
+
+                start_row = 2 if ws.max_row > 1 else 1
+                first_cell = ws.cell(1, cm["search_keyword"]).value
+                if first_cell and str(first_cell).strip().isdigit():
+                    start_row = 1
+
+                for row_idx in range(start_row, ws.max_row + 1):
+                    keyword_val = ws.cell(row_idx, cm["search_keyword"]).value
+                    if not keyword_val or self._str(keyword_val) == "":
+                        break
+
+                    status_val = ws.cell(row_idx, cm["status"]).value
+                    status_str = self._str(status_val)
+
+                    # 공백/None인 행만 대상 (W/Y/F/C는 이미 처리중이거나 완료)
+                    if status_val is not None and status_str.upper() not in ("NONE", ""):
+                        continue
+
+                    # 폰ID 필터링
+                    row_device_id = ""
+                    if "device_id" in cm:
+                        row_device_id = self._str(ws.cell(row_idx, cm["device_id"]).value)
+                    if device_id and not _device_ids_match(row_device_id, device_id):
+                        continue
+
+                    # ✅ 원자적 예약: 즉시 'W'로 마킹 후 저장
+                    ws.cell(row_idx, cm["status"]).value = "W"
+                    wb.save(self.xlsx_path)
+
+                    return OrderRow(
+                        row_index      = row_idx,
+                        search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
+                        seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
+                        product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
+                        recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
+                        phone          = self._str(ws.cell(row_idx, cm["phone"]).value),
+                        password       = self._str_pin(ws.cell(row_idx, cm["password"]).value),
+                        status         = status_str,
+                        payment_method = self._str(ws.cell(row_idx, cm["payment_method"]).value),
+                        device_id      = row_device_id,
+                        login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
+                        second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
+                    )
+            except Exception as e:
+                print(f"[OrderManager] claim_next_pending 오류: {e}")
+            return None
 
     def describe_pending_filter(self, device_id: str) -> str:
         """기기 필터로 0건일 때 원인 파악용 요약 문자열"""
@@ -292,9 +354,9 @@ class OrderManager:
                 print(f"[OrderManager] 엑셀 쓰기 오류 (row={row_index}): {e}")
 
     def get_summary(self) -> dict:
-        """전체 현황 요약"""
+        """전체 현황 요약 (W=작업중은 pending에 포함)"""
         with self._lock:
-            summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0, "pending": 0}
+            summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0, "pending": 0, "working": 0}
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path)
                 ws = wb.active
@@ -315,6 +377,9 @@ class OrderManager:
                         summary["failed"] += 1
                     elif st == "C":
                         summary["cancelled"] += 1
+                    elif st == "W":
+                        summary["working"] += 1
+                        summary["pending"] += 1  # 작업중도 미완료로 카운트
                     else:
                         summary["pending"] += 1
             except Exception as e:
@@ -359,6 +424,8 @@ class OrderManager:
                         counts[dev_key]["failed"] += 1
                     elif status_str == "C":
                         counts[dev_key]["cancelled"] += 1
+                    elif status_str == "W":
+                        counts[dev_key]["pending"] += 1  # 작업중도 미완료로 카운트
                     else:
                         counts[dev_key]["pending"] += 1
             except Exception as e:
