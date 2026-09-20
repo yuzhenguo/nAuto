@@ -1132,40 +1132,9 @@ class NaverWorker:
         return True
 
     def _click_continue_order_image(self) -> bool:
-        """주문하기 클릭 후 '계속 주문하기' 팝업 발생 시 신속 감지 및 클릭.
-        미발견 시 0.1초 만에 즉시 다음 단계로 진행.
-        """
-        # 1. 초고속 XPath 사전 검사: 화면에 '계속' 텍스트를 가진 요소가 있는지 확인 (0.5초 이내)
-        continue_btn_xpaths = [
-            '//android.widget.Button[contains(@text, "계속")]',
-            '//android.widget.TextView[contains(@text, "계속")]',
-            '//android.view.View[contains(@text, "계속")]',
-        ]
-        for xpath in continue_btn_xpaths:
-            try:
-                elements = self.driver.find_elements(By.XPATH, xpath)
-                for el in elements:
-                    txt = (el.get_attribute("text") or "").strip()
-                    if "계속" in txt:
-                        self._log(f"  ✅ [계속 주문하기] 텍스트 버튼 발견 ('{txt}') → 즉시 클릭")
-                        if not self._click_element_center_coordinates(el):
-                            el.click()
-                        time.sleep(1.5)
-                        return True
-            except Exception:
-                pass
-
-        # 2. 화면 전체(page_source)에 '계속' 텍스트가 아예 없으면 팝업이 없는 것이므로 즉시 통과 (시간 낭비 제로!)
-        try:
-            page_src = self.driver.page_source or ""
-            if "계속" not in page_src:
-                return False
-        except Exception:
-            pass
-
-        # 3. '계속' 관련 요소가 화면에 존재하는 경우에만 이미지 매칭 시도 (스크린샷 1회 공유)
+        """주문하기 클릭 후 '계속 주문하기' 팝업 발생 시 이미지로만 감지 후 클릭 (최대 1회)."""
         self._set_status("계속 주문하기 확인")
-        self._log("🔍 [계속 주문하기] 팝업 감지 → 이미지 탐색 중...")
+        self._log("🔍 [계속 주문하기] 팝업 감지 → 이미지 탐색 중 (1회 감지)...")
 
         base_dir = os.path.dirname(__file__)
         img_names = ("계속1.png", "계속2.png", "계속3.png", "계속4.png")
@@ -1747,6 +1716,9 @@ class NaverWorker:
                 return False
             self.current_naver_id = row.naver_id
             self.is_initialized = True
+            
+            # 폰ID + 네이버아이디 별로 최초 1회 삭제 로직을 수행하기 위해 플래그 초기화
+            self.has_checked_initial_delete = False
 
         # [단계 9] 9열(주소초기화) 값을 최초 1회만 확인하여 기존 배송지 삭제 여부 결정
 

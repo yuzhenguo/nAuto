@@ -19,6 +19,16 @@ import json
 import queue
 from datetime import datetime
 
+class SysOutQueueWriter:
+    """sys.stdout을 가로채서 큐에 담아 메인 스레드에서 한 번에 출력 (스레드 충돌 방지)"""
+    def __init__(self, original_out, q):
+        self.original_out = original_out
+        self.q = q
+    def write(self, msg):
+        self.q.put((self.original_out, msg))
+    def flush(self):
+        pass
+
 # ─── 경로 설정 ────────────────────────────────────────────────────────────────
 _BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 _NAVER_DIR = os.path.join(_BASE_DIR, "naver_address_auto")
@@ -490,6 +500,13 @@ class MainApp(tk.Tk):
         # 로그를 큐에 모아두고 _flush_log_queue() 에서 50ms 주기로 배치 처리.
         self._log_queue: queue.Queue = queue.Queue()
         self._status_queue: queue.Queue = queue.Queue()
+        self._sys_out_queue: queue.Queue = queue.Queue()
+        
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+        sys.stdout = SysOutQueueWriter(self._orig_stdout, self._sys_out_queue)
+        sys.stderr = SysOutQueueWriter(self._orig_stderr, self._sys_out_queue)
+
         self._flush_log_queue()  # 배치 flush 루프 시작
 
         self.devices_data = self._load_devices_config()
@@ -1601,6 +1618,20 @@ class MainApp(tk.Tk):
 
         # if need_summary:
         #     self._refresh_summary()  # 빈번한 엑셀 읽기 방지 (5초 주기 갱신에 의존)
+
+        # ── 콘솔 큐 배치: 최대 100개씩 처리 ──
+        processed_c = 0
+        try:
+            while processed_c < 100:
+                orig_out, msg = self._sys_out_queue.get_nowait()
+                orig_out.write(msg)
+                processed_c += 1
+        except queue.Empty:
+            pass
+            
+        if processed_c > 0:
+            self._orig_stdout.flush()
+            self._orig_stderr.flush()
 
         # 50ms 후 재호출 (프로그램이 살아있는 한 계속 반복)
         self.after(50, self._flush_log_queue)

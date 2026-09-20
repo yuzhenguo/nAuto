@@ -14,6 +14,17 @@ import sys
 import random
 from datetime import datetime
 import json
+import queue
+
+class SysOutQueueWriter:
+    """sys.stdout을 가로채서 큐에 담아 메인 스레드에서 한 번에 출력 (스레드 충돌 방지)"""
+    def __init__(self, original_out, q):
+        self.original_out = original_out
+        self.q = q
+    def write(self, msg):
+        self.q.put((self.original_out, msg))
+    def flush(self):
+        pass
 
 from address_manager import AddressManager
 from naver_worker import NaverWorker
@@ -356,11 +367,21 @@ class MainApp(tk.Tk):
         self.working_devices: set = set()  # 현재 작업 중인 기기 ID 집합
         self.device_id_labels: dict = {}   # 좌측 기기 ID 라벨 위젯 매핑
 
+        self._log_queue = queue.Queue()
+        self._status_queue = queue.Queue()
+        self._sys_out_queue = queue.Queue()
+        
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+        sys.stdout = SysOutQueueWriter(self._orig_stdout, self._sys_out_queue)
+        sys.stderr = SysOutQueueWriter(self._orig_stderr, self._sys_out_queue)
+
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
 
         self._build_ui()
         self._refresh_summary()
+        self._flush_queues()
 
     # ─── 기기 설정 관리 ──────────────────────────────────────────────────────
 
@@ -1075,18 +1096,56 @@ class MainApp(tk.Tk):
 
     # ─── 콜백 ─────────────────────────────────────────────────────────────────
 
+    def _flush_queues(self):
+        """일정 주기마다 로그, 상태, 콘솔 출력 큐를 배치로 비워 UI에 반영 (병목 방지)"""
+        # 1. UI 로그 배치 처리
+        processed = 0
+        try:
+            while processed < 30:
+                device_id, message = self._log_queue.get_nowait()
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].append_log(message)
+                processed += 1
+        except queue.Empty:
+            pass
+
+        # 2. UI 상태 배치 처리
+        processed_s = 0
+        need_summary = False
+        try:
+            while processed_s < 10:
+                device_id, status = self._status_queue.get_nowait()
+                if device_id in self.device_panels:
+                    self.device_panels[device_id].set_status(status)
+                need_summary = True
+                processed_s += 1
+        except queue.Empty:
+            pass
+            
+        if need_summary:
+            self._refresh_summary()
+
+        # 3. 콘솔 큐 배치 처리
+        processed_c = 0
+        try:
+            while processed_c < 100:
+                orig_out, msg = self._sys_out_queue.get_nowait()
+                orig_out.write(msg)
+                processed_c += 1
+        except queue.Empty:
+            pass
+            
+        if processed_c > 0:
+            self._orig_stdout.flush()
+            self._orig_stderr.flush()
+
+        self.after(50, self._flush_queues)
+
     def _on_worker_log(self, device_id: str, message: str):
-        def _update():
-            if device_id in self.device_panels:
-                self.device_panels[device_id].append_log(message)
-        self.after(0, _update)
+        self._log_queue.put((device_id, message))
 
     def _on_worker_status(self, device_id: str, status: str):
-        def _update():
-            if device_id in self.device_panels:
-                self.device_panels[device_id].set_status(status)
-            self._refresh_summary()
-        self.after(0, _update)
+        self._status_queue.put((device_id, status))
 
     # ─── ADB 조회 ─────────────────────────────────────────────────────────────
 
