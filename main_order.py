@@ -1225,55 +1225,51 @@ class MainApp(tk.Tk):
             messagebox.showerror("오류", "ADB 명령 타임아웃")
 
     def _enable_samsung_hotspot_macro(self, did: str) -> bool:
-        """갤럭시 S9~S25 설정 앱 매크로 방식으로 모바일 핫스팟 활성화 (부팅 프로그램 대기 후 홈 이동 & 설정 진입)"""
-        import xml.etree.ElementTree as ET
-        import re
+        """삼성 갤럭시 (S9 ~ S25) 설정 앱 매크로 방식 핫스팟 활성화"""
+        self._on_worker_log(did, "🔓 화면 깨우기 및 Wi-Fi 비활성화...")
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
+        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=3)
+        time.sleep(1.0)
 
-        def get_ui_nodes(filename="ui_hotspot.xml"):
+        # Step 1: 설정 앱 메인 진입 (새 윈도우 생성)
+        self._on_worker_log(did, "⚙️ 설정 앱 메인 진입...")
+        subprocess.run(["adb", "-s", did, "shell", "am", "force-stop", "com.android.settings"], capture_output=True, timeout=3)
+        time.sleep(0.5)
+        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"], capture_output=True, timeout=5)
+        time.sleep(2.5)
+
+        def get_center(node):
+            bounds = node.attrib.get('bounds', '')
+            if bounds and bounds.startswith('[') and '][' in bounds:
+                try:
+                    parts = bounds.replace('[', '').replace(']', ',').split(',')
+                    x1, y1, x2, y2 = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+                    return ((x1 + x2) // 2, (y1 + y2) // 2)
+                except Exception:
+                    pass
+            return None
+
+        def tap_center(cx, cy, msg=""):
+            self._on_worker_log(did, f"👉 {msg} -> 좌표 탭: ({cx}, {cy})")
+            subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)], capture_output=True, timeout=3)
+
+        def get_ui_nodes(out_filename="ui_dump.xml"):
+            local_dump_path = os.path.join(os.path.dirname(__file__), out_filename)
             try:
-                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", f"/sdcard/{filename}"],
-                               capture_output=True, timeout=10)
-                res = subprocess.run(["adb", "-s", did, "shell", "cat", f"/sdcard/{filename}"],
-                                     capture_output=True, text=True, timeout=5)
-                xml_str = (res.stdout or "").strip()
-                if xml_str and "<hierarchy" in xml_str:
-                    return ET.fromstring(xml_str)
+                subprocess.run(["adb", "-s", did, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], capture_output=True, timeout=8)
+                time.sleep(0.5)
+                subprocess.run(["adb", "-s", did, "pull", "/sdcard/window_dump.xml", local_dump_path], capture_output=True, timeout=5)
+                if os.path.exists(local_dump_path):
+                    import xml.etree.ElementTree as ET
+                    return ET.parse(local_dump_path).getroot()
             except Exception as e:
                 self._on_worker_log(did, f"  ⚠ UI 덤프 예외: {e}")
             return None
 
-        def get_center(node):
-            bounds = node.attrib.get('bounds', '')
-            m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
-            if m:
-                x1, y1, x2, y2 = map(int, m.groups())
-                return (x1 + x2) // 2, (y1 + y2) // 2
-            return None
+        tree = get_ui_nodes("ui_main.py.xml")
 
-        def tap_center(cx, cy, label=""):
-            self._on_worker_log(did, f"  👆 [매크로 탭] {label} ({cx}, {cy})")
-            subprocess.run(["adb", "-s", did, "shell", "input", "tap", str(cx), str(cy)],
-                           capture_output=True, timeout=5)
-
-        # 0. 화면 깨우기, HOME 키 이동 및 Wi-Fi 비활성화 (타 시작 앱 이탈)
-        self._on_worker_log(did, "🏠 홈 화면 이동, 화면 깨우기 및 Wi-Fi 비활성화...")
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
-        subprocess.run(["adb", "-s", did, "shell", "input", "keyevent", "3"], capture_output=True, timeout=3) # HOME 키
-        subprocess.run(["adb", "-s", did, "shell", "svc", "wifi", "disable"], capture_output=True, timeout=5)
-        time.sleep(2.0)
-
-        # 1. 설정 앱 완전 종료 후 메인 새로 실행
-        self._on_worker_log(did, "⚙️ 설정 앱 완전 종료 후 메인 새로 진입...")
-        subprocess.run(["adb", "-s", did, "shell", "am", "force-stop", "com.android.settings"], capture_output=True, timeout=3)
-        time.sleep(0.5)
-        subprocess.run(["adb", "-s", did, "shell", "am", "start", "-n", "com.android.settings/.Settings"],
-                       capture_output=True, timeout=5)
-        time.sleep(2.5)
-
-        tree = get_ui_nodes("ui_main.xml")
-
-        # Step 1: 설정 메인 화면에서 '연결' 탐색 및 클릭
+        # 메인 설정 화면에서 '연결' 메뉴 클릭
         if tree is not None:
             conn_target = None
             for node in tree.iter('node'):
@@ -1443,7 +1439,7 @@ class MainApp(tk.Tk):
                 else:
                     self._on_worker_log(did, f"ℹ️ 핫스팟 아직 비활성 상태 (//android.widget.Switch[@content-desc='사용 안 함'] 존재, {attempt}/10회차)")
 
-        self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")
+                self._on_worker_log(did, "⚡ 명령어 보조 실행 (cmd tethering start-tethering wifi)...")
         subprocess.run(["adb", "-s", did, "shell", "cmd", "tethering", "start-tethering", "wifi"],
                        capture_output=True, timeout=5)
         return True
