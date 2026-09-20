@@ -210,26 +210,21 @@ class NaverWorker:
 
 
     def __init__(self,
-
                  device_id: str,
-
                  appium_port: int,
-
                  address_manager: AddressManager,
-
                  log_callback: Optional[Callable] = None,
-
-                 status_callback: Optional[Callable] = None):
+                 status_callback: Optional[Callable] = None,
+                 acquire_slot_callback: Optional[Callable] = None,
+                 release_slot_callback: Optional[Callable] = None):
 
         self.device_id       = device_id
-
         self.appium_port     = appium_port
-
         self.address_manager = address_manager
-
         self._log_cb         = log_callback
-
         self._status_cb      = status_callback
+        self._acquire_slot_cb = acquire_slot_callback
+        self._release_slot_cb = release_slot_callback
 
         self.driver          = None
 
@@ -1137,23 +1132,54 @@ class NaverWorker:
         return True
 
     def _click_continue_order_image(self) -> bool:
-        """주문하기 클릭 후 '계속 주문하기' 이미지(계속1~4.png) 인식 클릭.
-
-        매칭 점수 0.70 이상인 이미지를 클릭하고 True 반환.
-        미발견 시 False (다음 단계로 계속 진행).
+        """주문하기 클릭 후 '계속 주문하기' 팝업 발생 시 신속 감지 및 클릭.
+        미발견 시 0.1초 만에 즉시 다음 단계로 진행.
         """
+        # 1. 초고속 XPath 사전 검사: 화면에 '계속' 텍스트를 가진 요소가 있는지 확인 (0.5초 이내)
+        continue_btn_xpaths = [
+            '//android.widget.Button[contains(@text, "계속")]',
+            '//android.widget.TextView[contains(@text, "계속")]',
+            '//android.view.View[contains(@text, "계속")]',
+        ]
+        for xpath in continue_btn_xpaths:
+            try:
+                elements = self.driver.find_elements(By.XPATH, xpath)
+                for el in elements:
+                    txt = (el.get_attribute("text") or "").strip()
+                    if "계속" in txt:
+                        self._log(f"  ✅ [계속 주문하기] 텍스트 버튼 발견 ('{txt}') → 즉시 클릭")
+                        if not self._click_element_center_coordinates(el):
+                            el.click()
+                        time.sleep(1.5)
+                        return True
+            except Exception:
+                pass
+
+        # 2. 화면 전체(page_source)에 '계속' 텍스트가 아예 없으면 팝업이 없는 것이므로 즉시 통과 (시간 낭비 제로!)
+        try:
+            page_src = self.driver.page_source or ""
+            if "계속" not in page_src:
+                return False
+        except Exception:
+            pass
+
+        # 3. '계속' 관련 요소가 화면에 존재하는 경우에만 이미지 매칭 시도 (스크린샷 1회 공유)
         self._set_status("계속 주문하기 확인")
-        self._log("🔍 [계속 주문하기] 계속1~4.png 이미지 탐색 중 (임계값 0.70)...")
+        self._log("🔍 [계속 주문하기] 팝업 감지 → 이미지 탐색 중...")
 
         base_dir = os.path.dirname(__file__)
         img_names = ("계속1.png", "계속2.png", "계속3.png", "계속4.png")
 
+        try:
+            screenshot_png = self._get_screenshot()
+        except Exception:
+            screenshot_png = None
+
         for img_name in img_names:
             img_path = os.path.join(base_dir, img_name)
             if not os.path.exists(img_path):
-                self._log(f"  ℹ [{img_name}] 파일 없음 → 건너뜀")
                 continue
-            coords = self._find_image_coords(img_path, threshold=0.70)
+            coords = self._find_image_coords(img_path, threshold=0.70, screenshot_png=screenshot_png)
             if not coords:
                 continue
             try:
@@ -1164,15 +1190,14 @@ class NaverWorker:
                 )
                 self._log(
                     f"  ✅ [계속 주문하기] {img_name} 매칭 클릭 "
-                    f"(좌표: {coords[0]},{coords[1]}) → 2초 대기"
+                    f"(좌표: {coords[0]},{coords[1]}) → 1.5초 대기"
                 )
-                time.sleep(2)
+                time.sleep(1.5)
                 return True
             except Exception as e:
                 self._log(f"  ⚠ [계속 주문하기] {img_name} 클릭 실패: {e}")
                 break
 
-        self._log("  ℹ [계속 주문하기] 계속1~4.png 미감지 → 다음 단계 진행")
         return False
 
     def _ensure_cart_product_checked(self) -> bool:
@@ -1260,49 +1285,65 @@ class NaverWorker:
 
 
     def _delete_existing_addresses(self):
-
         """
-
         [단계 9.1~9.3] 기본배송지 제외 기존 배송지 모두 삭제
-        삭제.png 이미지 인식으로 삭제 버튼 탐색, 스크롤 반복 (최대 15회)
-
+        삭제1.png 와 삭제2.png 중 인식율(점수) 높은 이미지로 삭제 버튼 탐색, 스크롤 반복 (최대 15회)
         """
-
         self._set_status("기존 배송지 삭제 중")
-
         self._log("🗑 기존 배송지 삭제 시작")
 
         # 배송지 관리 화면 로드 대기 (최대 10초)
         ah.wait_for_element(self.driver, NEW_ADDRESS_BTN_XPATH, timeout=10, log_callback=self._log)
 
-        delete_img_path = os.path.join(os.path.dirname(__file__), "삭제.png")
-        img_based = os.path.exists(delete_img_path)
-        if img_based:
-            self._log(f"  📂 삭제.png 이미지 파일 발견: {delete_img_path}")
-        else:
-            self._log(f"  ⚠ 삭제.png 파일 없음 → XPath 기반 삭제로 전환 ({delete_img_path})")
+        del1_path = os.path.join(os.path.dirname(__file__), "삭제1.png")
+        del2_path = os.path.join(os.path.dirname(__file__), "삭제2.png")
+
+        def _find_best_delete_button(ss_png=None):
+            """삭제1.png vs 삭제2.png 인식율(점수) 비교 후 최고 점수 이미지 채택"""
+            if ss_png is None:
+                ss_png = self._get_screenshot()
+
+            candidates = []
+            for img_path, img_name in [(del1_path, "삭제1.png"), (del2_path, "삭제2.png")]:
+                if os.path.exists(img_path):
+                    res_coords, score = self._find_image_coords(img_path, threshold=0.65, screenshot_png=ss_png, return_score=True)
+                    candidates.append({"name": img_name, "path": img_path, "score": score, "coords": res_coords})
+                else:
+                    self._log(f"  ⚠ {img_name} 파일 없음: {img_path}")
+
+            if not candidates:
+                return None, ss_png
+
+            # 인식율 내림차순 정렬 (높은 것 우선)
+            candidates.sort(key=lambda c: c["score"], reverse=True)
+            score_cmp_msg = " vs ".join([f"{c['name']}: {c['score']:.4f}" for c in candidates])
+            self._log(f"  📊 [삭제 이미지 인식율 비교] {score_cmp_msg}")
+
+            for cand in candidates:
+                coords = cand["coords"]
+                if coords:
+                    if self._is_default_delete_coords(coords):
+                        self._log(f"  ⛔ [{cand['name']}] 좌표 {coords}는 기본배송지의 삭제 버튼 -> 제외")
+                        continue
+                    self._log(f"  🎯 [{cand['name']}] 인식율 {cand['score']:.4f} (최고) 채택! 좌표: {coords}")
+                    return coords, ss_png
+
+            return None, ss_png
 
         MAX_LOOPS = 15
         deleted_count = 0
 
         for loop_count in range(MAX_LOOPS):
-
             if self._stop_event.is_set():
                 break
 
             time.sleep(1)
-
             tap_x, tap_y = None, None
 
-            # ─── 1순위: 삭제.png 이미지 매칭으로 삭제 버튼 좌표 탐색 ───
-            if img_based:
-                coords = self._find_image_coords(delete_img_path, threshold=0.70)
-                if coords and self._is_default_delete_coords(coords):
-                    self._log(f"  ⛔ [이미지 매칭] 좌표 {coords}는 기본배송지의 삭제 버튼 → 제외 (XPath 탐색으로 전환)")
-                    coords = None
-                if coords:
-                    tap_x, tap_y = coords
-                    self._log(f"  🎯 [이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
+            # ─── 1순위: 삭제1.png vs 삭제2.png 인식율 높은 것으로 삭제 버튼 좌표 탐색 ───
+            coords, last_ss = _find_best_delete_button()
+            if coords:
+                tap_x, tap_y = coords
 
             # ─── 2순위: 이미지 미감지 시 XPath로 폴백 ───
             if tap_x is None:
@@ -1329,14 +1370,9 @@ class NaverWorker:
                 time.sleep(1.5)
 
                 # 스크롤 후 재탐색
-                if img_based:
-                    coords = self._find_image_coords(delete_img_path, threshold=0.70)
-                    if coords and self._is_default_delete_coords(coords):
-                        self._log(f"  ⛔ [스크롤 후 이미지 매칭] 좌표 {coords}는 기본배송지의 삭제 버튼 → 제외")
-                        coords = None
-                    if coords:
-                        tap_x, tap_y = coords
-                        self._log(f"  🎯 [스크롤 후 이미지 매칭] 삭제.png 발견! 좌표: ({tap_x}, {tap_y})")
+                coords, _ = _find_best_delete_button()
+                if coords:
+                    tap_x, tap_y = coords
 
                 if tap_x is None:
                     target_btn = self._find_non_default_delete_button()
@@ -1544,65 +1580,83 @@ class NaverWorker:
         self._log(f"📋 주소 등록 루프 시작 (기기: {self.device_id}, 총 {counts.get('total', 0)}건, 잔여 {counts.get('pending', 0)}건)")
 
         while not self._stop_event.is_set():
-            row = self.address_manager.get_next_pending_row(self.device_id)
-
             counts = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
             t_cnt = counts.get('total', 0)
             p_cnt = counts.get('pending', 0)
 
-            if not row:
+            if p_cnt == 0:
                 self._log(f"✅ 모든 주소 처리 완료 (기기: {self.device_id}, 총 {t_cnt}건, 잔여 {p_cnt}건)")
                 self._set_status(f"완료 (총 {t_cnt} / 잔여 {p_cnt})")
                 break
 
-            # 폰 ID(기기 ID) 명시적 확인 (자신의 기기에 할당된 작업만 수행)
-            if row.device_id != self.device_id:
-                self._log(f"⏭ [건너뜀] 기기 ID 불일치 (내 기기: {self.device_id}, 할당: {row.device_id})")
-                self.address_manager.mark_failed(row.row_index)
-                continue
+            # ── [우선순위 동시 슬롯 제어] 잔여량 많은 기기 우선 진입 대기 ──
+            if self._acquire_slot_cb:
+                self._set_status(f"대기 중 (잔여 {p_cnt}건)")
+                self._log(f"⏳ [우선순위 슬롯] 대기 중... (내 기기 잔여: {p_cnt}건)")
+                acquired = self._acquire_slot_cb(self.device_id, lambda: self._stop_event.is_set())
+                if not acquired or self._stop_event.is_set():
+                    break
 
-            self._log(f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, name={row.name}")
-            self._set_status(f"등록 중: {row.name} (총 {t_cnt} / 잔여 {p_cnt})")
-
+            slot_held = True
             try:
-                success = False
-                max_retries = 3
-                for attempt in range(max_retries + 1):
-                    if self._stop_event.is_set():
-                        break
+                row = self.address_manager.get_next_pending_row(self.device_id)
+                if not row:
+                    self._log(f"✅ 모든 주소 처리 완료 (기기: {self.device_id}, 총 {t_cnt}건, 잔여 {p_cnt}건)")
+                    self._set_status(f"완료 (총 {t_cnt} / 잔여 {p_cnt})")
+                    break
 
-                    if attempt > 0:
-                        self._log(f"  🔄 [{attempt}차 실패 재시도] {row.name} (row={row.row_index}) {attempt}회 재시도 진행...")
-                        try:
-                            ah.go_to_main_page(self.driver, self._log)
-                            time.sleep(2)
-                            self._dismiss_hide_popup(max_count=2)
-                        except Exception:
-                            pass
-                        self.is_initialized = False
+                # 폰 ID(기기 ID) 명시적 확인 (자신의 기기에 할당된 작업만 수행)
+                if row.device_id != self.device_id:
+                    self._log(f"⏭ [건너뜀] 기기 ID 불일치 (내 기기: {self.device_id}, 할당: {row.device_id})")
+                    self.address_manager.mark_failed(row.row_index)
+                    continue
 
-                    success = self._process_row_with_timeout(row)
-                    if success:
+                self._log(f"📌 [총 {t_cnt}건 / 잔여 {p_cnt}건] 처리 중: row={row.row_index}, name={row.name}")
+                self._set_status(f"등록 중: {row.name} (총 {t_cnt} / 잔여 {p_cnt})")
+
+                try:
+                    success = False
+                    max_retries = 3
+                    for attempt in range(max_retries + 1):
+                        if self._stop_event.is_set():
+                            break
+
                         if attempt > 0:
-                            self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
-                        break
+                            self._log(f"  🔄 [{attempt}차 실패 재시도] {row.name} (row={row.row_index}) {attempt}회 재시도 진행...")
+                            try:
+                                ah.go_to_main_page(self.driver, self._log)
+                                time.sleep(2)
+                                self._dismiss_hide_popup(max_count=2)
+                            except Exception:
+                                pass
+                            self.is_initialized = False
 
-            except Exception as fatal_err:
-                # 치명적 세션/서버 에러 → 현재 행을 F 처리 후 루프 밖으로 전파
-                self.address_manager.mark_failed(row.row_index)
-                self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
-                self._log(f"🔴 [등록 루프] 치명적 오류로 루프 중단 → run() 재연결 유도")
-                raise  # run()의 except Exception as e 로 전파
+                        success = self._process_row_with_timeout(row)
+                        if success:
+                            if attempt > 0:
+                                self._log(f"  ✅ [재시도 성공!] {row.name} (row={row.row_index}) {attempt}회 재시도 성공 -> Y 기록 진행")
+                            break
 
-            if success:
-                self.address_manager.mark_success(row.row_index)
-                self._log(f"✅ 성공: {row.name} → Y 기록")
-            else:
-                self.address_manager.mark_failed(row.row_index)
-                self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
+                except Exception as fatal_err:
+                    # 치명적 세션/서버 에러 → 현재 행을 F 처리 후 루프 밖으로 전파
+                    self.address_manager.mark_failed(row.row_index)
+                    self._log(f"❌ 실패/타임아웃: {row.name} → F 기록")
+                    self._log(f"🔴 [등록 루프] 치명적 오류로 루프 중단 → run() 재연결 유도")
+                    raise  # run()의 except Exception as e 로 전파
 
-            counts_after = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
-            self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
+                if success:
+                    self.address_manager.mark_success(row.row_index)
+                    self._log(f"✅ 성공: {row.name} → Y 기록")
+                else:
+                    self.address_manager.mark_failed(row.row_index)
+                    self._log(f"❌ 실패/타임아웃 (총 {max_retries + 1}회 시도 모두 실패): {row.name} → F 기록")
+
+                counts_after = self.address_manager.get_device_task_counts(self.device_id) if hasattr(self.address_manager, "get_device_task_counts") else {"total": 0, "pending": 0}
+                self._log(f"  📊 [기기 {self.device_id}] 진행 현황: 총 {counts_after.get('total', 0)}건 / 잔여 {counts_after.get('pending', 0)}건 (완료 {counts_after.get('done', 0)}, 실패 {counts_after.get('failed', 0)})")
+            finally:
+                if self._release_slot_cb and slot_held:
+                    self._release_slot_cb(self.device_id)
+                    time.sleep(0.1)
 
         self._log("📋 등록 루프 종료")
 
@@ -3397,253 +3451,126 @@ class NaverWorker:
 
 
 
-    def _find_image_coords(self, template_path: str, threshold: float = 0.75) -> Optional[tuple]:
-
-        """지정한 템플릿 이미지가 화면에 있는지 멀티스케일 OpenCV 매칭으로 찾고 중심 좌표 반환"""
-
+    def _find_image_coords(self, template_path: str, threshold: float = 0.75, screenshot_png: Optional[bytes] = None, return_score: bool = False):
+        """지정한 템플릿 이미지가 화면에 있는지 멀티스케일 OpenCV 매칭으로 찾고 중심 좌표 반환 (return_score=True면 (coords, score) 반환)"""
         try:
-
             import cv2
-
             import numpy as np
-
             from PIL import Image
-
             import io
-
             import os
-
         except ImportError:
-
             self._log("  [이미지 매칭] cv2/numpy/PIL 라이브러리 미설치")
-
-            return None
-
-
+            return (None, 0.0) if return_score else None
 
         try:
-
-            # 1. 화면 캡처 (화면 꺼짐 자동 복구)
-
-            screenshot_png = self._get_screenshot()
+            # 1. 화면 캡처 (전달받은 것이 없으면 새로 캡처)
+            if screenshot_png is None:
+                screenshot_png = self._get_screenshot()
 
             screenshot_pil = Image.open(io.BytesIO(screenshot_png))
-
             screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
-
             screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
-
-
 
             screen_h, screen_w = screen_gray.shape
 
-            self._log(f"  [이미지 매칭] 스크린샷 크기: {screen_w}x{screen_h}")
-
-
-
-            # 원본 캡처 이미지 무조건 저장 (Unicode 경로 대응)
-
-            ss_dir = os.path.join(os.path.dirname(template_path), "캡쳐")
-            os.makedirs(ss_dir, exist_ok=True)
-            screenshot_path = os.path.join(ss_dir, f"debug_screenshot_{self.device_id}.png")
-
-            try:
-
-                _, enc_ss = cv2.imencode('.png', screen_bgr)
-
-                enc_ss.tofile(screenshot_path)
-
-                self._log(f"  [디버그] 원본 캡처 이미지 저장 완료: {screenshot_path}")
-
-            except Exception as ss_err:
-
-                self._log(f"  [디버그] 원본 캡처 이미지 저장 실패: {ss_err}")
-
-
-
             # 2. 템플릿 로드 (Unicode 경로 대응)
-
             if not os.path.exists(template_path):
-
                 self._log(f"  [이미지 매칭] 템플릿 파일이 없음: {template_path}")
-
-                return None
+                return (None, 0.0) if return_score else None
 
             try:
-
                 template_bgr = cv2.imdecode(np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-
             except Exception as read_err:
-
                 self._log(f"  [이미지 매칭] 템플릿 로드 중 예외 발생: {read_err}")
-
                 template_bgr = None
 
-
-
             if template_bgr is None:
-
                 self._log(f"  [이미지 매칭] 템플릿 로드 실패 (imdecode 결과 None): {template_path}")
-
-                return None
+                return (None, 0.0) if return_score else None
 
             template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
-
-
-
             t_h, t_w = template_gray.shape
 
-            self._log(f"  [이미지 매칭] 템플릿 크기: {t_w}x{t_h}")
-
-
-
-            # 3. 멀티스케일 매칭
-
+            # 3. 고속 멀티스케일 매칭 (스케일 수 최적화: 16단계)
             best_score = -1
-
             best_loc = None
-
             best_scale = 1.0
-
             best_tw = t_w
-
             best_th = t_h
 
-
-
-            # 스케일 범위: 0.4x ~ 3.0x (기기 해상도 차이 대응)
-
-            scales = np.linspace(0.4, 3.0, 80)
-
-
+            scales = np.linspace(0.5, 2.2, 16)
 
             for scale in scales:
-
                 new_w = int(t_w * scale)
-
                 new_h = int(t_h * scale)
 
-
-
-                # 스크린 크기보다 크면 스킵
-
                 if new_w >= screen_w or new_h >= screen_h:
-
                     continue
-
-                # 너무 작으면 스킵
-
                 if new_w < 10 or new_h < 5:
-
                     continue
 
-
-
-                # 템플릿 리사이즈
-
-                resized = cv2.resize(template_gray, (new_w, new_h),
-
-                                     interpolation=cv2.INTER_AREA)
-
-
-
-                # 매칭
-
+                resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 result = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
-
                 _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-
-
                 if max_val > best_score:
-
                     best_score = max_val
-
                     best_loc = max_loc
-
                     best_scale = scale
-
                     best_tw = new_w
-
                     best_th = new_h
 
-
+                    # 이미 높은 신뢰도로 감지되었으면 즉시 조기 종료
+                    if best_score >= 0.85:
+                        break
 
             self._log(f"  [이미지 매칭] 최고 매칭 점수: {best_score:.4f} (스케일: {best_scale:.2f}x)")
 
-
-
             # 4. 결과 반환
-
             if best_score >= threshold and best_loc is not None:
-
                 cx = best_loc[0] + best_tw // 2
-
                 cy = best_loc[1] + best_th // 2
-
                 self._log(f"  🎯 [이미지 매칭] 발견! 중심좌표: ({cx}, {cy})")
 
-
-
                 # 디버그: 매칭 영역 시각화 저장 (Unicode 경로 대응)
-
                 try:
-
                     debug_img = screen_bgr.copy()
-
                     top_left = best_loc
-
                     bottom_right = (top_left[0] + best_tw, top_left[1] + best_th)
-
                     cv2.rectangle(debug_img, top_left, bottom_right, (0, 255, 0), 3)
-
                     cv2.circle(debug_img, (cx, cy), 8, (0, 0, 255), -1)
 
-                    
-
                     debug_path = os.path.join(os.path.dirname(template_path), f"debug_match_{self.device_id}.png")
-
                     _, enc_dbg = cv2.imencode('.png', debug_img)
-
                     enc_dbg.tofile(debug_path)
-
                     self._log(f"  [디버그] 디버그 이미지 저장: {debug_path}")
-
                 except Exception as dbg_err:
-
                     self._log(f"  [디버그] 디버그 이미지 저장 중 오류: {dbg_err}")
 
-
-
+                if return_score:
+                    return (cx, cy), float(best_score)
                 return cx, cy
-
             else:
-
                 self._log(f"  ❌ [이미지 매칭] 매칭 실패 (점수 {best_score:.4f} < 임계값 {threshold})")
 
                 # 실패한 시점의 화면 저장 (Unicode 경로 대응)
-
                 failed_path = os.path.join(os.path.dirname(template_path), f"debug_failed_{self.device_id}.png")
-
                 try:
-
                     _, enc_fail = cv2.imencode('.png', screen_bgr)
-
                     enc_fail.tofile(failed_path)
-
                     self._log(f"  [디버그] 매칭 실패 이미지 저장 완료: {failed_path}")
-
                 except Exception as fail_err:
-
                     self._log(f"  [디버그] 매칭 실패 이미지 저장 중 오류: {fail_err}")
 
+                if return_score:
+                    return None, float(best_score)
+                return None
         except Exception as e:
-
             self._log(f"  [이미지 매칭] 오류 발생: {e}")
-
-
-
-        return None
+            if return_score:
+                return None, 0.0
+            return None
 
 
 

@@ -248,6 +248,90 @@ def wake_and_keep_screen_on(did: str):
         print(f"[ScreenWake:{did}] 화면 감시 예외: {e}")
 
 
+# ─── 우선순위 슬롯 매니저 (잔여량 많은 기기 우선 실행) ──────────────────────
+
+class PrioritySlotManager:
+    """기기별 잔여 작업량(pending) 기반 우선순위 동시 실행 관리자"""
+    def __init__(self, limit=8):
+        self.limit = limit
+        self.running_devices = set()
+        self.lock = threading.Lock()
+        self.waiters = []  # list of (priority_tuple, did, event)
+        self.get_priority_fn = None
+
+    def set_limit(self, new_limit: int):
+        with self.lock:
+            self.limit = max(1, new_limit)
+            self._wake_next_locked()
+
+    def reset(self):
+        with self.lock:
+            self.running_devices.clear()
+            self.waiters.clear()
+
+    def set_priority_fn(self, fn):
+        self.get_priority_fn = fn
+
+    def pre_register_all(self, dids: list):
+        with self.lock:
+            for did in dids:
+                if not any(w[1] == did for w in self.waiters) and did not in self.running_devices:
+                    event = threading.Event()
+                    priority = self.get_priority_fn(did) if self.get_priority_fn else (0, 0)
+                    self.waiters.append((priority, did, event))
+            self._resort_waiters_locked()
+            self._wake_next_locked()
+
+    def acquire(self, did: str, stop_check_fn=None) -> bool:
+        event = None
+        with self.lock:
+            if did in self.running_devices:
+                return True
+                
+            existing = [w for w in self.waiters if w[1] == did]
+            if existing:
+                event = existing[0][2]
+            else:
+                event = threading.Event()
+                priority = self.get_priority_fn(did) if self.get_priority_fn else (0, 0)
+                self.waiters.append((priority, did, event))
+                self._resort_waiters_locked()
+                self._wake_next_locked()
+
+        if event:
+            while True:
+                if stop_check_fn and stop_check_fn():
+                    with self.lock:
+                        self.waiters = [w for w in self.waiters if w[1] != did]
+                    return False
+                if event.wait(timeout=0.2):
+                    return True
+        return True
+
+    def release(self, did: str):
+        with self.lock:
+            self.running_devices.discard(did)
+            self._resort_waiters_locked()
+            self._wake_next_locked()
+
+    def _resort_waiters_locked(self):
+        if not self.get_priority_fn or not self.waiters:
+            return
+        new_waiters = []
+        for _, w_did, w_event in self.waiters:
+            p = self.get_priority_fn(w_did)
+            new_waiters.append((p, w_did, w_event))
+        # priority: (-pending_count, remark_key) -> 오름차순 (잔여 많은 게 최우선)
+        new_waiters.sort(key=lambda x: x[0])
+        self.waiters = new_waiters
+
+    def _wake_next_locked(self):
+        while len(self.running_devices) < self.limit and self.waiters:
+            _, did, event = self.waiters.pop(0)
+            self.running_devices.add(did)
+            event.set()
+
+
 # ─── 메인 앱 ──────────────────────────────────────────────────────────────────
 
 class MainApp(tk.Tk):
@@ -267,7 +351,8 @@ class MainApp(tk.Tk):
         self.running_ports = set()
         self.running = False
         self.max_workers = 8  # 기본 최대 동시 작업 기기 수
-        self.worker_semaphore = threading.Semaphore(self.max_workers)
+        self.slot_manager = PrioritySlotManager(self.max_workers)
+        self.slot_manager.set_priority_fn(self._get_device_priority)
         self.working_devices: set = set()  # 현재 작업 중인 기기 ID 집합
         self.device_id_labels: dict = {}   # 좌측 기기 ID 라벨 위젯 매핑
 
@@ -810,7 +895,8 @@ class MainApp(tk.Tk):
         except Exception:
             self.max_workers = 8
             self.max_workers_var.set(8)
-        self.worker_semaphore = threading.Semaphore(self.max_workers)
+        self.slot_manager.reset()
+        self.slot_manager.set_limit(self.max_workers)
         if hasattr(self, "max_workers_spin"):
             self.max_workers_spin.config(state=tk.DISABLED)
 
@@ -841,6 +927,11 @@ class MainApp(tk.Tk):
         sorted_devices = sorted(selected_devices, key=_worker_priority_key)
         self._log_status(f"📊 잔여 많은 순/비고 작은 순 정렬 완료: {[(d, _worker_priority_key(d)[0] * -1) for d in sorted_devices]}")
 
+        # 워커 생성 및 Appium 대기 시간(3~5초) 동안 순서가 섞이는 것을 막기 위해
+        # 슬롯매니저에 미리 모든 기기를 우선순위 순으로 큐 등록합니다.
+        if hasattr(self, "slot_manager") and self.slot_manager:
+            self.slot_manager.pre_register_all(sorted_devices)
+
         # 기기별 제각도 다른 랜덤 포트 할당
         used_ports: set = set()
         for i, did in enumerate(sorted_devices):
@@ -852,14 +943,20 @@ class MainApp(tk.Tk):
                 address_manager=self.address_manager,
                 log_callback=self._on_worker_log,
                 status_callback=self._on_worker_status,
+                acquire_slot_callback=self._on_slot_acquire,
+                release_slot_callback=self._on_slot_release,
             )
             self.workers[did] = worker
             t = threading.Thread(target=self._run_worker, args=(worker,), daemon=True)
             self.worker_threads[did] = t
             t.start()
+            
+            # 워커 스레드가 시작되어 슬롯 큐에 순서대로 진입할 수 있도록 아주 짧은 대기를 줍니다.
+            # 이 대기가 없으면 동시에 시작된 스레드들이 무작위 순서로 첫 슬롯을 차지합니다.
+            time.sleep(0.05)
 
             if did in self.device_panels:
-                pending = _pending_count(did)
+                pending = device_counts.get(did.strip().upper(), {}).get("pending", 0)
                 self.device_panels[did].append_log(f"🚀 워커 시작됨 (잔여: {pending}건, 포트: {port}, 우선순위: {i+1}/{len(sorted_devices)})") 
 
         threading.Thread(target=self._monitor_completion, daemon=True).start()
@@ -872,39 +969,34 @@ class MainApp(tk.Tk):
         tried_ports: list = []
 
         max_limit = getattr(self, "max_workers", 8)
-        self._on_worker_log(did, f"⏳ 동시 실행 대기 중 (최대 {max_limit}대 병행 처리)")
-        with self.worker_semaphore:
-            self._set_device_working(did, True)
+        self._on_worker_log(did, f"⏳ 대기 중 (최대 {max_limit}대 동시 실행 및 잔여량 우선순위 제어)")
+        for attempt in range(1, max_retries + 1):
+            if worker._stop_event.is_set():
+                self._on_worker_log(did, "⏹ 중지 요청 감지 - 재시도 중단")
+                break
+
+            # 매번 시도마다 완전히 새로운 랜덤 포트
+            port = self._new_random_port(tried_ports)
+            tried_ports.append(port)
+            worker.appium_port = port
+
+            self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 랜덤 포트 {port} 사용")
+
             try:
-                for attempt in range(1, max_retries + 1):
-                    if worker._stop_event.is_set():
-                        self._on_worker_log(did, "⏹ 중지 요청 감지 - 재시도 중단")
-                        break
+                self._start_appium_server(port)
+                time.sleep(3)  # Appium 완전 기동 대기
 
-                    # 매번 시도마다 완전히 새로운 랜덤 포트
-                    port = self._new_random_port(tried_ports)
-                    tried_ports.append(port)
-                    worker.appium_port = port
-
-                    self._on_worker_log(did, f"🔄 [연결 시도 {attempt}/{max_retries}] 랜덤 포트 {port} 사용")
-
-                    try:
-                        self._start_appium_server(port)
-                        time.sleep(3)  # Appium 완전 기동 대기
-
-                        if worker.run():
-                            success = True
-                            break
-                        else:
-                            self._on_worker_log(did, f"⚠ [시도 {attempt}] 다른 포트로 재시도...")
-                    except Exception as e:
-                        self._on_worker_log(did, f"❌ [시도 {attempt}] 예외: {str(e)[:120]}")
-                    finally:
-                        self._on_worker_log(did, f"⏹ Appium 종료 중 (port={port})...")
-                        self._kill_process_on_port(port)
-                        time.sleep(2)
+                if worker.run():
+                    success = True
+                    break
+                else:
+                    self._on_worker_log(did, f"⚠ [시도 {attempt}] 다른 포트로 재시도...")
+            except Exception as e:
+                self._on_worker_log(did, f"❌ [시도 {attempt}] 예외: {str(e)[:120]}")
             finally:
-                self._set_device_working(did, False)
+                self._on_worker_log(did, f"⏹ Appium 종료 중 (port={port})...")
+                self._kill_process_on_port(port)
+                time.sleep(1)
 
         if not success and not worker._stop_event.is_set():
             self._on_worker_log(did, f"❌ {max_retries}회 시도 모두 실패")
@@ -933,6 +1025,27 @@ class MainApp(tk.Tk):
         self._log_status("✅ 모든 작업 완료")
         self._refresh_summary()
         messagebox.showinfo("완료", "모든 기기의 작업이 완료되었습니다.")
+
+    def _get_device_priority(self, did: str):
+        """기기 우선순위 반환: 1차 잔여량 많은 순(-pending), 2차 비고 작은 순(remark_key)"""
+        key = did.strip().upper()
+        cnt = self.address_manager.get_device_task_counts(did) if hasattr(self.address_manager, "get_device_task_counts") else {"pending": 0}
+        pending = cnt.get("pending", 0)
+        info = self.devices_data.get(did, {})
+        remark_key = self._remark_sort_key((did, info))
+        return (-pending, remark_key)
+
+    def _on_slot_acquire(self, did: str, stop_check_fn=None) -> bool:
+        """기기가 1개 행 작업을 시작하기 전 우선순위 슬롯 획득"""
+        acquired = self.slot_manager.acquire(did, stop_check_fn)
+        if acquired:
+            self._set_device_working(did, True)
+        return acquired
+
+    def _on_slot_release(self, did: str):
+        """기기가 1개 행 작업을 마친 후 슬롯 반환 (대기 중인 잔여량 많은 다른 기기에게 양보)"""
+        self._set_device_working(did, False)
+        self.slot_manager.release(did)
 
     def _set_device_working(self, device_id: str, is_working: bool):
         """기기의 작업 중 상태에 따라 좌측 기기 ID 라벨 색상(파란색) 및 우측 패널 위치 재정렬"""

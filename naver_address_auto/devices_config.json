@@ -110,7 +110,7 @@
     "tethering": true
   },
   "R3CR302DWEH": {
-    "selected": true,
+    "selected": false,
     "remark": "",
     "connected": false,
     "tethering": false

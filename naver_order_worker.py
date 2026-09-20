@@ -386,12 +386,16 @@ class NaverOrderWorker:
                  status_callback: Optional[Callable] = None,
                  machine_num: int = 1,
                  test_mode: bool = False,
-                 manual_mode: bool = False):
+                 manual_mode: bool = False,
+                 acquire_slot_callback: Optional[Callable] = None,
+                 release_slot_callback: Optional[Callable] = None):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
         self._log_cb        = log_callback
         self._status_cb     = status_callback
+        self._acquire_slot_cb = acquire_slot_callback
+        self._release_slot_cb = release_slot_callback
         self.machine_num    = machine_num
         self.test_mode      = test_mode
         # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
@@ -5370,14 +5374,42 @@ class NaverOrderWorker:
             pass
 
         while not self._stop_event.is_set():
-            # claim_next_pending: 조회와 동시에 'W'로 원자적 예약 → 여러 기기 동시처리 시 중복 방지
-            row = None
+            p_cnt = 1
             try:
-                row = self.order_manager.claim_next_pending(device_id=self.device_id)
-            except AttributeError:
-                # 구버전 OrderManager 폴백: get_next_pending 사용
+                cnts = self.order_manager.get_device_task_counts(self.device_id)
+                p_cnt = cnts.get("pending", 0)
+            except Exception:
+                pass
+
+            if p_cnt == 0:
+                self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
+                break
+
+            # ── [우선순위 동시 슬롯 제어] 잔여량 많은 기기 우선 진입 대기 ──
+            if self._acquire_slot_cb:
+                self._set_status(f"대기 중 (잔여 {p_cnt}건)", "-")
+                self._log(f"⏳ [우선순위 슬롯] 대기 중... (내 기기 잔여: {p_cnt}건)")
+                acquired = self._acquire_slot_cb(self.device_id, lambda: self._stop_event.is_set())
+                if not acquired or self._stop_event.is_set():
+                    break
+
+            slot_held = True
+            try:
+                # claim_next_pending: 조회와 동시에 'W'로 원자적 예약 → 여러 기기 동시처리 시 중복 방지
+                row = None
                 try:
-                    row = self.order_manager.get_next_pending(device_id=self.device_id)
+                    row = self.order_manager.claim_next_pending(device_id=self.device_id)
+                except AttributeError:
+                    # 구버전 OrderManager 폴백: get_next_pending 사용
+                    try:
+                        row = self.order_manager.get_next_pending(device_id=self.device_id)
+                    except TypeError:
+                        try:
+                            rows = self.order_manager.get_pending_rows(device_id=self.device_id)
+                        except TypeError:
+                            rows = self.order_manager.get_pending_rows()
+                            rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
+                        row = rows[0] if rows else None
                 except TypeError:
                     try:
                         rows = self.order_manager.get_pending_rows(device_id=self.device_id)
@@ -5385,114 +5417,117 @@ class NaverOrderWorker:
                         rows = self.order_manager.get_pending_rows()
                         rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
                     row = rows[0] if rows else None
-            except TypeError:
-                try:
-                    rows = self.order_manager.get_pending_rows(device_id=self.device_id)
-                except TypeError:
-                    rows = self.order_manager.get_pending_rows()
-                    rows = [r for r in rows if getattr(r, "device_id", "") == self.device_id]
-                row = rows[0] if rows else None
 
-            if not row:
-                try:
-                    extra = self.order_manager.describe_pending_filter(self.device_id)
-                    self._log(f"⚠ 해당 기기 미처리 행 없음 ({extra})")
-                except Exception:
-                    pass
-                self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
-                break
-
-            self.current_row = row
-            self.current_payment_method = str(row.payment_method or "").strip()
-            pay_tag = f"[{self.current_payment_method}] " if self.current_payment_method else ""
-            self._log(
-                f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
-                f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
-            )
-            self._set_status(f"{pay_tag}주문 중: {row.search_keyword}", self.current_payment_method)
-            self.has_dismissed_payment_benefit = False
-
-            try:
-                # 23. 실패 시 재작업하지 않음 (1회만 시도)
-                success = self._process_order_with_timeout(row)
-            except Exception as fatal_err:
-                if self._stop_event.is_set():
-                    self.order_manager.mark_cancelled(row.row_index)
-                    self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
-                else:
-                    self.order_manager.mark_failed(row.row_index)
-                    self._log(f"❌ 치명적 오류: {fatal_err}")
-                self.current_row = None
-                raise
-
-            if success:
-                self.current_row = None
-                if self._is_bank_transfer_payment(row.payment_method):
-                    # 무통장: 주문번호 확인되어야 최종 성공 처리
+                if not row:
                     try:
-                        if self._skip_final_order_click():
-                            mode = "수동시작" if self.manual_mode else "테스트 모드"
-                            self._log(f"🖐 [{mode}] 주문번호 캡처/확인 생략 → 엑셀 Y 기록")
-                            order_confirmed = True
-                        else:
-                            order_confirmed = self._capture_and_log_bank_transfer(row)
-                    except Exception as e:
-                        self._log(f"❌ 무통장 스크린샷/로그 처리 중 예외 발생: {e}")
-                        order_confirmed = False
+                        extra = self.order_manager.describe_pending_filter(self.device_id)
+                        self._log(f"⚠ 해당 기기 미처리 행 없음 ({extra})")
+                    except Exception:
+                        pass
+                    self._log("✅ 모든 주문 처리 완료 (해당 기기 대상)")
+                    break
 
-                    if order_confirmed:
+                self.current_row = row
+                self.current_payment_method = str(row.payment_method or "").strip()
+                pay_tag = f"[{self.current_payment_method}] " if self.current_payment_method else ""
+                self._log(
+                    f"📌 처리 중: row={row.row_index}, keyword={row.search_keyword!r}, "
+                    f"폰ID={row.device_id!r}, 결재방식={row.payment_method!r}"
+                )
+                self._set_status(f"{pay_tag}주문 중: {row.search_keyword}", self.current_payment_method)
+                self.has_dismissed_payment_benefit = False
+
+                try:
+                    # 23. 실패 시 재작업하지 않음 (1회만 시도)
+                    success = self._process_order_with_timeout(row)
+                except Exception as fatal_err:
+                    if self._stop_event.is_set():
+                        self.order_manager.mark_cancelled(row.row_index)
+                        self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                    else:
+                        self.order_manager.mark_failed(row.row_index)
+                        self._log(f"❌ 치명적 오류: {fatal_err}")
+                    self.current_row = None
+                    raise
+
+                if success:
+                    self.current_row = None
+                    if self._is_bank_transfer_payment(row.payment_method):
+                        # 무통장: 주문번호 확인되어야 최종 성공 처리
+                        try:
+                            if self._skip_final_order_click():
+                                mode = "수동시작" if self.manual_mode else "테스트 모드"
+                                self._log(f"🖐 [{mode}] 주문번호 캡처/확인 생략 → 엑셀 Y 기록")
+                                order_confirmed = True
+                            else:
+                                order_confirmed = self._capture_and_log_bank_transfer(row)
+                        except Exception as e:
+                            self._log(f"❌ 무통장 스크린샷/로그 처리 중 예외 발생: {e}")
+                            order_confirmed = False
+
+                        if order_confirmed:
+                            self.order_manager.mark_success(row.row_index)
+                            if self.manual_mode:
+                                self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
+                            else:
+                                self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
+                        else:
+                            if self._stop_event.is_set():
+                                self.order_manager.mark_cancelled(row.row_index)
+                                self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                            else:
+                                self.order_manager.mark_failed(row.row_index)
+                                self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
+                            self._log("⏹ 작업 종료")
+                            break
+                    else:
                         self.order_manager.mark_success(row.row_index)
                         if self.manual_mode:
                             self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
+                        elif self._is_kb_card_payment(row.payment_method or ""):
+                            self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
                         else:
-                            self._log(f"✅ 무통장 주문 성공 (주문번호 확인됨): {row.search_keyword} → Y 기록")
-                    else:
-                        if self._stop_event.is_set():
-                            self.order_manager.mark_cancelled(row.row_index)
-                            self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
-                        else:
-                            self.order_manager.mark_failed(row.row_index)
-                            self._log(f"❌ 무통장 주문번호 미확인 → F 기록: {row.search_keyword}")
-                        self._log("⏹ 작업 종료")
-                        break
-                else:
-                    self.order_manager.mark_success(row.row_index)
+                            self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+
+                    # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
                     if self.manual_mode:
-                        self._log(f"✅ [수동시작] 배송지 선택 완료 → Y 기록: {row.search_keyword}")
-                    elif self._is_kb_card_payment(row.payment_method or ""):
-                        self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
+                        self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
+                        break
+
+                    # 국민카드(반자동 모드): 결재하기 클릭 후 사용자가 직접 개별 핸드폰
+                    # '시작' 버튼을 눌러 다음 작업을 진행하도록 워커 종료
+                    if self._is_kb_card_payment(row.payment_method or ""):
+                        self._log("🖐 [국민카드] 반자동 모드 → Y 기록 완료, 워커 종료 (다음 시작은 개별 핸드폰 시작 버튼으로)")
+                        import gc
+                        gc.collect()
+                        break
+
+                    # 슬롯 즉시 반환 (잔여량 많은 다른 기기가 지체 없이 즉시 작업 진입할 수 있도록)
+                    if self._release_slot_cb and slot_held:
+                        self._release_slot_cb(self.device_id)
+                        slot_held = False
+
+                    self._log("⏳ [주문 성공] 완료 후 8초 대기 중...")
+                    import gc
+                    gc.collect()
+                    time.sleep(8)
+                else:
+                    if self._stop_event.is_set():
+                        self.order_manager.mark_cancelled(row.row_index)
+                        self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
                     else:
-                        self._log(f"✅ 주문 성공: {row.search_keyword} → Y 기록")
-
-                # 수동시작: Y 기록 후 해당 기기 작업 종료 (다음 행 계속하지 않음)
-                if self.manual_mode:
-                    self._log("🖐 [수동시작] 엑셀 Y 기록 완료 → 프로그램(워커) 종료")
-                    break
-
-                # 국민카드(반자동 모드): 결재하기 클릭 후 사용자가 직접 개별 핸드폰
-                # '시작' 버튼을 눌러 다음 작업을 진행하도록 워커 종료
-                if self._is_kb_card_payment(row.payment_method or ""):
-                    self._log("🖐 [국민카드] 반자동 모드 → Y 기록 완료, 워커 종료 (다음 시작은 개별 핸드폰 시작 버튼으로)")
+                        self.order_manager.mark_failed(row.row_index)
+                        self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
+                    self.current_row = None
+                    self._log("⏹ 작업 종료")
                     import gc
                     gc.collect()
                     break
-
-                self._log("⏳ [주문 성공] 완료 후 8초 대기 중...")
-                import gc
-                gc.collect()
-                time.sleep(8)
-            else:
-                if self._stop_event.is_set():
-                    self.order_manager.mark_cancelled(row.row_index)
-                    self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
-                else:
-                    self.order_manager.mark_failed(row.row_index)
-                    self._log(f"❌ 주문 실패: {row.search_keyword} → F 기록")
-                self.current_row = None
-                self._log("⏹ 작업 종료")
-                import gc
-                gc.collect()
-                break
+            finally:
+                if self._release_slot_cb and slot_held:
+                    self._release_slot_cb(self.device_id)
+                    slot_held = False
+                    time.sleep(0.1)
 
         self.current_row = None
         self.current_payment_method = ""
