@@ -257,7 +257,7 @@ class DevicePanel(tk.Frame):
 
 class PrioritySlotManager:
     """기기별 잔여 작업량(pending) 기반 우선순위 동시 실행 관리자"""
-    def __init__(self, limit: int = 8):
+    def __init__(self, limit: int = 30):
         self._lock = threading.Lock()
         self.limit = max(1, int(limit))
         self.running_devices = set()
@@ -339,7 +339,7 @@ class PrioritySlotManager:
 
 class DynamicSemaphore:
     """동적으로 동시 작업 슬롯 수를 조절할 수 있는 세마포어"""
-    def __init__(self, initial_value: int = 8):
+    def __init__(self, initial_value: int = 30):
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._limit = max(1, int(initial_value))
@@ -489,8 +489,8 @@ class MainApp(tk.Tk):
         self.device_task_labels: dict = {}
         self.running_ports: set = set()
         self.running: bool = False
-        self.max_workers_var = tk.IntVar(value=8)
-        self.slot_manager = PrioritySlotManager(8)  # 동시 실행 최대 기기 수 및 잔여량 우선순위 제어
+        self.max_workers_var = tk.IntVar(value=30)
+        self.slot_manager = PrioritySlotManager(30)  # 동시 실행 최대 기기 수 및 잔여량 우선순위 제어
         self.slot_manager.set_priority_fn(self._get_device_priority)
         self.working_devices: set = set()            # 현재 실제 작업 중인 기기 ID 집합
         self.device_id_labels: dict = {}             # 좌측 기기 ID 라벨 위젯 매핑
@@ -818,7 +818,7 @@ class MainApp(tk.Tk):
         ).pack(side=tk.LEFT, padx=(0, 4))
 
         self.max_workers_spin = tk.Spinbox(
-            concur_frame, from_=1, to=30, textvariable=self.max_workers_var,
+            concur_frame, from_=1, to=50, textvariable=self.max_workers_var,
             width=3, font=("Segoe UI", 9, "bold"), bg=CLR_SURFACE2, fg="#38bdf8",
             insertbackground=CLR_TEXT, relief=tk.FLAT, justify="center",
             command=self._on_max_workers_changed
@@ -1413,7 +1413,7 @@ class MainApp(tk.Tk):
         max_retries = 5
         tried_ports: list = []
 
-        limit_val = getattr(self.slot_manager, "limit", 8)
+        limit_val = getattr(self.slot_manager, "limit", 30)
         self._on_worker_log(did, f"⏳ 대기 중 (최대 {limit_val}대 동시 실행 및 잔여량 우선순위 제어)")
 
         for attempt in range(1, max_retries + 1):

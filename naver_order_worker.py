@@ -1192,13 +1192,19 @@ class NaverOrderWorker:
         self._set_status(f"상품 선택: {product_name[:15]}")
         self._log(f"🔍 상품 매칭 시도: 판매자='{seller_name}', 상품='{product_name}'")
 
-        # 상품명 키워드 정제 (2글자 이상의 의미있는 키워드 목록)
         import re
-        clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,]', ' ', product_name)
+
+        # 특수문자 및 따옴표 정제된 전체 상품명
+        safe_full_name = product_name.replace('"', '').replace("'", "").strip()
+        clean_full_name = safe_full_name
+        safe_seller = seller_name.replace('"', '').replace("'", "").strip() if seller_name else ""
+
+        # 상품명 키워드 정제 (마침표, 쉼표 등 특수기호 분리 후 2글자 이상 의미있는 키워드)
+        clean_prod = re.sub(r'[\+\-\*\/\(\)\[\]\{\}\?\!\,\.\:\;\_~@#$%^&=|]', ' ', product_name)
         keywords = [k.strip() for k in clean_prod.split() if len(k.strip()) >= 2]
-        main_keyword = keywords[0] if keywords else product_name[:5]
-        safe_keyword = main_keyword.replace('"', '').replace("'", "")
-        clean_full_name = product_name.replace('"', '').replace("'", "")
+
+        # 정규화된 타겟 문자열 (한글/영문/숫자만 추출, 공백/특수문자 무시)
+        target_norm = re.sub(r'[^가-힣a-zA-Z0-9]', '', product_name).lower()
 
         # 타겟 상품명에서 숫자+단위 패턴 추출 (예: '2박스', '14포', '1박스', '5박스', '10개' 등)
         target_num_units = re.findall(r'\d+\s*(?:박스|포|개|입|g|ml|kg|L|세트|EA|ea|가지|회)?', product_name, re.IGNORECASE)
@@ -1217,46 +1223,94 @@ class NaverOrderWorker:
                 unit_m = re.search(r'(박스|포|개|입|g|ml|kg|L|세트|EA|ea)', t_nu, re.IGNORECASE)
                 if unit_m:
                     unit_str = unit_m.group(0)
-                    # cand_txt에서 같은 단위를 사용하는 숫자패턴 찾기
                     cand_matches = re.findall(r'(\d+)\s*' + re.escape(unit_str), cand_txt_clean)
                     if cand_matches and num_str not in cand_matches:
                         return True  # 충돌 발견!
                 else:
-                    # 단위 없이 단순 숫자 (예: 2 vs 5)
-                    # target에는 '2'가 있는데 cand에는 '5'만 있고 '2'가 없다면 충돌 우려
                     pass
             return False
+
+        def is_element_full_match(full_txt: str) -> bool:
+            """설정한 매칭 상품명 전체 포함 여부 검증 (전체 문자열 일치 또는 모든 키워드 일치)"""
+            cand_norm = re.sub(r'[^가-힣a-zA-Z0-9]', '', full_txt).lower()
+            has_full_norm = target_norm in cand_norm if target_norm else False
+            has_clean_full = clean_full_name.replace(" ", "").lower() in full_txt.replace(" ", "").lower() if clean_full_name else False
+            matched_kws = [kw for kw in keywords if kw.lower() in full_txt.lower()]
+            has_all_kws = (len(matched_kws) == len(keywords)) and len(keywords) > 0
+            return has_full_norm or has_clean_full or has_all_kws
 
         fallback_candidates = []
         scroll_max = 20
 
         for scroll_cnt in range(scroll_max + 1):
             try:
-                # 방법 0: 직접 XPath 텍스트 매칭 시도 (우선)
-                direct_xpaths = [
-                    f'//android.view.View[contains(@text, "{safe_keyword}")]',
-                    f'//android.widget.TextView[contains(@text, "{safe_keyword}")]',
-                    f'//*[contains(@content-desc, "{safe_keyword}")]'
-                ]
+                # 방법 0: 설정한 매칭 상품명 전체 포함 직접 XPath 검색 (우선)
+                direct_xpaths = []
+
+                # 1. 판매자명 + 상품명 전체 (content-desc 카드)
+                if safe_seller:
+                    direct_xpaths.append(
+                        f'//*[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "{safe_full_name}")]'
+                    )
+                    if len(keywords) >= 2:
+                        kw_desc_cond = " and ".join(f'contains(@content-desc, "{kw}")' for kw in keywords)
+                        direct_xpaths.append(
+                            f'//*[contains(@content-desc, "{safe_seller}") and {kw_desc_cond}]'
+                        )
+
+                # 2. 설정한 매칭 상품명 전체 문자열 포함
+                direct_xpaths.append(f'//android.view.View[contains(@text, "{safe_full_name}")]')
+                direct_xpaths.append(f'//android.widget.TextView[contains(@text, "{safe_full_name}")]')
+                direct_xpaths.append(f'//*[contains(@content-desc, "{safe_full_name}")]')
+
+                # 3. 설정한 매칭 상품명의 모든 키워드 포함 (줄바꿈 등으로 인해 전체 문자열이 분할된 경우 대비)
+                if len(keywords) >= 2:
+                    kw_text_cond = " and ".join(f'contains(@text, "{kw}")' for kw in keywords)
+                    kw_desc_cond = " and ".join(f'contains(@content-desc, "{kw}")' for kw in keywords)
+                    direct_xpaths.append(f'//android.view.View[{kw_text_cond}]')
+                    direct_xpaths.append(f'//android.widget.TextView[{kw_text_cond}]')
+                    direct_xpaths.append(f'//*[{kw_desc_cond}]')
+
                 for dxpath in direct_xpaths:
                     try:
                         els = self.driver.find_elements(By.XPATH, dxpath)
                         for el in els:
                             text = el.text or ''
                             desc = el.get_attribute('content-desc') or ''
-                            full_txt = f"{text} {desc}"
+                            full_txt = f"{text} {desc}".strip()
+                            if not full_txt:
+                                continue
+
+                            # 상단 검색창 및 거대 컨테이너 제외
+                            try:
+                                bounds = el.get_attribute("bounds")
+                                if bounds:
+                                    m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+                                    if m:
+                                        bx1, by1, bx2, by2 = map(int, m.groups())
+                                        if by2 <= 250:  # 상단 검색창 제외
+                                            continue
+                                        if (by2 - by1) > 1400:  # 화면 전체 컨테이너 제외
+                                            continue
+                            except Exception:
+                                pass
 
                             if check_num_conflict(full_txt):
                                 continue
 
-                            matched_kws = [kw for kw in keywords if kw in full_txt]
-                            is_full_match = (len(matched_kws) == len(keywords)) or (clean_full_name.replace(" ", "") in full_txt.replace(" ", ""))
-
-                            if is_full_match:
-                                self._log(f"  📌 상품명 직접 매칭 발견: {dxpath}")
-                                if self._safe_click_element(el):
-                                    time.sleep(3)
-                                    return True
+                            if is_element_full_match(full_txt):
+                                # 판매자명이 주어진 경우: 판매자명이 포함되어 있으면 최우선 즉시 클릭
+                                if safe_seller and (safe_seller.lower() in full_txt.lower()):
+                                    self._log(f"  📌 판매자+상품명 전체 직접 매칭 발견: {dxpath[:70]} (판매자: {safe_seller})")
+                                    if self._safe_click_element(el):
+                                        time.sleep(3)
+                                        return True
+                                # 판매자명이 없거나, 판매자명 확인이 필요 없는 경우
+                                elif not safe_seller:
+                                    self._log(f"  📌 상품명 전체 직접 매칭 발견: {dxpath[:70]}")
+                                    if self._safe_click_element(el):
+                                        time.sleep(3)
+                                        return True
                     except Exception:
                         pass
 
@@ -1272,20 +1326,32 @@ class NaverOrderWorker:
                     try:
                         text = el.text or ''
                         desc = el.get_attribute('content-desc') or ''
-                        full_txt = f"{text} {desc}"
+                        full_txt = f"{text} {desc}".strip()
 
-                        if not full_txt.strip():
+                        if not full_txt:
                             continue
+
+                        # 상단 검색창 및 거대 컨테이너 제외
+                        try:
+                            bounds = el.get_attribute("bounds")
+                            if bounds:
+                                m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+                                if m:
+                                    bx1, by1, bx2, by2 = map(int, m.groups())
+                                    if by2 <= 250 or (by2 - by1) > 1400:
+                                        continue
+                        except Exception:
+                            pass
 
                         # 수량/숫자 충돌 검사
                         if check_num_conflict(full_txt):
                             continue
 
-                        matched_kws = [kw for kw in keywords if kw in full_txt]
-                        is_full_match = (len(matched_kws) == len(keywords)) or (clean_full_name.replace(" ", "") in full_txt.replace(" ", ""))
+                        matched_kws = [kw for kw in keywords if kw.lower() in full_txt.lower()]
+                        is_full_match = is_element_full_match(full_txt)
 
                         # 1. 판매자명 + 상품명 전체 일치
-                        if (seller_name and seller_name in full_txt) and is_full_match:
+                        if (safe_seller and safe_seller.lower() in full_txt.lower()) and is_full_match:
                             candidate_elements.append((3, len(matched_kws), el, full_txt))
                         # 2. 상품명 전체 일치
                         elif is_full_match:
@@ -1301,14 +1367,25 @@ class NaverOrderWorker:
 
                 if candidate_elements:
                     best_score, best_kw_cnt, best_el, best_txt = candidate_elements[0]
-                    # 완전 매칭(score >= 2)인 경우에만 스크롤 진행 도중 즉시 클릭!
-                    if best_score >= 2:
-                        self._log(f"  📌 상품 완전 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
+                    # 판매자명이 지정되어 있다면 score 3(판매자+상품명 전체 일치) 우선
+                    if best_score == 3:
+                        self._log(f"  📌 판매자+상품명 전체 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
                         if self._safe_click_element(best_el):
                             time.sleep(3)
                             return True
                         else:
                             self._log("  ⚠ 좌표 클릭 실패, 계속 탐색...")
+                    elif best_score == 2:
+                        if not safe_seller:
+                            self._log(f"  📌 상품명 전체 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
+                            if self._safe_click_element(best_el):
+                                time.sleep(3)
+                                return True
+                            else:
+                                self._log("  ⚠ 좌표 클릭 실패, 계속 탐색...")
+                        else:
+                            # 판매자명이 지정되었으나 이번 화면에 판매자명이 미표시된 카드는 스크롤하며 더 탐색
+                            fallback_candidates.append((best_score, best_kw_cnt, best_el, best_txt))
 
             except Exception as e:
                 self._log(f"  ⚠ 상품 탐색 중 오류: {e}")
@@ -5691,6 +5768,16 @@ class NaverOrderWorker:
         if not self._click_search_button():
             self._log("❌ 검색 실행 실패")
             return False
+
+        # ── [랜덤 대기] 검색 완료 후 상품 클릭 전 자연스러운 체류 시간 (15~40초) ──
+        wait_sec = round(random.uniform(15.0, 40.0), 1)
+        self._set_status(f"상품 탐색 대기 ({wait_sec}초)")
+        self._log(f"⏳ 검색 후 상품 클릭 전 대기 (15~40초 랜덤 간격): {wait_sec}초 대기 중...")
+        for _ in range(int(wait_sec * 2)):
+            if self._stop_event.is_set():
+                self._log("⏹ 대기 중 정지 요청 감지")
+                return False
+            time.sleep(0.5)
 
         # [단계 10] 상품 매칭 클릭
         if not self._click_product(row.seller_name, row.product_name):

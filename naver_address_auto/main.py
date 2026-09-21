@@ -376,7 +376,7 @@ class MainApp(tk.Tk):
         self.device_panels: dict = {}
         self.running_ports = set()
         self.running = False
-        self.max_workers = 20  # 기본 최대 동시 작업 기기 수
+        self.max_workers = 30  # 기본 최대 동시 작업 기기 수
         self.slot_manager = PrioritySlotManager(self.max_workers)
         self.slot_manager.set_priority_fn(self._get_device_priority)
         self.working_devices: set = set()  # 현재 작업 중인 기기 ID 집합
@@ -669,7 +669,7 @@ class MainApp(tk.Tk):
             font=("Segoe UI", 9, "bold")
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        self.max_workers_var = tk.IntVar(value=20)
+        self.max_workers_var = tk.IntVar(value=30)
         self.max_workers_spin = tk.Spinbox(
             max_worker_frame, from_=1, to=50,
             textvariable=self.max_workers_var,
@@ -932,8 +932,8 @@ class MainApp(tk.Tk):
         try:
             self.max_workers = max(1, int(self.max_workers_var.get()))
         except Exception:
-            self.max_workers = 20
-            self.max_workers_var.set(20)
+            self.max_workers = 30
+            self.max_workers_var.set(30)
         self.slot_manager.reset()
         self.slot_manager.set_limit(self.max_workers)
         if hasattr(self, "max_workers_spin"):
@@ -1003,7 +1003,7 @@ class MainApp(tk.Tk):
         success = False
         tried_ports: list = []
 
-        max_limit = getattr(self, "max_workers", 8)
+        max_limit = getattr(self, "max_workers", 30)
         self._on_worker_log(did, f"⏳ 대기 중 (최대 {max_limit}대 동시 실행 및 잔여량 우선순위 제어)")
         for attempt in range(1, max_retries + 1):
             if worker._stop_event.is_set():
