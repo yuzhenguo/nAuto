@@ -559,7 +559,19 @@ def go_to_main_page(driver, device_id: str = None, log_callback=None):
 
 
 def tap_by_coords(driver, x: int, y: int, log_callback=None) -> bool:
-    """지정 좌표 탭 (W3C Actions 지원 및 driver.tap 폴백)"""
+    """지정 좌표 탭 (W3C Actions 지원 및 driver.tap 폴백, 화면 밖 초과 방지 클램핑)"""
+    try:
+        sz = driver.get_window_size()
+        max_w = sz.get('width', 1080)
+        max_h = sz.get('height', 2400)
+        orig_x, orig_y = x, y
+        x = max(15, min(max_w - 20, int(x)))
+        y = max(48, min(int(max_h * 0.94), int(y)))
+        if orig_x != x or orig_y != y:
+            _log(log_callback, f"  📐 화면 경계 초과 방지 좌표 보정: ({orig_x}, {orig_y}) → ({x}, {y})")
+    except Exception:
+        pass
+
     try:
         from selenium.webdriver.common.action_chains import ActionChains
         from selenium.webdriver.common.actions.action_builder import ActionBuilder

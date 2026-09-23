@@ -1244,32 +1244,45 @@ class NaverOrderWorker:
 
         for scroll_cnt in range(scroll_max + 1):
             try:
-                # 방법 0: 설정한 매칭 상품명 전체 포함 직접 XPath 검색 (우선)
+                # 방법 0: basic_product_card_information 내의 상품명 텍스트 요소 최우선 탐색
                 direct_xpaths = []
 
-                # 1. 판매자명 + 상품명 전체 (content-desc 카드)
+                # 1. [최우선] basic_product_card_information 내의 상품명 텍스트 요소
                 if safe_seller:
                     direct_xpaths.append(
-                        f'//*[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "{safe_full_name}")]'
+                        f'//android.view.View[contains(@resource-id, "basic_product_card_information") and .//*[contains(@text, "{safe_seller}") or contains(@content-desc, "{safe_seller}")]]//android.view.View[@text="{safe_full_name}"]'
                     )
-                    if len(keywords) >= 2:
-                        kw_desc_cond = " and ".join(f'contains(@content-desc, "{kw}")' for kw in keywords)
-                        direct_xpaths.append(
-                            f'//*[contains(@content-desc, "{safe_seller}") and {kw_desc_cond}]'
-                        )
+                    direct_xpaths.append(
+                        f'//android.view.View[contains(@resource-id, "basic_product_card_information") and .//*[contains(@text, "{safe_seller}") or contains(@content-desc, "{safe_seller}")]]//android.view.View[contains(@text, "{safe_full_name}")]'
+                    )
 
-                # 2. 설정한 매칭 상품명 전체 문자열 포함
+                # 2. basic_product_card_information 안의 상품명 텍스트
+                direct_xpaths.append(
+                    f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[@text="{safe_full_name}"]'
+                )
+                direct_xpaths.append(
+                    f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[contains(@text, "{safe_full_name}")]'
+                )
+
+                # 3. 상품명 텍스트 직접 매칭 (//android.view.View[@text="..."])
+                direct_xpaths.append(f'//android.view.View[@text="{safe_full_name}"]')
                 direct_xpaths.append(f'//android.view.View[contains(@text, "{safe_full_name}")]')
                 direct_xpaths.append(f'//android.widget.TextView[contains(@text, "{safe_full_name}")]')
-                direct_xpaths.append(f'//*[contains(@content-desc, "{safe_full_name}")]')
 
-                # 3. 설정한 매칭 상품명의 모든 키워드 포함 (줄바꿈 등으로 인해 전체 문자열이 분할된 경우 대비)
+                # 4. 키워드 매칭
                 if len(keywords) >= 2:
                     kw_text_cond = " and ".join(f'contains(@text, "{kw}")' for kw in keywords)
-                    kw_desc_cond = " and ".join(f'contains(@content-desc, "{kw}")' for kw in keywords)
+                    direct_xpaths.append(f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[{kw_text_cond}]')
                     direct_xpaths.append(f'//android.view.View[{kw_text_cond}]')
-                    direct_xpaths.append(f'//android.widget.TextView[{kw_text_cond}]')
-                    direct_xpaths.append(f'//*[{kw_desc_cond}]')
+
+                # 5. [폴백] 실제 클릭 가능 카드 (content-desc)
+                if safe_seller:
+                    direct_xpaths.append(
+                        f'//android.view.View[@clickable="true" and contains(@content-desc, "{safe_seller}") and contains(@content-desc, "{safe_full_name}")]'
+                    )
+                direct_xpaths.append(
+                    f'//android.view.View[@clickable="true" and contains(@content-desc, "{safe_full_name}")]'
+                )
 
                 for dxpath in direct_xpaths:
                     try:
@@ -1302,13 +1315,13 @@ class NaverOrderWorker:
                                 # 판매자명이 주어진 경우: 판매자명이 포함되어 있으면 최우선 즉시 클릭
                                 if safe_seller and (safe_seller.lower() in full_txt.lower()):
                                     self._log(f"  📌 판매자+상품명 전체 직접 매칭 발견: {dxpath[:70]} (판매자: {safe_seller})")
-                                    if self._safe_click_element(el):
+                                    if self._safe_click_element(el, is_product_card=True):
                                         time.sleep(3)
                                         return True
                                 # 판매자명이 없거나, 판매자명 확인이 필요 없는 경우
                                 elif not safe_seller:
                                     self._log(f"  📌 상품명 전체 직접 매칭 발견: {dxpath[:70]}")
-                                    if self._safe_click_element(el):
+                                    if self._safe_click_element(el, is_product_card=True):
                                         time.sleep(3)
                                         return True
                     except Exception:
@@ -1370,7 +1383,7 @@ class NaverOrderWorker:
                     # 판매자명이 지정되어 있다면 score 3(판매자+상품명 전체 일치) 우선
                     if best_score == 3:
                         self._log(f"  📌 판매자+상품명 전체 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
-                        if self._safe_click_element(best_el):
+                        if self._safe_click_element(best_el, is_product_card=True):
                             time.sleep(3)
                             return True
                         else:
@@ -1378,7 +1391,7 @@ class NaverOrderWorker:
                     elif best_score == 2:
                         if not safe_seller:
                             self._log(f"  📌 상품명 전체 매칭 성공 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
-                            if self._safe_click_element(best_el):
+                            if self._safe_click_element(best_el, is_product_card=True):
                                 time.sleep(3)
                                 return True
                             else:
@@ -1401,20 +1414,24 @@ class NaverOrderWorker:
             fallback_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
             best_score, best_kw_cnt, best_el, best_txt = fallback_candidates[0]
             self._log(f"  📌 [폴백] 상품 부분 매칭 선택 (점수={best_score}, 키워드={best_kw_cnt}/{len(keywords)}): '{best_txt[:40]}...'")
-            if self._safe_click_element(best_el):
+            if self._safe_click_element(best_el, is_product_card=True):
                 time.sleep(3)
                 return True
 
         self._log(f"  ❌ 상품 매칭 최종 실패: {seller_name} / {product_name}")
         return False
 
-    def _safe_click_element(self, el) -> bool:
+    def _safe_click_element(self, el, is_product_card: bool = False) -> bool:
         """
         요소의 bounds를 파싱하여 중심 좌표를 ADB tap으로 클릭
-        언제나 좌표 탭만 사용 (el.click() 다중 실행 금지)
+        - 상품 카드 또는 우측 텍스트 요소일 경우:
+          텍스트 직접 클릭 시 네이버 봇 감지(보안코드)가 발생하므로,
+          좌측 '상품 썸네일 이미지' 영역으로 안전하게 좌표 보정
+        - 미세 랜덤 지터(jitter) 및 자연스러운 손가락 누름 시간(65~105ms) 적용
         """
         import re as _re
         import subprocess
+        import random as _rand
         try:
             # 1. bounds attribute 직접 파싱 (가장 정확)
             bounds_str = None
@@ -1423,20 +1440,47 @@ class NaverOrderWorker:
             except Exception:
                 pass
 
-            if bounds_str:
-                m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                if m:
-                    x1, y1, x2, y2 = map(int, m.groups())
-                    x = (x1 + x2) // 2
-                    y = (y1 + y2) // 2
-                else:
-                    bounds_str = None
+            def calc_target_xy(b_str, rect_val=None):
+                """상품 썸네일 안전 좌표 또는 일반 중심 좌표 계산"""
+                x1, y1, x2, y2 = 0, 0, 0, 0
+                if b_str:
+                    m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', b_str)
+                    if m:
+                        x1, y1, x2, y2 = map(int, m.groups())
+                elif rect_val:
+                    x1 = rect_val.get('x', 0)
+                    y1 = rect_val.get('y', 0)
+                    x2 = x1 + rect_val.get('width', 0)
+                    y2 = y1 + rect_val.get('height', 0)
 
-            # 2. bounds 파싱 실패 시 rect 사용
-            if not bounds_str:
+                if x2 > x1 and y2 > y1:
+                    card_w = x2 - x1
+                    card_h = y2 - y1
+
+                    # 1) 우측 텍스트/상세 영역 (basic_product_card_information 내 상품명 텍스트 노드: x1 >= 400)
+                    if x1 >= 400 and card_w >= 200 and card_h < 250:
+                        # 텍스트의 1행 본문 영역 (좌측 22%, 상단 35% 지점: x≈600, y≈1270) 정확 타격:
+                        # 빈 여백이나 줄간 경계(x=757, y=1291) 클릭 시 발생하는 네이버 봇 감지(보안코드) 방지
+                        cx = x1 + int(card_w * 0.22)
+                        cy = y1 + int(card_h * 0.35)
+                        self._log(f"  📝 basic_product_card_information 내 상품명 본문({cx}, {cy}) 타겟 설정 (보안코드 방지)")
+                        return cx, cy
+
+                    # 2) 전체 상품 카드 (content-desc 카드 등 폭 600px 이상, 높이 200px 이상)
+                    if is_product_card or (card_w >= 600 and card_h >= 200):
+                        cx = x1 + int(card_w * 0.20)
+                        cy = (y1 + y2) // 2
+                        self._log(f"  🖼 상품 카드 감지(폭={card_w}, 높이={card_h}) → 좌측 안전 영역({cx}, {cy})으로 좌표 설정")
+                        return cx, cy
+
+                    return (x1 + x2) // 2, (y1 + y2) // 2
+                return (x1 + x2) // 2, (y1 + y2) // 2
+
+            if bounds_str:
+                x, y = calc_target_xy(bounds_str)
+            else:
                 rect = el.rect
-                x = rect['x'] + rect['width'] // 2
-                y = rect['y'] + rect['height'] // 2
+                x, y = calc_target_xy(None, rect)
 
             w_w, w_h = 1080, 2400
             try:
@@ -1453,9 +1497,8 @@ class NaverOrderWorker:
                 if abs(offset) > int(w_h * 0.15):  # 화면 높이 15% 이상 차이날 때만 보정
                     import subprocess as _sp
                     self._log(f"  📐 상품을 화면 중앙으로 이동 (y={y} → 목표={target_y}, offset={offset})")
-                    # swipe: 아래로 치우친 경우 위로 스크롤, 위로 치우친 경우 아래로 스크롤
                     swipe_start_y = int(w_h * 0.5)
-                    swipe_end_y   = swipe_start_y - offset  # offset 만큼 반대로 스와이프
+                    swipe_end_y   = swipe_start_y - offset
                     swipe_end_y   = max(50, min(w_h - 50, swipe_end_y))
                     swipe_x       = w_w // 2
                     _sp.run(
@@ -1464,31 +1507,43 @@ class NaverOrderWorker:
                          str(swipe_x), str(swipe_end_y), "400"],
                         capture_output=True, timeout=5
                     )
-                    time.sleep(0.8)
+                    time.sleep(1.2)  # 스크롤 후 관성 정지 및 렌더링 대기
                     # 스크롤 후 좌표 갱신
                     try:
                         bounds_str3 = el.get_attribute("bounds")
-                        import re as _re2
-                        m3 = _re2.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str3 or "")
-                        if m3:
-                            x1, y1, x2, y2 = map(int, m3.groups())
-                            x, y = (x1 + x2) // 2, (y1 + y2) // 2
+                        if bounds_str3:
+                            x, y = calc_target_xy(bounds_str3)
                         else:
-                            rect = el.rect
-                            x = rect['x'] + rect['width'] // 2
-                            y = rect['y'] + rect['height'] // 2
+                            x, y = calc_target_xy(None, el.rect)
                     except Exception:
                         pass
 
-                self._log(f"  👉 ADB 좌표 탭: ({x}, {y})")
-                if not self._is_visible_coord(x, y):
-                    self._log(f"  ⏭ 화면 밖 좌표 클릭 생략: ({x}, {y})")
+                # 사람 손가락 터치 모사: 미세 랜덤 지터 (±6px, ±4px)
+                jitter_x = _rand.randint(-6, 6)
+                jitter_y = _rand.randint(-4, 4)
+                click_x = max(10, min(w_w - 10, x + jitter_x))
+                click_y = max(50, min(w_h - 50, y + jitter_y))
+
+                self._log(f"  👉 ADB 자연스러운 좌표 탭: ({click_x}, {click_y})")
+                if not self._is_visible_coord(click_x, click_y):
+                    self._log(f"  ⏭ 화면 밖 좌표 클릭 생략: ({click_x}, {click_y})")
                     return False
-                subprocess.run(
-                    ["adb", "-s", self.device_id, "shell", "input", "tap",
-                     str(x), str(y)],
+
+                # 자연스러운 시선 체류 시간 (0.6 ~ 1.0초)
+                time.sleep(_rand.uniform(0.6, 1.0))
+                # 0ms 기계적 탭 대신 실제 사람 손가락 누름 시간(75~110ms)을 부여하여 봇 감지(보안코드) 우회
+                touch_ms = _rand.randint(75, 110)
+                res = subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                     str(click_x), str(click_y), str(click_x), str(click_y), str(touch_ms)],
                     capture_output=True, timeout=5
                 )
+                if res.returncode != 0:
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(click_x), str(click_y)],
+                        capture_output=True, timeout=5
+                    )
                 return True
             else:
                 self._log(f"  ⚠ 요소 좌표가 화면 표시 범위를 벗어남 (y={y}, 화면높이={w_h}) -> 미세 스크롤")
@@ -1497,20 +1552,23 @@ class NaverOrderWorker:
                 # 스크롤 후 재시도
                 try:
                     bounds_str2 = el.get_attribute("bounds")
-                    m2 = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str2 or "")
-                    if m2:
-                        x1, y1, x2, y2 = map(int, m2.groups())
-                        x, y = (x1 + x2) // 2, (y1 + y2) // 2
+                    if bounds_str2:
+                        x, y = calc_target_xy(bounds_str2)
                     else:
-                        rect = el.rect
-                        x = rect['x'] + rect['width'] // 2
-                        y = rect['y'] + rect['height'] // 2
+                        x, y = calc_target_xy(None, el.rect)
                 except Exception:
                     pass
+
                 if self._is_visible_coord(x, y) and 150 <= y <= w_h - 200:
+                    jitter_x = _rand.randint(-8, 8)
+                    jitter_y = _rand.randint(-6, 6)
+                    click_x = max(10, min(w_w - 10, x + jitter_x))
+                    click_y = max(50, min(w_h - 50, y + jitter_y))
+                    time.sleep(_rand.uniform(0.35, 0.65))
+                    touch_ms = _rand.randint(65, 105)
                     subprocess.run(
-                        ["adb", "-s", self.device_id, "shell", "input", "tap",
-                         str(x), str(y)],
+                        ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                         str(click_x), str(click_y), str(click_x), str(click_y), str(touch_ms)],
                         capture_output=True, timeout=5
                     )
                     return True
@@ -1520,12 +1578,14 @@ class NaverOrderWorker:
         except Exception as e:
             self._log(f"  ⚠ 안전 클릭 실패: {e}")
 
-        # 폴백: el.click()
+        # 폴백: clickable="false"인 요소에는 el.click()을 실행하지 않음 (isTrusted=false 비정상 DOM 이벤트로 보안코드 유발 방지)
         try:
-            el.click()
-            return True
+            if el.get_attribute("clickable") == "true":
+                el.click()
+                return True
         except Exception:
-            return False
+            pass
+        return False
 
     def _click_element_or_parent(self, el) -> bool:
         """기존 하위 호환 래퍼"""
@@ -1538,6 +1598,14 @@ class NaverOrderWorker:
         """[단계 11] 구매하기 버튼 클릭 (구매하기, 구매하기2, 구매하기3, 구매하기4 이미지 중 하나 인식 시 즉시 클릭), 3초 대기"""
         self._set_status("구매하기 클릭")
 
+        w, h = self._get_window_size()
+        left, top, right, bottom = self._visible_bounds()
+        # 구매하기 버튼은 화면 하단 영역에 위치 (화면 65% 이상, 하단 내비게이션 바 위)
+        min_y_buy = int(h * 0.65)
+        max_y_buy = min(int(h * 0.93), bottom - 20)
+        min_x_buy = int(w * 0.25)
+        max_x_buy = min(int(w * 0.98), right - 15)
+
         buy_img_candidates = [
             (IMG_BUY_BTN,  "구매하기"),
             (IMG_BUY_BTN2, "구매하기2"),
@@ -1545,23 +1613,54 @@ class NaverOrderWorker:
             (IMG_BUY_BTN4, "구매하기4"),
         ]
 
-        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭
+        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭 (하단 가시 영역 한정)
         for img_path, img_name in buy_img_candidates:
             if os.path.exists(img_path):
-                coords = self._find_image_coords(img_path, threshold=0.70)
+                coords = self._find_image_coords(
+                    img_path, threshold=0.70,
+                    min_x=min_x_buy, max_x=max_x_buy,
+                    min_y=min_y_buy, max_y=max_y_buy
+                )
                 if coords:
-                    self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    cx, cy = coords[0], coords[1]
+                    # 화면 밖 및 하단 내비게이션 바 초과 방지 클램핑
+                    safe_x = max(left + 20, min(right - 20, cx))
+                    safe_y = max(min_y_buy, min(max_y_buy, cy))
+                    self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({cx}, {cy}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                    if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
                     self._log(f"✅ [{img_name}] 이미지 인식 클릭 완료")
                     time.sleep(3)
                     return True
 
         # 2순위: XPath 매칭 폴백
-        if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=3):
-            ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=5, log_callback=self._log)
-            self._log("✅ 구매하기 XPath 버튼 클릭 완료")
-            time.sleep(3)
-            return True
+        buy_btn_xpaths = [
+            '//android.widget.Button[@text="구매하기"]',
+            '//android.widget.Button[contains(@text, "구매하기")]',
+            '//*[@content-desc="구매하기"]',
+            '//*[contains(@content-desc, "구매하기")]',
+            '//android.view.View[@text="구매하기"]',
+            '//android.widget.TextView[@text="구매하기"]',
+        ]
+        for xpath in buy_btn_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=1):
+                    for el in self.driver.find_elements(By.XPATH, xpath):
+                        rect = el.rect
+                        cx = rect['x'] + rect['width'] // 2
+                        cy = rect['y'] + rect['height'] // 2
+                        if cy < min_y_buy or cy > max_y_buy:
+                            continue
+                        safe_x = max(left + 20, min(right - 20, cx))
+                        safe_y = max(min_y_buy, min(max_y_buy, cy))
+                        self._log(f"  🎯 [구매하기 XPath] 발견! ({safe_x}, {safe_y})")
+                        if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                        self._log("✅ 구매하기 XPath 버튼 클릭 완료")
+                        time.sleep(3)
+                        return True
+            except Exception:
+                continue
 
         self._log("⚠ 구매하기 버튼 미발견 → 계속 진행")
         return True  # 없어도 계속 진행
@@ -1871,17 +1970,15 @@ class NaverOrderWorker:
             self._log("  ✅ 이미 주문/결제 화면 → 바로구매 생략")
             return True
 
-        w_h, w_w = 2400, 1080
-        try:
-            size = self.driver.get_window_size()
-            w_h, w_w = size['height'], size['width']
-        except Exception:
-            pass
+        w_w, w_h = self._get_window_size()
+        left, top, right, bottom = self._visible_bounds()
 
-        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 72% 이상으로 제한
-        min_y_buynow = int(w_h * 0.72)
-        max_y_buynow = int(w_h * 0.98)
-        min_x_right = int(w_w * 0.30)
+        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 70% 이상으로 제한
+        # 하단 내비게이션 바 / 제스처 영역 초과 방지 (최대 93% 및 bottom - 20)
+        min_y_buynow = int(w_h * 0.70)
+        max_y_buynow = min(int(w_h * 0.93), bottom - 20)
+        min_x_right = max(left + 20, int(w_w * 0.28))
+        max_x_right = min(right - 15, int(w_w * 0.98))
 
         buy_now_imgs = [
             (p, n) for p, n in (
@@ -1902,7 +1999,7 @@ class NaverOrderWorker:
 
         for attempt in range(1, 4):
             # 1) XPath 우선 (하단 CTA만)
-            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
+            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=min_x_right):
                 if _confirm_after_click("XPath CTA"):
                     return True
 
@@ -1911,12 +2008,17 @@ class NaverOrderWorker:
                 for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
                         img_path, threshold=thr,
-                        min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
+                        min_x=min_x_right, max_x=max_x_right,
+                        min_y=min_y_buynow, max_y=max_y_buynow,
                     )
                     if not coords:
                         continue
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={coords[1]})")
+                    safe_x = max(left + 20, min(right - 15, coords[0]))
+                    safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
+                    self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                    if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={safe_y})")
                     if _confirm_after_click(img_name):
                         return True
 
@@ -1931,12 +2033,17 @@ class NaverOrderWorker:
                     continue
                 coords = self._find_image_coords(
                     img_path, threshold=0.70,
-                    min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
+                    min_x=min_x_right, max_x=max_x_right,
+                    min_y=min_y_buynow, max_y=max_y_buynow,
                 )
                 if not coords:
                     continue
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={coords[1]})")
+                safe_x = max(left + 20, min(right - 15, coords[0]))
+                safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
+                self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                    ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={safe_y})")
                 if _confirm_after_click(img_name):
                     return True
 
@@ -2366,15 +2473,19 @@ class NaverOrderWorker:
                 capture_output=True, timeout=3, text=True,
             )
             out = (res.stdout or "") + (res.stderr or "")
-            m = _re.search(r"(\d+)\s*x\s*(\d+)", out)
-            if m:
-                w, h = int(m.group(1)), int(m.group(2))
+            override_m = _re.search(r"Override size:\s*(\d+)\s*x\s*(\d+)", out)
+            if override_m:
+                w, h = int(override_m.group(1)), int(override_m.group(2))
+            else:
+                phys_m = _re.search(r"(?:Physical size:|\b)(\d+)\s*x\s*(\d+)", out)
+                if phys_m:
+                    w, h = int(phys_m.group(1)), int(phys_m.group(2))
         except Exception:
             pass
-        left = 8
-        right = max(left + 1, w - 8)
-        top = max(48, int(h * 0.04))       # 상태바 아래
-        bottom = min(h - 12, int(h * 0.96))  # 제스처/내비 위
+        left = 12
+        right = max(left + 1, w - 15)
+        top = max(48, int(h * 0.05))         # 상태바 아래
+        bottom = min(h - 60, int(h * 0.94))  # 하단 제스처/내비게이션바/홈버튼 위
         return left, top, right, bottom
 
     def _is_visible_coord(self, x, y) -> bool:
@@ -5953,8 +6064,21 @@ class NaverOrderWorker:
                     pass
 
             if best_score >= threshold and best_loc is not None:
-                cx = best_loc[0] + best_tw // 2
-                cy = best_loc[1] + best_th // 2
+                raw_cx = best_loc[0] + best_tw // 2
+                raw_cy = best_loc[1] + best_th // 2
+
+                # 캡처 비트맵 해상도와 실제 단말기 wm size 간 스케일링 보정
+                win_w, win_h = self._get_window_size()
+                if screen_w > 0 and screen_h > 0 and (screen_w != win_w or screen_h != win_h):
+                    cx = int(raw_cx * win_w / screen_w)
+                    cy = int(raw_cy * win_h / screen_h)
+                else:
+                    cx, cy = raw_cx, raw_cy
+
+                # 화면 절대 경계 초과 방지 클램핑
+                cx = max(10, min(win_w - 15, cx))
+                cy = max(40, min(win_h - 40, cy))
+
                 if min_x is not None and cx < min_x:
                     self._log(f"  ❌ [이미지 매칭] 매칭 좌표 x({cx}) < min_x({min_x}) → 무효 처리")
                     return None
@@ -6073,8 +6197,25 @@ class NaverOrderWorker:
     def _get_window_size(self):
         w, h = 1080, 2400
         try:
+            import re as _re
+            res = _run_cmd(
+                ["adb", "-s", self.device_id, "shell", "wm", "size"],
+                capture_output=True, timeout=3, text=True,
+            )
+            out = (res.stdout or "") + (res.stderr or "")
+            override_m = _re.search(r"Override size:\s*(\d+)\s*x\s*(\d+)", out)
+            if override_m:
+                w, h = int(override_m.group(1)), int(override_m.group(2))
+            else:
+                phys_m = _re.search(r"(?:Physical size:|\b)(\d+)\s*x\s*(\d+)", out)
+                if phys_m:
+                    w, h = int(phys_m.group(1)), int(phys_m.group(2))
+        except Exception:
+            pass
+        try:
             size = self.driver.get_window_size()
-            w, h = size['width'], size['height']
+            if not (w and h):
+                w, h = size['width'], size['height']
         except Exception:
             pass
         return w, h

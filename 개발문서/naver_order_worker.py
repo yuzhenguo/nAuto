@@ -1444,6 +1444,14 @@ class NaverOrderWorker:
         """[단계 11] 구매하기 버튼 클릭 (구매하기, 구매하기2, 구매하기3, 구매하기4 이미지 중 하나 인식 시 즉시 클릭), 3초 대기"""
         self._set_status("구매하기 클릭")
 
+        w, h = self._get_window_size()
+        left, top, right, bottom = self._visible_bounds()
+        # 구매하기 버튼은 화면 하단 영역에 위치 (화면 65% 이상, 하단 내비게이션 바 위)
+        min_y_buy = int(h * 0.65)
+        max_y_buy = min(int(h * 0.93), bottom - 20)
+        min_x_buy = int(w * 0.25)
+        max_x_buy = min(int(w * 0.98), right - 15)
+
         buy_img_candidates = [
             (IMG_BUY_BTN,  "구매하기"),
             (IMG_BUY_BTN2, "구매하기2"),
@@ -1451,26 +1459,57 @@ class NaverOrderWorker:
             (IMG_BUY_BTN4, "구매하기4"),
         ]
 
-        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭
+        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭 (하단 가시 영역 한정)
         for img_path, img_name in buy_img_candidates:
             if os.path.exists(img_path):
-                coords = self._find_image_coords(img_path, threshold=0.70)
+                coords = self._find_image_coords(
+                    img_path, threshold=0.70,
+                    min_x=min_x_buy, max_x=max_x_buy,
+                    min_y=min_y_buy, max_y=max_y_buy
+                )
                 if coords:
-                    self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    cx, cy = coords[0], coords[1]
+                    # 화면 밖 및 하단 내비게이션 바 초과 방지 클램핑
+                    safe_x = max(left + 20, min(right - 20, cx))
+                    safe_y = max(min_y_buy, min(max_y_buy, cy))
+                    self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({cx}, {cy}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                    if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
                     self._log(f"✅ [{img_name}] 이미지 인식 클릭 완료")
                     time.sleep(3)
                     return True
 
         # 2순위: XPath 매칭 폴백
-        if ah.element_exists(self.driver, BUY_BTN_XPATH, timeout=3):
-            ah.wait_and_click(self.driver, BUY_BTN_XPATH, timeout=5, log_callback=self._log)
-            self._log("✅ 구매하기 XPath 버튼 클릭 완료")
-            time.sleep(3)
-            return True
+        buy_btn_xpaths = [
+            '//android.widget.Button[@text="구매하기"]',
+            '//android.widget.Button[contains(@text, "구매하기")]',
+            '//*[@content-desc="구매하기"]',
+            '//*[contains(@content-desc, "구매하기")]',
+            '//android.view.View[@text="구매하기"]',
+            '//android.widget.TextView[@text="구매하기"]',
+        ]
+        for xpath in buy_btn_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=1):
+                    for el in self.driver.find_elements(By.XPATH, xpath):
+                        rect = el.rect
+                        cx = rect['x'] + rect['width'] // 2
+                        cy = rect['y'] + rect['height'] // 2
+                        if cy < min_y_buy or cy > max_y_buy:
+                            continue
+                        safe_x = max(left + 20, min(right - 20, cx))
+                        safe_y = max(min_y_buy, min(max_y_buy, cy))
+                        self._log(f"  🎯 [구매하기 XPath] 발견! ({safe_x}, {safe_y})")
+                        if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                        self._log("✅ 구매하기 XPath 버튼 클릭 완료")
+                        time.sleep(3)
+                        return True
+            except Exception:
+                continue
 
         self._log("⚠ 구매하기 버튼 미발견 → 계속 진행")
-        return True  # 없어도 계속 진행
+        return True
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
@@ -1777,17 +1816,15 @@ class NaverOrderWorker:
             self._log("  ✅ 이미 주문/결제 화면 → 바로구매 생략")
             return True
 
-        w_h, w_w = 2400, 1080
-        try:
-            size = self.driver.get_window_size()
-            w_h, w_w = size['height'], size['width']
-        except Exception:
-            pass
+        w_w, w_h = self._get_window_size()
+        left, top, right, bottom = self._visible_bounds()
 
-        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 72% 이상으로 제한
-        min_y_buynow = int(w_h * 0.72)
-        max_y_buynow = int(w_h * 0.98)
-        min_x_right = int(w_w * 0.30)
+        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 70% 이상으로 제한
+        # 하단 내비게이션 바 / 제스처 영역 초과 방지 (최대 93% 및 bottom - 20)
+        min_y_buynow = int(w_h * 0.70)
+        max_y_buynow = min(int(w_h * 0.93), bottom - 20)
+        min_x_right = max(left + 20, int(w_w * 0.28))
+        max_x_right = min(right - 15, int(w_w * 0.98))
 
         buy_now_imgs = [
             (p, n) for p, n in (
@@ -1808,7 +1845,7 @@ class NaverOrderWorker:
 
         for attempt in range(1, 4):
             # 1) XPath 우선 (하단 CTA만)
-            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=0):
+            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=min_x_right):
                 if _confirm_after_click("XPath CTA"):
                     return True
 
@@ -1817,12 +1854,17 @@ class NaverOrderWorker:
                 for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
                         img_path, threshold=thr,
-                        min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
+                        min_x=min_x_right, max_x=max_x_right,
+                        min_y=min_y_buynow, max_y=max_y_buynow,
                     )
                     if not coords:
                         continue
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={coords[1]})")
+                    safe_x = max(left + 20, min(right - 15, coords[0]))
+                    safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
+                    self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                    if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                    self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={safe_y})")
                     if _confirm_after_click(img_name):
                         return True
 
@@ -1837,12 +1879,17 @@ class NaverOrderWorker:
                     continue
                 coords = self._find_image_coords(
                     img_path, threshold=0.70,
-                    min_x=min_x_right, min_y=min_y_buynow, max_y=max_y_buynow,
+                    min_x=min_x_right, max_x=max_x_right,
+                    min_y=min_y_buynow, max_y=max_y_buynow,
                 )
                 if not coords:
                     continue
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={coords[1]})")
+                safe_x = max(left + 20, min(right - 15, coords[0]))
+                safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
+                self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                if not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                    ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={safe_y})")
                 if _confirm_after_click(img_name):
                     return True
 
