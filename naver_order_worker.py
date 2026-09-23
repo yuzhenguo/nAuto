@@ -334,8 +334,8 @@ STORE_TAB_XPATH = (
 )
 
 # 팝업 처리 (단계 5, 6)
-HIDE_BTN_1DAY    = '//android.widget.Button[@text="하루 동안 보지 않기"]'
-HIDE_BTN_7DAY    = '//android.widget.Button[@text="7일 동안 보지 않기"]'
+HIDE_BTN_1DAY    = '//*[contains(@text, "하루") and contains(@text, "보")] | //*[contains(@content-desc, "하루") and contains(@content-desc, "보")]'
+HIDE_BTN_7DAY    = '//*[contains(@text, "7일") and contains(@text, "보")] | //*[contains(@content-desc, "7일") and contains(@content-desc, "보")]'
 
 # 3.1 & 7.1 웰컴 모달 / 팝업 닫기 버튼 목록
 WELCOME_MODAL_XPATHS = [
@@ -1826,7 +1826,7 @@ class NaverOrderWorker:
                 self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
             else:
                 self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
-                if self._soft_tap(cx, cy, duration_ms=100):
+                if self._soft_tap(cx, cy, duration_ms=50):
                     time.sleep(0.8)
                     self._log(f"✅ {img_name} 클릭 완료")
                     return True
@@ -1856,7 +1856,7 @@ class NaverOrderWorker:
                                 self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
                                 continue
                             self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
-                            self._soft_tap(tap_x, cy, duration_ms=100)
+                            self._soft_tap(tap_x, cy, duration_ms=50)
                             time.sleep(0.8)
                             return True
                 except Exception:
@@ -1869,7 +1869,7 @@ class NaverOrderWorker:
                 self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
             else:
                 self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
-                self._soft_tap(tap_x, tap_y, duration_ms=100)
+                self._soft_tap(tap_x, tap_y, duration_ms=50)
                 time.sleep(0.8)
                 return True
 
