@@ -1672,20 +1672,9 @@ class NaverOrderWorker:
                 self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
             else:
                 self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
-                if not self._soft_tap(cx, cy, duration_ms=180):
-                    pass
-                else:
-                    time.sleep(1.2)
-                    again = _pick_best()
-                    if again is None:
-                        self._log(f"✅ {img_name} 클릭 후 구간 내 미체크 소멸 → 선택 완료")
-                        return True
-                    if again[3] == path and abs(again[2] - cy) <= 40 and again[0] >= min_score:
-                        self._log("  ⚠ 같은 위치 미체크 잔존 → 한 번 더 탭")
-                        self._soft_tap(cx, cy, duration_ms=180)
-                        time.sleep(0.8)
-                    else:
-                        self._log(f"✅ {img_name} 클릭 완료 (원래 위치 미체크 아님)")
+                if self._soft_tap(cx, cy, duration_ms=100):
+                    time.sleep(0.8)
+                    self._log(f"✅ {img_name} 클릭 완료")
                     return True
 
         if product_name:
@@ -1713,7 +1702,7 @@ class NaverOrderWorker:
                                 self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
                                 continue
                             self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
-                            self._soft_tap(tap_x, cy, duration_ms=180)
+                            self._soft_tap(tap_x, cy, duration_ms=100)
                             time.sleep(0.8)
                             return True
                 except Exception:
@@ -1726,7 +1715,7 @@ class NaverOrderWorker:
                 self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
             else:
                 self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
-                self._soft_tap(tap_x, tap_y, duration_ms=180)
+                self._soft_tap(tap_x, tap_y, duration_ms=100)
                 time.sleep(0.8)
                 return True
 
