@@ -119,6 +119,7 @@ IMG_BUY_BTN       = os.path.join(_IMG_DIR, "구매하기.png")
 IMG_BUY_BTN2      = os.path.join(_IMG_DIR, "구매하기2.png")
 IMG_BUY_BTN3      = os.path.join(_IMG_DIR, "구매하기3.png")
 IMG_BUY_BTN4      = os.path.join(_IMG_DIR, "구매하기4.png")
+IMG_BUY_BTN5      = os.path.join(_IMG_DIR, "구매하기5.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
 IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
@@ -1595,25 +1596,26 @@ class NaverOrderWorker:
     # ─── 단계 11: 구매하기 버튼 ──────────────────────────────────────────────
 
     def _click_buy_button(self) -> bool:
-        """[단계 11] 구매하기 버튼 클릭 (구매하기, 구매하기2, 구매하기3, 구매하기4 이미지 중 하나 인식 시 즉시 클릭), 3초 대기"""
+        """[단계 11] 구매하기 버튼 클릭 (구매하기 1~5 이미지 인식 또는 Button XPath 클릭), 3초 대기"""
         self._set_status("구매하기 클릭")
 
         w, h = self._get_window_size()
         left, top, right, bottom = self._visible_bounds()
-        # 구매하기 버튼은 화면 하단 영역에 위치 (화면 65% 이상, 하단 내비게이션 바 위)
-        min_y_buy = int(h * 0.65)
-        max_y_buy = min(int(h * 0.93), bottom - 20)
-        min_x_buy = int(w * 0.25)
-        max_x_buy = min(int(w * 0.98), right - 15)
+        # 구매하기 버튼은 화면 하단 영역에 위치 (화면 45% 이상, 하단 네비게이션 바 위)
+        min_y_buy = int(h * 0.45)
+        max_y_buy = min(int(h * 0.98), bottom)
+        min_x_buy = int(w * 0.10)
+        max_x_buy = min(int(w * 0.99), right)
 
         buy_img_candidates = [
             (IMG_BUY_BTN,  "구매하기"),
             (IMG_BUY_BTN2, "구매하기2"),
             (IMG_BUY_BTN3, "구매하기3"),
             (IMG_BUY_BTN4, "구매하기4"),
+            (IMG_BUY_BTN5, "구매하기5"),
         ]
 
-        # 1순위: 4가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭 (하단 가시 영역 한정)
+        # 1순위: 5가지 이미지 후보 중 하나라도 매칭되면 즉시 클릭 (하단 가시 영역 한정)
         for img_path, img_name in buy_img_candidates:
             if os.path.exists(img_path):
                 coords = self._find_image_coords(
@@ -1623,7 +1625,6 @@ class NaverOrderWorker:
                 )
                 if coords:
                     cx, cy = coords[0], coords[1]
-                    # 화면 밖 및 하단 내비게이션 바 초과 방지 클램핑
                     safe_x = max(left + 20, min(right - 20, cx))
                     safe_y = max(min_y_buy, min(max_y_buy, cy))
                     self._log(f"  🎯 [{img_name}] 이미지 발견! 좌표 ({cx}, {cy}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
@@ -1633,9 +1634,37 @@ class NaverOrderWorker:
                     time.sleep(3)
                     return True
 
-        # 2순위: XPath 매칭 폴백
+        # 2순위: //android.widget.Button[@text="구매하기"] 직접 클릭 시도
+        exact_button_xpath = '//android.widget.Button[@text="구매하기"]'
+        try:
+            elems = self.driver.find_elements(By.XPATH, exact_button_xpath)
+            if elems:
+                for el in elems:
+                    try:
+                        rect = el.rect
+                        cx = rect['x'] + rect['width'] // 2
+                        cy = rect['y'] + rect['height'] // 2
+                        safe_x = max(left + 15, min(right - 15, cx))
+                        safe_y = max(top + 15, min(bottom - 15, cy))
+                        self._log(f"  🎯 [구매하기 Button XPath] 발견! 좌표 ({cx}, {cy}) → 클릭 시도")
+                        clicked = False
+                        try:
+                            el.click()
+                            clicked = True
+                        except Exception:
+                            pass
+                        if not clicked or not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                        self._log('✅ //android.widget.Button[@text="구매하기"] 클릭 완료')
+                        time.sleep(3)
+                        return True
+                    except Exception as e:
+                        self._log(f"  ⚠ Button 클릭 시도 실패: {e}")
+        except Exception as e:
+            self._log(f"  ⚠ //android.widget.Button[@text='구매하기'] 탐색 중 예외: {e}")
+
+        # 3순위: XPath 매칭 폴백
         buy_btn_xpaths = [
-            '//android.widget.Button[@text="구매하기"]',
             '//android.widget.Button[contains(@text, "구매하기")]',
             '//*[@content-desc="구매하기"]',
             '//*[contains(@content-desc, "구매하기")]',
@@ -1644,21 +1673,25 @@ class NaverOrderWorker:
         ]
         for xpath in buy_btn_xpaths:
             try:
-                if ah.element_exists(self.driver, xpath, timeout=1):
-                    for el in self.driver.find_elements(By.XPATH, xpath):
-                        rect = el.rect
-                        cx = rect['x'] + rect['width'] // 2
-                        cy = rect['y'] + rect['height'] // 2
-                        if cy < min_y_buy or cy > max_y_buy:
-                            continue
-                        safe_x = max(left + 20, min(right - 20, cx))
-                        safe_y = max(min_y_buy, min(max_y_buy, cy))
-                        self._log(f"  🎯 [구매하기 XPath] 발견! ({safe_x}, {safe_y})")
-                        if not self._soft_tap(safe_x, safe_y, duration_ms=100):
-                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
-                        self._log("✅ 구매하기 XPath 버튼 클릭 완료")
-                        time.sleep(3)
-                        return True
+                elems = self.driver.find_elements(By.XPATH, xpath)
+                for el in elems:
+                    rect = el.rect
+                    cx = rect['x'] + rect['width'] // 2
+                    cy = rect['y'] + rect['height'] // 2
+                    safe_x = max(left + 20, min(right - 20, cx))
+                    safe_y = max(min_y_buy, min(max_y_buy, cy))
+                    self._log(f"  🎯 [구매하기 XPath] 발견! ({safe_x}, {safe_y}) [xpath={xpath}]")
+                    clicked = False
+                    try:
+                        el.click()
+                        clicked = True
+                    except Exception:
+                        pass
+                    if not clicked or not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                    self._log("✅ 구매하기 XPath 버튼 클릭 완료")
+                    time.sleep(3)
+                    return True
             except Exception:
                 continue
 
@@ -2017,6 +2050,7 @@ class NaverOrderWorker:
                 (IMG_BUY_BTN2, "구매하기2"),
                 (IMG_BUY_BTN3, "구매하기3"),
                 (IMG_BUY_BTN4, "구매하기4"),
+                (IMG_BUY_BTN5, "구매하기5"),
             ):
                 if not os.path.exists(img_path):
                     continue
@@ -5868,16 +5902,6 @@ class NaverOrderWorker:
         if not self._click_search_button():
             self._log("❌ 검색 실행 실패")
             return False
-
-        # ── [랜덤 대기] 검색 완료 후 상품 클릭 전 자연스러운 체류 시간 (15~40초) ──
-        wait_sec = round(random.uniform(15.0, 40.0), 1)
-        self._set_status(f"상품 탐색 대기 ({wait_sec}초)")
-        self._log(f"⏳ 검색 후 상품 클릭 전 대기 (15~40초 랜덤 간격): {wait_sec}초 대기 중...")
-        for _ in range(int(wait_sec * 2)):
-            if self._stop_event.is_set():
-                self._log("⏹ 대기 중 정지 요청 감지")
-                return False
-            time.sleep(0.5)
 
         # [단계 10] 상품 매칭 클릭
         if not self._click_product(row.seller_name, row.product_name):

@@ -898,7 +898,7 @@ class MainApp(tk.Tk):
             self.summary_labels[key] = lbl
 
         tk.Button(
-            summary_bar, text="↻ 갱신", command=self._refresh_summary,
+            summary_bar, text="↻ 갱신", command=lambda: self._refresh_summary(force_reload=True),
             bg=CLR_SURFACE, fg=CLR_TEXT_MUTE,
             font=("Segoe UI", 8), relief=tk.FLAT, cursor="hand2",
             padx=6, pady=2
@@ -2011,7 +2011,7 @@ class MainApp(tk.Tk):
 
     # ─── 현황 요약 갱신 ──────────────────────────────────────────────────────
 
-    def _refresh_summary(self):
+    def _refresh_summary(self, force_reload: bool = False):
         if hasattr(self, "_summary_timer") and self._summary_timer:
             self.after_cancel(self._summary_timer)
             self._summary_timer = None
@@ -2023,6 +2023,8 @@ class MainApp(tk.Tk):
         try:
             if not self.order_manager or self.order_manager.xlsx_path != self._xlsx_path:
                 self.order_manager = OrderManager(self._xlsx_path)
+            else:
+                self.order_manager.reload_if_changed(force=force_reload)
             summary = self.order_manager.get_summary()
             for key, lbl in self.summary_labels.items():
                 lbl.config(text=str(summary.get(key, 0)))

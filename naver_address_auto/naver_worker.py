@@ -1062,10 +1062,15 @@ class NaverWorker:
             '//android.widget.Button[@text="7일간 보지 않기"]',
             '//android.widget.Button[@text="하루 동안 보지 않기"]',
             '//android.widget.Button[contains(@text, "7일")]',
+            '//android.widget.Button[contains(@text, "하루")]',
             '//*[contains(@text, "7일간 보지 않기")]',
             '//*[contains(@text, "7일간 보이지 않기")]',
             '//*[contains(@text, "7일 동안 보지 않기")]',
+            '//*[contains(@text, "7일동안 보지 않기")]',
             '//*[contains(@text, "하루 동안 보지 않기")]',
+            '//*[contains(@text, "하루동안 보지 않기")]',
+            '//*[contains(@text, "다시 보지 않기")]',
+            '//*[contains(@text, "보지 않기")]',
         ]
 
         duplicate_pop_xpaths = [
@@ -1096,7 +1101,7 @@ class NaverWorker:
 
             # 2. 일반 팝업 감지
             if ah.element_exists(self.driver, popup_union_xpath, timeout=2):
-                self._log(f"📌 팝업 감지 → 클릭 (회차 {i+1})")
+                self._log(f"📌 [하루/7일 보지 않기] 팝업 감지 → 클릭 (회차 {i+1}, 2초 대기)")
                 ah.wait_and_click(self.driver, popup_union_xpath, timeout=3, log_callback=self._log)
                 time.sleep(2)
                 dismissed = True
@@ -1209,6 +1214,9 @@ class NaverWorker:
         # [25-2.5] 상품 체크박스 선택 (바구니미체크 → 바구니체크완료)
         self._ensure_cart_product_checked()
 
+        # [25-2.6] 주문하기 클릭 전 '하루 동안 보지 않기' / '7일간 보지 않기' 팝업 감지 시 클릭 (2초 휴식)
+        self._dismiss_hide_popup(max_count=2)
+
         # [25-3] '주문하기 N 개의 상품' (N>=1) 버튼 클릭 (3초 대기)
         # 미체크: '주문하기 0 개의 상품' / 체크완료: '주문하기 1 개의 상품'
         self._set_status("주문하기 클릭")
@@ -1227,10 +1235,15 @@ class NaverWorker:
                     if "0 개의" in btn_text or btn_text.endswith("0개"):
                         self._log(f"  ⚠ 주문하기 버튼이 아직 0개 상태('{btn_text}') → 재체크 후 재시도")
                         self._ensure_cart_product_checked()
+                        self._dismiss_hide_popup(max_count=1)
                         time.sleep(1)
                         continue
                 except Exception:
                     pass
+
+                # 주문하기 버튼 클릭 직전 '하루/7일 보지 않기' 팝업 존재 시 클릭 후 2초 휴식
+                self._dismiss_hide_popup(max_count=1)
+
                 self._log(f"📌 주문하기 버튼 발견 ({xpath[:55]}) → 클릭")
                 if ah.wait_and_click(self.driver, xpath, timeout=5, log_callback=self._log):
                     order_clicked = True

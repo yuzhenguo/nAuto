@@ -45,12 +45,52 @@ HEADER_KEYWORDS = {
     "recipient_name": ["수취인", "수령인", "recipient", "받는사람", "받는분"],
     "phone":          ["전화번호", "연락처", "phone"],
     "password":       ["비밀번호", "password", "암호"],
-    "status":         ["완료여부", "처리여부", "작업여부", "status"],
+    "status":         ["완료여부", "완료", "처리여부", "작업여부", "진행상태", "상태", "결과", "status", "state"],
     "payment_method": ["결제방식", "결재방식", "payment"],
     "device_id":      ["폰id", "기기id", "단말기id", "deviceid", "device_id"],
     "login_id":       ["로그인아이디", "로그인id", "loginid", "login_id"],
     "second_password": ["2차비밀번호", "2차암호", "2차비번", "secondarypassword"],
 }
+
+
+def is_done_status(st: str) -> bool:
+    """완료 여부 판정 (Y, 완료, 성공 등 포괄적 지원)"""
+    s = str(st or "").strip().upper()
+    return s in ("Y", "완료", "성공", "DONE", "O", "OK", "TRUE", "1") or s.startswith("Y") or "완료" in s or "성공" in s
+
+
+def is_failed_status(st: str) -> bool:
+    s = str(st or "").strip().upper()
+    return s in ("F", "실패", "FAIL", "FAILED", "ERROR") or s.startswith("F") or "실패" in s
+
+
+def is_cancelled_status(st: str) -> bool:
+    s = str(st or "").strip().upper()
+    return s in ("C", "취소", "CANCEL", "CANCELLED") or s.startswith("C") or "취소" in s
+
+
+def is_conn_failed_status(st: str) -> bool:
+    s = str(st or "").strip().upper()
+    return s in ("H", "연결실패") or s.startswith("H") or "연결실패" in s
+
+
+def is_driver_error_status(st: str) -> bool:
+    s = str(st or "").strip().upper()
+    return s in ("E", "드라이브에러", "드라이버에러") or s.startswith("E") or "에러" in s
+
+
+def is_working_status(st: str) -> bool:
+    s = str(st or "").strip().upper()
+    return s in ("W", "작업중", "진행중") or s.startswith("W")
+
+
+def is_pending_status(st: str) -> bool:
+    """미처리 대기 상태 판정"""
+    s = str(st or "").strip().upper()
+    if s in ("", "NONE", "대기", "미처리", "미완료"):
+        return True
+    return not (is_done_status(s) or is_failed_status(s) or is_cancelled_status(s) or
+                is_conn_failed_status(s) or is_driver_error_status(s) or is_working_status(s))
 
 
 def _norm_device_id(val: str) -> str:
@@ -173,12 +213,28 @@ class OrderManager:
         self._col_map: Optional[dict] = None  # 캐시
         self._memory_rows: List[OrderRow] = []
         self._write_queue = queue.Queue()
+        self._last_mtime = os.path.getmtime(self.xlsx_path) if os.path.exists(self.xlsx_path) else 0
         
         self._load_into_memory()
         
         # 엑셀 저장을 전담하는 백그라운드 큐 스레드 시작
         self._writer_thread = threading.Thread(target=self._excel_writer_loop, daemon=True)
         self._writer_thread.start()
+
+    def reload_if_changed(self, force: bool = False) -> bool:
+        """엑셀 파일이 외부에서 변경되었거나 force=True일 때 메모리 데이터를 다시 로드"""
+        if not os.path.exists(self.xlsx_path):
+            return False
+        try:
+            mtime = os.path.getmtime(self.xlsx_path)
+            if force or getattr(self, "_last_mtime", 0) != mtime:
+                if self._write_queue.empty():
+                    self._load_into_memory()
+                    self._last_mtime = mtime
+                    return True
+        except Exception as e:
+            print(f"[OrderManager] reload 오류: {e}")
+        return False
 
     def _get_col_map(self, ws) -> dict:
         if self._col_map is None:
@@ -203,9 +259,10 @@ class OrderManager:
         return str(val).strip()
 
     def _load_into_memory(self):
-        """프로그램 시작 시 엑셀 데이터를 메모리로 한 번에 로드"""
+        """프로그램 시작/갱신 시 엑셀 데이터를 메모리로 한 번에 로드"""
         with self._lock:
             self._memory_rows.clear()
+            self._col_map = None  # 헤더 재감지
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path, data_only=True)
                 ws = wb.active
@@ -216,10 +273,16 @@ class OrderManager:
                 if first_cell and str(first_cell).strip().isdigit():
                     start_row = 1
 
+                empty_count = 0
                 for row_idx in range(start_row, ws.max_row + 1):
                     keyword_val = ws.cell(row_idx, cm["search_keyword"]).value
-                    if not keyword_val or self._str(keyword_val) == "":
-                        break
+                    kw_str = self._str(keyword_val)
+                    if not kw_str:
+                        empty_count += 1
+                        if empty_count >= 15:
+                            break
+                        continue
+                    empty_count = 0
 
                     status_val = ws.cell(row_idx, cm["status"]).value
                     status_str = self._str(status_val)
@@ -230,7 +293,7 @@ class OrderManager:
 
                     self._memory_rows.append(OrderRow(
                         row_index      = row_idx,
-                        search_keyword = self._str(ws.cell(row_idx, cm["search_keyword"]).value),
+                        search_keyword = kw_str,
                         seller_name    = self._str(ws.cell(row_idx, cm["seller_name"]).value),
                         product_name   = self._str(ws.cell(row_idx, cm["product_name"]).value),
                         recipient_name = self._str(ws.cell(row_idx, cm["recipient_name"]).value),
@@ -250,7 +313,7 @@ class OrderManager:
         with self._lock:
             rows = []
             for row in self._memory_rows:
-                if row.status.upper() in ("NONE", ""):
+                if is_pending_status(row.status):
                     if device_id and not _device_ids_match(row.device_id, device_id):
                         continue
                     rows.append(row)
@@ -266,7 +329,7 @@ class OrderManager:
         """
         with self._lock:
             for row in self._memory_rows:
-                if row.status.upper() in ("NONE", ""):
+                if is_pending_status(row.status):
                     if device_id and not _device_ids_match(row.device_id, device_id):
                         continue
                     
@@ -317,17 +380,17 @@ class OrderManager:
             for row in self._memory_rows:
                 summary["total"] += 1
                 st = str(row.status).strip().upper()
-                if st == "Y":
+                if is_done_status(st):
                     summary["done"] += 1
-                elif st == "F":
+                elif is_failed_status(st):
                     summary["failed"] += 1
-                elif st == "C":
+                elif is_cancelled_status(st):
                     summary["cancelled"] += 1
-                elif st == "H":
+                elif is_conn_failed_status(st):
                     summary["conn_failed"] += 1
-                elif st == "E":
+                elif is_driver_error_status(st):
                     summary["driver_error"] += 1
-                elif st == "W":
+                elif is_working_status(st):
                     summary["working"] += 1
                     summary["pending"] += 1
                 else:
@@ -348,17 +411,17 @@ class OrderManager:
                 
                 counts[dev_key]["total"] += 1
                 st = str(row.status).strip().upper()
-                if st == "Y":
+                if is_done_status(st):
                     counts[dev_key]["done"] += 1
-                elif st == "F":
+                elif is_failed_status(st):
                     counts[dev_key]["failed"] += 1
-                elif st == "C":
+                elif is_cancelled_status(st):
                     counts[dev_key]["cancelled"] += 1
-                elif st == "H":
+                elif is_conn_failed_status(st):
                     counts[dev_key]["conn_failed"] += 1
-                elif st == "E":
+                elif is_driver_error_status(st):
                     counts[dev_key]["driver_error"] += 1
-                elif st == "W":
+                elif is_working_status(st):
                     counts[dev_key]["pending"] += 1
                 else:
                     counts[dev_key]["pending"] += 1
