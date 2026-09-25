@@ -30,7 +30,7 @@ import sys
 import time
 import random
 import threading
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException, NoSuchElementException
@@ -3020,15 +3020,39 @@ class NaverOrderWorker:
     def _handle_delivery_memo(self) -> None:
         """
         [단계 16.5] 배송지 선택 직후 배송메모 처리:
-        '배송메모 선택' 팝업이 떠 있는 경우 '선택 안 함'을 찾아 클릭.
-        - 선택안함.png / 선택안함2.png 직접 인식 → 바로 클릭
-        - 배송메모선택2.png(팝업 타이틀) 인식 → 선택안함 찾아 클릭
+        1차: //android.view.View[@text="선택 안 함"] 요소 존재 여부로 우선 판단 및 클릭
+        2차: XPath 미발견 시 선택안함.png / 선택안함2.png 이미지 인식 시도
         """
         self._set_status("배송메모 처리")
-        self._log("🔍 [배송메모] '선택 안 함' 이미지 인식 시도...")
-        time.sleep(1.0)
+        self._log("🔍 [배송메모] '선택 안 함' 탐색 시작 (1차: XPath //android.view.View[@text='선택 안 함'], 2차: 이미지 인식)")
+        time.sleep(0.8)
 
-        # 인식할 '선택 안 함' 이미지 목록
+        # ── 1차: XPath 요소 존재 여부로 우선 판단 및 클릭 ──
+        xpath_candidates = [
+            '//android.view.View[@text="선택 안 함"]',
+            '//android.widget.TextView[@text="선택 안 함"]',
+            '//*[@text="선택 안 함"]',
+            '//*[@text="선택안함"]',
+        ]
+        for xp in xpath_candidates:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    if el:
+                        loc = el.location
+                        sz = el.size
+                        cx = loc['x'] + sz['width'] // 2
+                        cy = loc['y'] + sz['height'] // 2
+                        self._log(f"  🎯 [배송메모] 1차 XPath [{xp}] 발견! 좌표 ({cx}, {cy}) -> 클릭 시도")
+                        ah.tap_by_coords(self.driver, cx, cy, self._log)
+                        time.sleep(1.0)
+                        self._log("✅ [배송메모] '선택 안 함' XPath 탭 완료 → 다음 작업 진행")
+                        return
+            except Exception:
+                pass
+
+        # ── 2차: 이미지 매칭으로 '선택 안 함' 인식 (1차 XPath 미발견 시) ──
+        self._log("  ℹ [배송메모] 1차 XPath 미발견 → 2차 이미지 인식(선택안함.png) 시도...")
         no_select_imgs = []
         for path, label in [
             (IMG_MEMO_NO_SELECT, "선택안함"),
@@ -3037,61 +3061,25 @@ class NaverOrderWorker:
             if os.path.exists(path):
                 no_select_imgs.append((path, label))
 
-        # 배송메모 팝업 타이틀 이미지
-        memo_popup_imgs = []
-        for path, label in [
-            (IMG_DELIVERY_MEMO, "배송메모"),
-            (IMG_DELIVERY_MEMO2, "배송메모선택2"),
-        ]:
-            if os.path.exists(path):
-                memo_popup_imgs.append((path, label))
-
-        if not no_select_imgs and not memo_popup_imgs:
-            self._log("  ℹ [배송메모] 템플릿 이미지 없음 → 건너뛰고 다음 작업 진행")
-            return
-
-        for ns_try in range(1, 4):
-            if self._stop_event.is_set():
-                return
-
-            # 1) '선택 안 함' 직접 인식 시도 (선택안함.png, 선택안함2.png)
+        if no_select_imgs:
+            screen_gray, screen_bgr = self._capture_screen_cv2()
             for path, label in no_select_imgs:
-                ns_coords = self._find_image_coords(path, threshold=0.60)
+                ns_coords = self._find_image_coords(
+                    path, threshold=0.70,
+                    cached_screen_gray=screen_gray,
+                    cached_screen_bgr=screen_bgr
+                )
                 if ns_coords:
                     self._log(
                         f"  🎯 [{label}] 이미지 발견! "
                         f"좌표 ({ns_coords[0]}, {ns_coords[1]}) -> 1회 탭"
                     )
                     ah.tap_by_coords(self.driver, ns_coords[0], ns_coords[1], self._log)
-                    time.sleep(1.2)
-                    self._log("✅ [배송메모] '선택 안 함' 선택 완료 → 다음 작업 진행")
+                    time.sleep(1.0)
+                    self._log("✅ [배송메모] '선택 안 함' 이미지 선택 완료 → 다음 작업 진행")
                     return
 
-            # 2) 배송메모 팝업 타이틀 인식 (배송메모.png, 배송메모선택2.png)
-            #    팝업이 열려있으면 → 아래쪽에 '선택 안 함' 항목이 있으므로
-            #    팝업 y좌표 아래 영역을 탭하여 닫기
-            for path, label in memo_popup_imgs:
-                memo_coords = self._find_image_coords(path, threshold=0.60)
-                if memo_coords:
-                    self._log(
-                        f"  🎯 [{label}] 팝업 감지! "
-                        f"좌표 ({memo_coords[0]}, {memo_coords[1]})"
-                    )
-                    # 팝업 바깥(상단)을 탭하여 닫기
-                    w, h = self._get_window_size()
-                    close_y = max(50, memo_coords[1] - int(h * 0.15))
-                    self._log(
-                        f"  👉 [배송메모] 팝업 닫기 탭 ({w // 2}, {close_y})"
-                    )
-                    ah.tap_by_coords(self.driver, w // 2, close_y, self._log)
-                    time.sleep(1.2)
-                    self._log("✅ [배송메모] 팝업 닫기 완료 → 다음 작업 진행")
-                    return
-
-            if ns_try < 3:
-                time.sleep(1.0)
-
-        self._log("  ℹ [배송메모] '선택 안 함' 미감지 → 건너뛰고 다음 작업 진행")
+        self._log("  ℹ [배송메모] '선택 안 함' 팝업 없음 (XPath/이미지 모두 미감지) → 건너뛰고 다음 작업 진행")
 
     # ─── 단계 17: 전액사용 클릭 ──────────────────────────────────────────────
 
@@ -3543,15 +3531,20 @@ class NaverOrderWorker:
         mid_bottom = int(w_h * 0.70)
 
         for attempt in range(1, max_scroll_attempts + 1):
+            screen_gray, screen_bgr = self._capture_screen_cv2()
             for img_path, name in images:
                 if os.path.exists(img_path):
-                    coords = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
+                    coords = self._find_image_coords(
+                        img_path, threshold=threshold,
+                        min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+                        cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr
+                    )
                     if coords:
                         if coords[1] < mid_top:
                             if allow_scroll_up:
                                 self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
                                 self._scroll_up(distance_ratio=0.18)
-                                time.sleep(0.5)
+                                time.sleep(0.4)
                                 adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                                 if adj:
                                     coords = adj
@@ -3562,8 +3555,8 @@ class NaverOrderWorker:
                                 continue
                         elif coords[1] > int(w_h * 0.94):
                             self._log(f"  📌 {name} 하단 끝 치우침(y={coords[1]}) -> 미세 스크롤 다운")
-                            self._scroll_down(distance_ratio=0.12)
-                            time.sleep(0.5)
+                            self._scroll_down(distance_ratio=0.15)
+                            time.sleep(0.4)
                             adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                             if adj:
                                 coords = adj
@@ -3572,12 +3565,12 @@ class NaverOrderWorker:
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        time.sleep(1)
+                        time.sleep(0.8)
                         return True
 
-            self._log(f"  ⬇ [{names_str}] 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
-            self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.4)
+            self._log(f"  ⬇ [{names_str}] 미발견 -> 스크롤 다운 ({attempt}/{max_scroll_attempts})")
+            self._scroll_down(distance_ratio=0.28)
+            time.sleep(0.3)
         self._log(f"  ❌ [{names_str}] 버튼 모두 탐색 실패")
         return False
 
@@ -3814,11 +3807,50 @@ class NaverOrderWorker:
         time.sleep(1.0)
         return True
 
+    def _verify_bank_dropdown_opened(self) -> bool:
+        """[2차 검증] 은행 드롭다운('은행을') 클릭 후 실제 은행 목록이 화면에 열렸는지 검증."""
+        try:
+            # 1. 주요 은행 템플릿 중 하나라도 화면에 존재하는지 빠른 스크린샷 1회로 확인
+            bank_samples = [
+                IMG_HANA_BANK, IMG_NONGHYUP_BANK, IMG_WOORI_BANK,
+                IMG_KB_BANK, IMG_IBK_BANK, IMG_SHINHAN_BANK, IMG_BUSAN_BANK,
+                IMG_HANA_BANK2, IMG_NONGHYUP_BANK2, IMG_WOORI_BANK2,
+                IMG_KB_BANK2, IMG_IBK_BANK2, IMG_SHINHAN_BANK2, IMG_BUSAN_BANK2,
+            ]
+            valid_samples = [p for p in bank_samples if os.path.exists(p)]
+            if valid_samples:
+                screen_gray, screen_bgr = self._capture_screen_cv2()
+                if screen_gray is not None:
+                    for bank_p in valid_samples:
+                        c = self._find_image_coords(bank_p, threshold=0.62,
+                                                    cached_screen_gray=screen_gray,
+                                                    cached_screen_bgr=screen_bgr)
+                        if c:
+                            return True
+
+            # 2. 은행 관련 XPath (텍스트 매칭) 확인
+            bank_names_xpath = (
+                '//*[contains(@text, "국민") or contains(@text, "신한") or '
+                'contains(@text, "농협") or contains(@text, "우리") or '
+                'contains(@text, "하나") or contains(@text, "기업은행") or '
+                'contains(@text, "부산은행")]'
+            )
+            try:
+                if ah.element_exists(self.driver, bank_names_xpath, timeout=0.5):
+                    return True
+            except Exception:
+                pass
+
+            return False
+        except Exception:
+            return False
+
     def _click_bank_select_with_scroll(self, max_scroll_attempts: int = 8) -> bool:
         """
         [무통장입금 클릭 후 판단]
         '은행을.png' 탐색 (최대 8회 스크롤)
         '은행을.png' 이미지 인식 시 화면 중앙 조절 후 탭 클릭.
+        [2차 검증] 탭 클릭 후 실제로 은행 목록이 열렸는지 검증하고, 안 열렸으면 재탭(2차/3차) 시도.
         """
         self._set_status("은행 선택 탐색 및 판단 중")
         self._log(f"🔍 [무통장입금 클릭 후 판단] 은행 선택 버튼 탐색 시작 ('은행을.png', 최대 {max_scroll_attempts}회 시도)")
@@ -3855,36 +3887,67 @@ class NaverOrderWorker:
                         if coords[1] < mid_top:
                             self._log(f"  📌 {name} 상단 치우침 -> 미세 스크롤 업")
                             self._scroll_up(distance_ratio=0.18)
-                            time.sleep(0.5)
+                            time.sleep(0.4)
                             adj = self._find_image_coords(img_path, threshold=0.60)
                             if adj: coords = adj
                         elif coords[1] > mid_bottom:
                             self._log(f"  📌 {name} 하단 치우침 -> 미세 스크롤 다운")
                             self._scroll_down(distance_ratio=0.18)
-                            time.sleep(0.5)
+                            time.sleep(0.4)
                             adj = self._find_image_coords(img_path, threshold=0.60)
                             if adj: coords = adj
 
-                        self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
+                        self._log(f"  🎯 {name} 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 1차 탭 클릭 시도")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                        time.sleep(1)
+                        time.sleep(0.8)
+
+                        # ── 2차 검증 로직 ──
+                        self._log("  🔍 [은행 드롭다운 2차 검증] 은행 목록 오픈 여부 확인 중...")
+                        if self._verify_bank_dropdown_opened():
+                            self._log("  ✅ [은행 드롭다운 2차 검증] 은행 목록 정상 오픈 확인 완료!")
+                            return True
+
+                        self._log(f"  ⚠ [은행 드롭다운 2차 검증] 1차 탭 후 은행목록 미감지! -> 2차 재탭 시도 ({coords[0]}, {coords[1]})")
+                        re_c = self._find_image_coords(img_path, threshold=0.55)
+                        tap_x = re_c[0] if re_c else coords[0]
+                        tap_y = re_c[1] if re_c else coords[1]
+                        ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+                        time.sleep(1.0)
+
+                        if self._verify_bank_dropdown_opened():
+                            self._log("  ✅ [은행 드롭다운 2차 검증] 2차 재탭 후 은행 목록 정상 오픈 확인 완료!")
+                            return True
+
+                        self._log("  ⚠ [은행 드롭다운 2차 검증] 3차 재탭 시도 (드롭다운 중앙)")
+                        ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+                        time.sleep(0.8)
                         return True
 
             # 2. XPath 매칭 폴백 (timeout 0.5초로 단축)
             for xpath in bank_xpaths:
                 try:
                     if ah.element_exists(self.driver, xpath, timeout=0.5):
-                        self._log(f"  🎯 은행 선택 XPath 발견: {xpath} -> 클릭 및 존재 확인 성공")
+                        self._log(f"  🎯 은행 선택 XPath 발견: {xpath} -> 클릭 및 2차 검증 시도")
                         el = self.driver.find_element(By.XPATH, xpath)
                         if self._safe_click_element(el):
-                            time.sleep(2)
+                            time.sleep(1.0)
+                            if self._verify_bank_dropdown_opened():
+                                self._log("  ✅ [은행 드롭다운 2차 검증] XPath 클릭 후 은행 목록 오픈 확인 완료!")
+                                return True
+                            # 2차 재시도
+                            self._log("  ⚠ [은행 드롭다운 2차 검증] XPath 1차 클릭 후 미오픈 -> 재클릭 시도")
+                            try:
+                                el.click()
+                                time.sleep(1.0)
+                            except Exception:
+                                pass
                             return True
                 except Exception:
                     continue
 
             self._log(f"  ⬇ '은행을' 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.4)
+            time.sleep(0.3)
 
         self._log(f"  ⚠ 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과). 무시하고 계속 진행합니다.")
         return True
@@ -3924,23 +3987,31 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # 상/하단 20% 이외의 영역(20%~80%)에 위치하면 즉시 클릭
-        mid_top    = int(w_h * 0.20)
-        mid_bottom = int(w_h * 0.80)
+        # 상/하단 유효 영역 완화 (12%~88%)
+        mid_top    = int(w_h * 0.12)
+        mid_bottom = int(w_h * 0.88)
 
-        def _tap_coords_and_return(cx, cy, label):
+        def _tap_coords_and_return(cx, cy, label, attempt_idx=1):
             if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 20% 치우침 (y={cy} < {mid_top}) -> 미세 안전스크롤 업")
-                self._scroll_up(distance_ratio=0.08)
-                time.sleep(1.0)
-                return False
+                if attempt_idx <= 1:
+                    self._log(f"  📌 [{label}] 상단 치우침 (y={cy} < {mid_top}) -> 미세 안전스크롤 업")
+                    self._scroll_up(distance_ratio=0.15)
+                    time.sleep(0.5)
+                    return False
+                else:
+                    self._log(f"  📌 [{label}] 상단이지만 스크롤 재시도 한계 도달 -> 현재 좌표 직접 탭")
             elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 20% 치우침 (y={cy} > {mid_bottom}) -> 미세 안전스크롤 다운")
-                self._scroll_down_safe(distance_ratio=0.08)
-                time.sleep(1.0)
-                return False
+                # 하단 치우침: 1회차이고 화면 밖 위험 영역(cy >= w_h - 100)일 때만 1회 스크롤 시도,
+                # 2회차 이상이거나 화면 내 클릭 가능하면(cy < w_h - 60) 즉시 탭!
+                if attempt_idx <= 1 and cy >= w_h - 100:
+                    self._log(f"  📌 [{label}] 하단 치우침 (y={cy} > {mid_bottom}) -> 안전스크롤 다운 (1회)")
+                    self._scroll_down_safe(distance_ratio=0.16)
+                    time.sleep(0.5)
+                    return False
+                else:
+                    self._log(f"  📌 [{label}] 하단 위치 확인됨 (y={cy}, 시도={attempt_idx}) -> 화면 내 안전 좌표 직접 탭")
 
-            self._log(f"  🎯 [{label}] 앞단 안착! 좌표 ({cx}, {cy}) -> 캡처 후 1회 탭")
+            self._log(f"  🎯 [{label}] 안착! 좌표 ({cx}, {cy}) -> 캡처 후 1회 탭")
             
             # 사용자 요청: 클릭 직전 화면 캡처
             try:
@@ -3956,7 +4027,7 @@ class NaverOrderWorker:
                 self._log(f"  ⚠ 화면 캡처 실패: {e}")
 
             ah.tap_by_coords(self.driver, cx, cy, self._log)
-            time.sleep(2.0)
+            time.sleep(1.2)
 
             self._log(f"  ✅ [{label}] 다른결재 버튼 클릭 완료 -> 즉시 다음 결제 단계 진행")
             return True
@@ -3967,7 +4038,7 @@ class NaverOrderWorker:
             for img_path, name in img_candidates:
                 coords = self._find_image_coords(img_path, threshold=0.55)
                 if coords:
-                    res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}")
+                    res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}", attempt_idx=attempt)
                     if res is True:
                         return True
                     elif res is False:
@@ -4100,6 +4171,9 @@ class NaverOrderWorker:
 
             self._log("🔍 '미신청2' 또는 '일반결재' 등을 찾아 스크롤 탐색합니다.")
             found_action = False
+            cached_bank_check_coords = None
+            is_bank_transfer_checked = False
+
             for attempt in range(8):
                 # 1. 미신청2 가장 먼저 확인 (발견 시 결제수단 설정 스킵하고 바로 return True)
                 if os.path.exists(IMG_NOT_APPLY2) and self._find_image_coords(IMG_NOT_APPLY2, threshold=0.75):
@@ -4111,10 +4185,14 @@ class NaverOrderWorker:
                     self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
                     found_action = True
                     break
-                elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-                    self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
-                    found_action = True
-                    break
+                elif os.path.exists(IMG_BANK_TRANSFER_CHECK):
+                    c_bank = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+                    if c_bank:
+                        self._log("✅ '무통장체크' 확인됨. 계속 진행합니다.")
+                        found_action = True
+                        is_bank_transfer_checked = True
+                        cached_bank_check_coords = c_bank
+                        break
                 
                 # 3. 일반결재 클릭 시도
                 normal_pay_images = [
@@ -4127,7 +4205,7 @@ class NaverOrderWorker:
                         coords = self._find_image_coords(img_path, threshold=0.75)
                         if coords:
                             ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                            time.sleep(1.5)
+                            time.sleep(1.0)
                             self._log(f"✅ '{name}' 발견 및 클릭 성공! 계속 진행합니다.")
                             clicked_normal = True
                             break
@@ -4138,20 +4216,28 @@ class NaverOrderWorker:
                     
                 # 미발견 시 미세 스크롤 다운
                 self._scroll_down(distance_ratio=0.20)
-                time.sleep(0.8)
+                time.sleep(0.4)
                 
             if not found_action:
                 self._log("❌ '다른결재', '미신청2', '일반결재' 및 체크 상태 모두 미발견 -> 무통장 결제 실패")
                 return False
-        
+        else:
+            cached_bank_check_coords = None
+            is_bank_transfer_checked = False
+
         # 2. 일반결재 탐색 및 클릭 (이미 체크되어 있으면 스킵)
-        is_already_checked = False
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-            self._log("✅ '일반결재체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
-            is_already_checked = True
-        elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-            self._log("✅ '무통장체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
-            is_already_checked = True
+        is_already_checked = is_bank_transfer_checked
+        if not is_already_checked:
+            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                self._log("✅ '일반결재체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
+                is_already_checked = True
+            elif os.path.exists(IMG_BANK_TRANSFER_CHECK):
+                c_bank = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+                if c_bank:
+                    self._log("✅ '무통장체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
+                    is_already_checked = True
+                    is_bank_transfer_checked = True
+                    cached_bank_check_coords = c_bank
             
         if not is_already_checked:
             normal_pay_images = [
@@ -4161,36 +4247,40 @@ class NaverOrderWorker:
             if not self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
                 if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
                     self._log("✅ '일반결재체크' 발견! 성공으로 간주하고 진행합니다.")
-                elif os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-                    self._log("✅ '무통장체크' 발견! 성공으로 간주하고 진행합니다.")
+                elif os.path.exists(IMG_BANK_TRANSFER_CHECK):
+                    c_bank = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+                    if c_bank:
+                        self._log("✅ '무통장체크' 발견! 성공으로 간주하고 진행합니다.")
+                        is_bank_transfer_checked = True
+                        cached_bank_check_coords = c_bank
                 else:
                     self._log("❌ '일반결재/일반결재3' 버튼 미발견 -> 무통장 결제 실패")
                     return False
                     
         # 3. 무통장입금 탐색 (이미 체크되어 있으면 한 번 클릭 후 은행 선택으로 진행)
-        is_bank_transfer_checked = False
-        if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
+        if is_bank_transfer_checked:
             self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
-            coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-            time.sleep(1.5)
-            is_bank_transfer_checked = True
-            
-        if not is_bank_transfer_checked:
+            if cached_bank_check_coords:
+                ah.tap_by_coords(self.driver, cached_bank_check_coords[0], cached_bank_check_coords[1], self._log)
+            else:
+                coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+            time.sleep(1.0)
+        else:
             if not self._click_image_with_scroll(IMG_BANK_TRANSFER, "무통장입금", max_scroll_attempts=8):
-                if os.path.exists(IMG_BANK_TRANSFER_CHECK) and self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70):
-                    self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
+                if os.path.exists(IMG_BANK_TRANSFER_CHECK):
                     coords = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
                     if coords:
+                        self._log("✅ '무통장체크' 상태 감지됨! 이미지를 한 번 클릭 후 은행 선택으로 진행합니다.")
                         ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(1.5)
+                        time.sleep(1.0)
                 else:
                     self._log("⚠ '무통장입금' 버튼 미발견. 중단하지 않고 계속 진행합니다.")
             else:
-                time.sleep(1.5)
+                time.sleep(1.0)
 
-        # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 탐색
+        # 무통장입금 클릭(또는 스킵) 후 '은행을' / '은행선택' 탐색 (2차 검증 포함)
         if not self._click_bank_select_with_scroll(max_scroll_attempts=8):
             self._log("⚠ 무통장입금 클릭 후 '은행을' / '은행선택' 미발견. 무시하고 계속 진행합니다.")
 
@@ -4211,33 +4301,59 @@ class NaverOrderWorker:
         self._log("🎲 [은행 선택] 노출된 은행(1번/2번 이미지) 즉시 탐색 및 선택 시작...")
 
         for attempt in range(1, 8):
+            # 화면 1회 캡처로 메모리 상에서 13개 은행 동시 초고속 매칭 (10초 -> 0.15초)
+            screen_gray, screen_bgr = self._capture_screen_cv2()
             for bank_img, bank_name in valid_bank_candidates:
-                coords = self._find_image_coords(bank_img, threshold=0.70)
+                coords = self._find_image_coords(
+                    bank_img, threshold=0.70,
+                    cached_screen_gray=screen_gray,
+                    cached_screen_bgr=screen_bgr
+                )
                 if coords:
                     self._log(f"✅ 은행 [{bank_name}] 발견! 좌표 ({coords[0]}, {coords[1]}) -> 클릭하여 선택 완료")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(2.0)
+                    time.sleep(1.2)
                     bank_selected = True
                     break
 
             if bank_selected:
                 break
 
+            # 1회차 실패 시: 드롭다운이 안 열려 '은행을'이 여전히 보이는지 긴급 검사 & 복구 재클릭
+            if attempt == 1:
+                recovered = False
+                for b_img, b_name in [
+                    (IMG_SELECT_BANK, "은행을"), (IMG_SELECT_BANK2, "은행을2"),
+                    (IMG_SELECT_BANK3, "은행을3"), (IMG_SELECT_BANK4, "은행을4")
+                ]:
+                    if os.path.exists(b_img):
+                        b_coords = self._find_image_coords(
+                            b_img, threshold=0.60,
+                            cached_screen_gray=screen_gray,
+                            cached_screen_bgr=screen_bgr
+                        )
+                        if b_coords:
+                            self._log(f"  ⚠ [은행 선택 긴급복구] '{b_name}' 버튼 닫힘 감지 ({b_coords[0]}, {b_coords[1]}) -> 드롭다운 즉시 재탭")
+                            ah.tap_by_coords(self.driver, b_coords[0], b_coords[1], self._log)
+                            time.sleep(1.0)
+                            recovered = True
+                            break
+                if recovered:
+                    continue  # 스크롤하지 않고 바로 다음 루프에서 열린 은행 목록 탐색!
+
             self._log(f"  ⬇ [은행 탐색] 현재 화면 미노출 -> 미세 스크롤 다운 ({attempt}/7)")
             self._scroll_down(distance_ratio=0.25)
-            time.sleep(1.0)
+            time.sleep(0.5)
 
         if not bank_selected:
             self._log("⚠ 랜덤 은행 선택 실패! 하지만 중단하지 않고 다음 단계(미신청 및 결제/주문하기)로 계속 진행합니다.")
-            # 실패 시 중단하지 않고 계속 진행 (사용자 요청)
             
         # ── 미신청 탐색 전: 팝업 점검 및 위에서부터 탐색 ──
         self._dismiss_payment_benefit_popup()
 
         # 위에서부터 살짝 밑으로 내리며 탐색하기 위해 스크롤을 살짝 위로 올림
-        for _ in range(2):
-            self._scroll_up(distance_ratio=0.4)
-            time.sleep(0.3)
+        self._scroll_up(distance_ratio=0.3)
+        time.sleep(0.3)
 
         not_apply_images = [
             (IMG_NOT_APPLY, "미신청"),
@@ -6275,13 +6391,31 @@ class NaverOrderWorker:
 
     # ─── 이미지 인식 (naver_worker.py 동일 로직 재구현) ─────────────────────
 
+    def _capture_screen_cv2(self):
+        """ADB/Appium 스크린샷을 찍어 (screen_gray, screen_bgr)로 반환. 메모리 캐싱용."""
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+            screenshot_png = self._get_screenshot()
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            return screen_gray, screen_bgr
+        except Exception as e:
+            self._log(f"  [스크린샷 캡처 오류] {e}")
+            return None, None
+
     def _find_image_coords(self, template_path: str,
                            threshold: float = 0.75,
                            min_x: Optional[int] = None,
                            max_x: Optional[int] = None,
                            min_y: Optional[int] = None,
-                           max_y: Optional[int] = None) -> Optional[tuple]:
-        """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색"""
+                           max_y: Optional[int] = None,
+                           cached_screen_gray: Optional[Any] = None,
+                           cached_screen_bgr: Optional[Any] = None) -> Optional[tuple]:
+        """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색 (캐시된 화면 이미지 지원으로 대량 매칭 초고속화)"""
         try:
             import cv2
             import numpy as np
@@ -6292,11 +6426,15 @@ class NaverOrderWorker:
             return None
 
         try:
-            # 화면 캡처
-            screenshot_png = self._get_screenshot()
-            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
-            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
-            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            # 캐시된 화면 이미지가 있으면 재사용, 없으면 캡처
+            if cached_screen_gray is not None and cached_screen_bgr is not None:
+                screen_gray = cached_screen_gray.copy()
+                screen_bgr = cached_screen_bgr
+            else:
+                screenshot_png = self._get_screenshot()
+                screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+                screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+                screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
             screen_h, screen_w = screen_gray.shape
 
             # min_x, max_x, min_y, max_y 제약이 있다면 탐색 영역 밖을 검정색으로 지워서 오탐 방지
