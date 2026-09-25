@@ -72,6 +72,7 @@ IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 
 IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
 IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
 IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
+IMG_BUY_NOW6      = os.path.join(_IMG_DIR, "바로구매6.png")
 IMG_DELIVERY_MEMO = os.path.join(_IMG_DIR, "배송메모.png")   # 배송메모 드롭다운 (단계 16.5)
 IMG_DELIVERY_MEMO2 = os.path.join(_IMG_DIR, "배송메모선택2.png")  # 배송메모 선택 팝업 타이틀
 IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 '선택안함' 옵션
@@ -2026,6 +2027,7 @@ class NaverOrderWorker:
                 (IMG_BUY_NOW2, "바로구매2"),
                 (IMG_BUY_NOW3, "바로구매3"),
                 (IMG_BUY_NOW4, "바로구매4"),
+                (IMG_BUY_NOW6, "바로구매6"),
                 (IMG_BUY_BTN, "구매하기"),
                 (IMG_BUY_BTN2, "구매하기2"),
                 (IMG_BUY_BTN3, "구매하기3"),
@@ -2051,7 +2053,7 @@ class NaverOrderWorker:
                     return True
 
             # 2) 이미지 인식: 하단 영역에서 바로구매/구매하기 템플릿 탐색
-            for thr in (0.65, 0.58, 0.50):
+            for thr in (0.65, 0.58, 0.52, 0.48, 0.45):
                 for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
                         img_path, threshold=thr,
