@@ -1915,24 +1915,30 @@ class NaverOrderWorker:
         """옵션 시트 하단 CTA(바로구매 / 바로 구매 / 구매하기)를 XPath로 클릭"""
         xpaths = [
             '//android.widget.Button[@text="바로구매"]',
+            '//android.widget.Button[@text="구매하기"]',
             '//android.widget.Button[@text="바로 구매"]',
             '//android.widget.Button[contains(@text,"바로구매")]',
+            '//android.widget.Button[contains(@text,"구매하기")]',
             '//android.widget.Button[contains(@text,"바로 구매")]',
             '//*[@content-desc="바로구매"]',
+            '//*[@content-desc="구매하기"]',
             '//*[@content-desc="바로 구매"]',
             '//*[contains(@content-desc,"바로구매")]',
+            '//*[contains(@content-desc,"구매하기")]',
             '//android.view.View[@text="바로구매"]',
+            '//android.view.View[@text="구매하기"]',
             '//android.widget.TextView[@text="바로구매"]',
+            '//android.widget.TextView[@text="구매하기"]',
             '//*[@text="바로구매"]',
+            '//*[@text="구매하기"]',
             '//*[@text="바로 구매"]',
-            '//android.widget.Button[@text="구매하기"]',
         ]
+        left, top, right, bottom = self._visible_bounds()
         seen = set()
         for xpath in xpaths:
             try:
-                if not ah.element_exists(self.driver, xpath, timeout=1):
-                    continue
-                for el in self.driver.find_elements(By.XPATH, xpath):
+                elems = self.driver.find_elements(By.XPATH, xpath)
+                for el in elems:
                     try:
                         rect = el.rect
                     except Exception:
@@ -1948,12 +1954,23 @@ class NaverOrderWorker:
                     if cx < min_x:
                         continue
                     txt = (el.get_attribute("text") or el.get_attribute("content-desc") or "").strip()
-                    if "구매조건" in txt:
+                    if "구매조건" in txt or "장바구니" in txt:
                         continue
-                    if self._safe_click_element(el):
-                        self._log(f"  ✅ 하단 구매 CTA 클릭 (text={txt!r}, x={cx}, y={cy})")
-                        time.sleep(2)
-                        return True
+
+                    safe_x = max(left + 15, min(right - 15, cx))
+                    safe_y = max(top + 15, min(bottom - 15, cy))
+                    self._log(f"  🎯 하단 구매 CTA 발견 (text={txt!r}, x={cx}, y={cy}) → 클릭 시도")
+                    clicked = False
+                    try:
+                        el.click()
+                        clicked = True
+                    except Exception:
+                        pass
+                    if not clicked or not self._soft_tap(safe_x, safe_y, duration_ms=100):
+                        ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
+                    self._log(f"  ✅ 하단 구매 CTA 클릭 완료 (text={txt!r}, x={safe_x}, y={safe_y})")
+                    time.sleep(2)
+                    return True
             except Exception:
                 continue
         return False
@@ -1967,10 +1984,12 @@ class NaverOrderWorker:
             '//*[contains(@text,"결제하기")]',
             '//*[contains(@text,"배송지명")]',
             '//*[contains(@text,"배송메모")]',
+            '//*[contains(@text,"일반결제")]',
+            '//*[contains(@text,"무통장입금")]',
         ]
         for xpath in markers:
             try:
-                if ah.element_exists(self.driver, xpath, timeout=1):
+                if self.driver.find_elements(By.XPATH, xpath):
                     return True
             except Exception:
                 continue
@@ -1983,7 +2002,7 @@ class NaverOrderWorker:
         return False
 
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매 클릭 (XPath 우선 → 하단 이미지만 → 검증)"""
+        """[단계 13] 바로구매 클릭 (XPath 우선 → 이미지 인식 → 우측 하단 CTA 탭 → 검증)"""
         self._set_status("바로구매 클릭")
         time.sleep(1.0)
 
@@ -1995,12 +2014,11 @@ class NaverOrderWorker:
         w_w, w_h = self._get_window_size()
         left, top, right, bottom = self._visible_bounds()
 
-        # CTA는 화면 하단. 중단(y≈1540) 오매칭 방지를 위해 70% 이상으로 제한
-        # 하단 내비게이션 바 / 제스처 영역 초과 방지 (최대 93% 및 bottom - 20)
-        min_y_buynow = int(w_h * 0.70)
-        max_y_buynow = min(int(w_h * 0.93), bottom - 20)
-        min_x_right = max(left + 20, int(w_w * 0.28))
-        max_x_right = min(right - 15, int(w_w * 0.98))
+        # CTA는 화면 하단 영역 (화면 40% 이상, 화면 최하단까지 포함)
+        min_y_buynow = int(w_h * 0.40)
+        max_y_buynow = min(int(w_h * 0.99), bottom)
+        min_x_right = max(left + 15, int(w_w * 0.18))
+        max_x_right = min(right, int(w_w * 0.99))
 
         buy_now_imgs = [
             (p, n) for p, n in (
@@ -2008,25 +2026,32 @@ class NaverOrderWorker:
                 (IMG_BUY_NOW2, "바로구매2"),
                 (IMG_BUY_NOW3, "바로구매3"),
                 (IMG_BUY_NOW4, "바로구매4"),
+                (IMG_BUY_BTN, "구매하기"),
+                (IMG_BUY_BTN2, "구매하기2"),
+                (IMG_BUY_BTN3, "구매하기3"),
+                (IMG_BUY_BTN4, "구매하기4"),
+                (IMG_BUY_BTN5, "구매하기5"),
             ) if os.path.exists(p)
         ]
 
         def _confirm_after_click(label: str) -> bool:
-            time.sleep(3.0)
-            if self._is_order_pay_screen():
-                self._log(f"  ✅ {label} 후 주문/결제 화면 확인")
-                return True
-            self._log(f"  ⚠ {label} 후 주문/결제 화면 미확인 → 오클릭 가능")
+            self._log(f"  ⏳ {label} 클릭 후 화면 전환 대기 중...")
+            for sec in range(1, 8):
+                time.sleep(1.0)
+                if self._is_order_pay_screen():
+                    self._log(f"  ✅ {label} 후 주문/결제 화면 확인 ({sec}초)")
+                    return True
+            self._log(f"  ⚠ {label} 후 주문/결제 화면 미확인")
             return False
 
         for attempt in range(1, 4):
-            # 1) XPath 우선 (하단 CTA만)
+            # 1) XPath 우선 (하단 CTA 버튼 탐색 및 클릭)
             if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=min_x_right):
                 if _confirm_after_click("XPath CTA"):
                     return True
 
-            # 2) 이미지: 하단만, threshold 완화하되 Y는 엄격
-            for thr in (0.65, 0.58, 0.52):
+            # 2) 이미지 인식: 하단 영역에서 바로구매/구매하기 템플릿 탐색
+            for thr in (0.65, 0.58, 0.50):
                 for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
                         img_path, threshold=thr,
@@ -2044,36 +2069,18 @@ class NaverOrderWorker:
                     if _confirm_after_click(img_name):
                         return True
 
-            # 3) 옵션시트 확인이 '구매하기'인 경우 (하단만)
-            for img_path, img_name in (
-                (IMG_BUY_BTN, "구매하기"),
-                (IMG_BUY_BTN2, "구매하기2"),
-                (IMG_BUY_BTN3, "구매하기3"),
-                (IMG_BUY_BTN4, "구매하기4"),
-                (IMG_BUY_BTN5, "구매하기5"),
-            ):
-                if not os.path.exists(img_path):
-                    continue
-                coords = self._find_image_coords(
-                    img_path, threshold=0.70,
-                    min_x=min_x_right, max_x=max_x_right,
-                    min_y=min_y_buynow, max_y=max_y_buynow,
-                )
-                if not coords:
-                    continue
-                safe_x = max(left + 20, min(right - 15, coords[0]))
-                safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
-                self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
-                if not self._soft_tap(safe_x, safe_y, duration_ms=100):
-                    ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
-                self._log(f"✅ 옵션시트 '{img_name}' 이미지 클릭 (바로구매 대체, y={safe_y})")
-                if _confirm_after_click(img_name):
-                    return True
+            # 3) 화면 우측 하단 고정 CTA 좌표 탭 (네이버 쇼핑 공통 초록색 구매 버튼 위치)
+            fallback_x = int(w_w * 0.78)
+            fallback_y = min(int(w_h * 0.94), bottom - 25)
+            self._log(f"  👉 [폴백] 화면 우측 하단 구매 CTA 좌표 탭 시도: ({fallback_x}, {fallback_y})")
+            if not self._soft_tap(fallback_x, fallback_y, duration_ms=100):
+                ah.tap_by_coords(self.driver, fallback_x, fallback_y, self._log)
+            if _confirm_after_click("우측 하단 CTA 좌표 탭"):
+                return True
 
             if attempt < 3:
-                self._log(f"  ⚠ 바로구매 미확인 ({attempt}회차) → 옵션 시트 재오픈 후 재시도")
-                self._click_buy_button()
-                time.sleep(1.2)
+                self._log(f"  ⚠ 바로구매 미확인 ({attempt}회차) → 재시도 대기")
+                time.sleep(1.5)
 
         self._log("  ❌ 바로구매 버튼 미발견/미확인")
         try:
