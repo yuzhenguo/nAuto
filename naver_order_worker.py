@@ -63,6 +63,8 @@ _NUM_DIR = os.path.join(_IMG_DIR, "숫자")
 IMG_SEARCH_INPUT  = os.path.join(_IMG_DIR, "검색입력.png")   # 검색 입력창 (단계 8)
 IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력창 예비용
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
+IMG_MALL_SEARCH   = os.path.join(_IMG_DIR, "검색어를입력해주세요.png")
+IMG_MALL_SEARCH1  = os.path.join(_IMG_DIR, "검색어를입력해주세요1.png")
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
 IMG_CHECKBOX2     = os.path.join(_IMG_DIR, "체크박스2.png")
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
@@ -126,6 +128,12 @@ IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
+IMG_BIRTHDAY1     = os.path.join(_IMG_DIR, "생년월일1.png") # 현대카드 본인인증 팝업
+IMG_BIRTHDAY2     = os.path.join(_IMG_DIR, "생년월일2.png")
+IMG_BIRTHDAY3     = os.path.join(_IMG_DIR, "생년월일3.png")
+
+class BirthdayAuthRequiredError(Exception):
+    pass
 
 # 현대카드 결제 이미지 (단계 22)
 _HYUNDAI_NUM_DIR = os.path.join(_IMG_DIR, "현대숫자")
@@ -1191,6 +1199,194 @@ class NaverOrderWorker:
         except Exception as e:
             self._log(f"  ❌ 검색 버튼 클릭 최종 실패: {e}")
             return False
+
+    # ─── 단계 8.5: 판매자(스토어) 카드 클릭 ────────────────────────────────────
+
+    def _click_store_card(self, seller_name: str) -> bool:
+        """
+        [단계 8.5] 판매자명으로 검색 후 스토어 카드 클릭
+        - 안전 영역에 후: //android.widget.Button[@text="추천순"] 대기 (15초)
+        - basic_product_card_information 안에서 판매자명 + "새 창에서 열림" content-desc 요소 클릭
+        - 3초 대기 후 반환
+        """
+        self._set_status(f"판매자 스토어 진입: {seller_name}")
+        self._log(f"🏪 [단계 8.5] 판매자 스토어 카드 클릭 시작: '{seller_name}'")
+
+        safe_seller = seller_name.replace('"', '').replace("'", '').strip()
+
+        # 1순위: 추천순 버튼 대기 (검색결과 로딩 확인)
+        chk_xpath = '//android.widget.Button[@text="추천순"]'
+        found_chk = False
+        for _ in range(15):
+            if ah.element_exists(self.driver, chk_xpath, timeout=1):
+                found_chk = True
+                break
+            time.sleep(1)
+        if found_chk:
+            self._log("  ✅ '추천순' 버튼 감지 → 검색결과 로딩 완료")
+        else:
+            self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
+
+        # 2순위: basic_product_card_information 내 스토어명 XPath 탐색
+        store_xpaths = [
+            # 판매자명 + "새 창에서 열림" content-desc 보유 View 및 하위 TextView
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]//android.widget.TextView[@text="{safe_seller}"]',
+            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
+            # 판매자명 TextView 직접 탐색
+            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.widget.TextView[@text="{safe_seller}"]',
+            # content-desc만으로 판매자 스토어 View
+            f'//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
+            # 전체 타이틀 포함
+            f'//*[contains(@text, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
+        ]
+
+        for xpath in store_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    el = self.driver.find_element(By.XPATH, xpath)
+                    rect = el.rect
+                    cx = rect['x'] + rect['width'] // 2
+                    cy = rect['y'] + rect['height'] // 2
+                    self._log(f"  🎯 스토어 카드 발견! 좌표 ({cx}, {cy}) [xpath={xpath[:60]}] → 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(3)
+                    return True
+            except Exception as e:
+                self._log(f"  ⚠ XPath 시도 실패: {e}")
+                continue
+
+        self._log(f"  ❌ 스토어 카드 '{safe_seller}' 전체 미발견")
+        return False
+
+    def _open_mall_search_box(self) -> bool:
+        """
+        [단계 8.6] 먽 내 검색창 열기
+        - //android.widget.Button[@text="검색창 펼치기"] 존재 시 클릭
+        - 후 검색어를입력해주세쥰1.png 이미지 매칭 클릭
+        """
+        self._set_status("먽 검색창 오프")
+
+        # 1단계: '검색창 펼치기' 버튼 확인 및 클릭
+        expand_xpath = '//android.widget.Button[@text="검색창 펼치기"]'
+        if ah.element_exists(self.driver, expand_xpath, timeout=4):
+            self._log("  📌 '검색창 펼치기' 버튼 발견 → 클릭")
+            ah.wait_and_click(self.driver, expand_xpath, timeout=4, log_callback=self._log)
+            time.sleep(1.5)
+
+        # 2단계: 검색어를입력해주세쥰1.png 이미지 매칭 클릭
+        if os.path.exists(IMG_MALL_SEARCH1):
+            coords = self._find_image_coords(IMG_MALL_SEARCH1, threshold=0.70)
+            if coords:
+                self._log(f"  🎯 '검색어를입력해주세쥰1' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                time.sleep(1.0)
+                return True
+
+        if os.path.exists(IMG_MALL_SEARCH):
+            coords = self._find_image_coords(IMG_MALL_SEARCH, threshold=0.70)
+            if coords:
+                self._log(f"  🎯 '검색어를입력해주세지' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                time.sleep(1.0)
+                return True
+
+        # 3단계: EditText[@hint] XPath 폴백
+        search_hint_xpaths = [
+            '//android.widget.EditText[@hint="검색어를 입력해주세지"]',
+            '//android.widget.EditText[@hint="검색어 입력"]',
+            '//android.widget.EditText[contains(@hint, "검색")]',
+        ]
+        for xp in search_hint_xpaths:
+            if ah.element_exists(self.driver, xp, timeout=2):
+                el = self.driver.find_element(By.XPATH, xp)
+                rect = el.rect
+                cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
+                self._log(f"  ✅ 검색 EditText 힙트 XPath 발견 ({cx}, {cy}) → 클릭")
+                ah.tap_by_coords(self.driver, cx, cy, self._log)
+                time.sleep(1.0)
+                return True
+
+        self._log("  ⚠ 먽 검색창 오프 미확인 → 계속 진행")
+        return False
+
+    def _click_mall_product(self, product_name: str) -> bool:
+        """
+        [단계 10] 먽 검색결과에서 상품명 매칭 클릭
+        - //android.view.View[@text="상품명"] 또는 contains 매칭
+        """
+        self._set_status(f"먽 상품 클릭: {product_name[:20]}")
+        self._log(f"🔍 [단계 10] 먽 검색결과 상품 클릭: '{product_name}'")
+
+        safe_pname = product_name.replace('"', '').replace("'", '').strip()
+        # 키워드 추출 (코에로 사이를 공백으로 대체 후 분열)
+        keywords = [w.strip() for w in safe_pname.replace(',', ' ').split() if len(w.strip()) >= 2]
+
+        # 1순위: 전체 상품명 완전 일치
+        direct_xpaths = [
+            f'//android.view.View[@text="{safe_pname}"]',
+            f'//android.view.View[contains(@text, "{safe_pname}")]',
+            f'//android.widget.TextView[@text="{safe_pname}"]',
+            f'//android.widget.TextView[contains(@text, "{safe_pname}")]',
+        ]
+        for xpath in direct_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    el = self.driver.find_element(By.XPATH, xpath)
+                    rect = el.rect
+                    cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
+                    self._log(f"  🎯 상품명 일치 발견! ({cx}, {cy}) → 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(3)
+                    return True
+            except Exception:
+                continue
+
+        # 2순위: basic_product_card_information 내 상품명 View
+        card_xpaths = [
+            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[@text="{safe_pname}"]',
+            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[contains(@text, "{safe_pname}")]',
+        ]
+        for xpath in card_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    el = self.driver.find_element(By.XPATH, xpath)
+                    rect = el.rect
+                    cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
+                    self._log(f"  🎯 카드 내 상품명 발견! ({cx}, {cy}) → 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(3)
+                    return True
+            except Exception:
+                continue
+
+        # 3순위: 키워드 일치 기반 스코어링 (content-desc 포함)
+        try:
+            all_views = self.driver.find_elements(By.XPATH, '//android.view.View | //android.widget.TextView')
+            best_el, best_score = None, 0
+            for v in all_views:
+                try:
+                    txt = (v.get_attribute("text") or v.get_attribute("content-desc") or "").strip()
+                    if not txt or len(txt) < 5:
+                        continue
+                    matched = sum(1 for kw in keywords if kw.lower() in txt.lower())
+                    if matched > best_score:
+                        best_score = matched
+                        best_el = v
+                except Exception:
+                    pass
+
+            if best_el and best_score >= max(1, len(keywords) // 2):
+                rect = best_el.rect
+                cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
+                self._log(f"  🎯 키워드 스코어 {best_score}/{len(keywords)} 일치 클릭: ({cx}, {cy})")
+                ah.tap_by_coords(self.driver, cx, cy, self._log)
+                time.sleep(3)
+                return True
+        except Exception as e:
+            self._log(f"  ⚠ 키워드 스코어 탐색 실패: {e}")
+
+        self._log(f"  ❌ 먽 상품 '{safe_pname}' 미발견")
+        return False
 
     # ─── 단계 10: 상품 매칭 클릭 ────────────────────────────────────────────
 
@@ -5568,6 +5764,9 @@ class NaverOrderWorker:
             self._log("❌ [22-5] 결재하기 클릭 실패")
             return False
 
+        # --- 1차 비번 입력 전 생년월일 확인 ---
+        self._check_birthday_auth()
+
         # 22-6 현대핀1~5.png 클릭 (PIN번호 결제 버튼), 이후 최대 8초 대기
         pin_btn_clicked = self._click_any_image_basic(IMG_HYUNDAI_PIN_BTN, threshold=0.70, attempts=6, wait_after=2.0)
         if not pin_btn_clicked:
@@ -5644,6 +5843,9 @@ class NaverOrderWorker:
             self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
             return False
 
+        # --- 2차 비번 입력 전 생년월일 확인 ---
+        self._check_birthday_auth()
+
         # 22-11a 현대카드비번1~7 클릭 → 22-11b 2차페이지1~3 인식 → 입력란 포커스
         if not self._focus_hyundai_card_pw4_field():
             self._log("❌ [22-11] 현대카드비번 클릭 또는 2차페이지 진입 실패")
@@ -5658,6 +5860,9 @@ class NaverOrderWorker:
             self._log("❌ [22-12] 2차비밀번호 4자리 입력 실패")
             return False
 
+        # --- 2차 비번 입력 후 생년월일 확인 ---
+        self._check_birthday_auth()
+
         # 22-13 완료/확인
         if not self._click_hyundai_pw_confirm():
             self._log("❌ [22-13] 완료/확인 버튼 미발견")
@@ -5667,6 +5872,14 @@ class NaverOrderWorker:
 
         # 22-14 주문완료 확인
         return self._verify_hyundai_order_complete()
+
+    def _check_birthday_auth(self):
+        """생년월일1~3.png 감지 시 BirthdayAuthRequiredError 예외 발생"""
+        for img in [IMG_BIRTHDAY1, IMG_BIRTHDAY2, IMG_BIRTHDAY3]:
+            if os.path.exists(img):
+                if self._find_image_coords(img, threshold=0.65):
+                    self._log(f"🚨 [본인인증 감지] {os.path.basename(img)} 발견됨!")
+                    raise BirthdayAuthRequiredError("생년월일(본인인증) 화면 감지")
 
     # ─── 주문 루프 ────────────────────────────────────────────────────────────
 
@@ -5744,8 +5957,31 @@ class NaverOrderWorker:
                 self.has_dismissed_payment_benefit = False
 
                 try:
-                    # 23. 실패 시 재작업하지 않음 (1회만 시도)
+                    # 1회 시도
                     success = self._process_order_with_timeout(row)
+                except BirthdayAuthRequiredError:
+                    self._log("⚠ [본인인증 감지] 1회차 실패, 해당 주문을 재작업(처음부터)합니다.")
+                    try:
+                        success = self._process_order_with_timeout(row)
+                    except BirthdayAuthRequiredError:
+                        self._log("❌ [본인인증 감지] 2회차 연속 본인인증 요구됨 -> 상태값 '현대카드 본인인증' 처리")
+                        self.order_manager._update_status(row.row_index, "현대카드 본인인증")
+                        self.current_row = None
+                        self._log("⏹ 작업 종료")
+                        break
+                    except Exception as fatal_err2:
+                        if self._stop_event.is_set():
+                            self.order_manager.mark_cancelled(row.row_index)
+                            self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
+                        elif self._is_connection_refused(fatal_err2):
+                            self._mark_conn_failed(row, "대상 컴퓨터 연결 거부")
+                        elif self._is_driver_session_error(fatal_err2):
+                            self._mark_driver_error(row, "세션 소실")
+                        else:
+                            self.order_manager.mark_failed(row.row_index)
+                            self._log(f"❌ 치명적 오류 (2회차): {fatal_err2}")
+                        self.current_row = None
+                        raise
                 except Exception as fatal_err:
                     if self._stop_event.is_set():
                         self.order_manager.mark_cancelled(row.row_index)
@@ -5884,6 +6120,8 @@ class NaverOrderWorker:
                 "WinError 10061",
             ]
             err_str = str(exception[0])
+            if isinstance(exception[0], BirthdayAuthRequiredError):
+                raise exception[0]
             if self._is_connection_refused(exception[0]):
                 self._log(f"❌ 처리 중 예외: {err_one}")
                 self._log("🔴 [연결실패] 대상 컴퓨터 연결 거부 감지 → H 기록 후 재연결")
@@ -5912,19 +6150,39 @@ class NaverOrderWorker:
             self._log("❌ 검색 버튼 클릭 실패")
             return False
 
-        # [단계 8] 검색어 입력
-        if not self._input_search_keyword(row.search_keyword):
-            self._log("❌ 검색어 입력 실패")
+        # [단계 8] 판매자명(스토어명)으로 검색어 입력
+        # 검색어(엑셀 search_keyword)를 판매자명으로 대체하여 검색
+        seller_search_kw = row.seller_name if row.seller_name else row.search_keyword
+        if not self._input_search_keyword(seller_search_kw):
+            self._log("❌ 판매자명 검색어 입력 실패")
             return False
 
-        # [단계 9] 검색 실행
+        # [단계 9] 검색 실행 (엔터)
         if not self._click_search_button():
-            self._log("❌ 검색 실행 실패")
+            self._log("❌ 판매자명 검색 실행 실패")
             return False
 
-        # [단계 10] 상품 매칭 클릭
-        if not self._click_product(row.seller_name, row.product_name):
-            self._log("❌ 상품 매칭 실패")
+        # [단계 8.5] 판매자 스토어 카드 클릭
+        if not self._click_store_card(row.seller_name if row.seller_name else row.search_keyword):
+            self._log("❌ 스토어 카드 클릭 실패")
+            return False
+
+        # [단계 8.6~8.7] '검색창 펼치기' + '검색어를입력해주세쥰1.png' 클릭
+        self._open_mall_search_box()
+
+        # [단계 9.5] 엑셀 search_keyword()진짜 검색어)를 먽 검색상자에 입력
+        if not self._input_search_keyword(row.search_keyword):
+            self._log("❌ 먽 검색어 입력 실패")
+            return False
+
+        # [단계 9.6] 먽 검색 실행 (엔터)
+        if not self._click_search_button():
+            self._log("❌ 먽 검색 실행 실패")
+            return False
+
+        # [단계 10] 먽 검색결과에서 상품명 클릭
+        if not self._click_mall_product(row.product_name):
+            self._log("❌ 먽 상품 매칭 실패")
             return False
 
         # [단계 11] 구매하기 버튼
