@@ -795,8 +795,11 @@ class NaverOrderWorker:
                         actual_login_id = matches[0]
                         self._log(f"  ℹ 아이디 오타 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
                     else:
+                        # 접두사 보정: 8자 이상 동일할 때만 매칭 (wang_ 등 짧은 공통 prefix 오탐 방지)
+                        prefix_len = 8
                         for aid in available_ids:
-                            if aid.startswith(login_id[:4]) or login_id.startswith(aid[:4]):
+                            if (len(aid) >= prefix_len and len(login_id) >= prefix_len
+                                    and (aid.startswith(login_id[:prefix_len]) or login_id.startswith(aid[:prefix_len]))):
                                 actual_login_id = aid
                                 self._log(f"  ℹ 아이디 접두사 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
                                 break
@@ -836,12 +839,19 @@ class NaverOrderWorker:
                         continue
                     for cid in [login_id, actual_login_id]:
                         sim = _difflib.SequenceMatcher(None, cid, raw_id).ratio()
-                        if sim >= 0.75 or raw_id.startswith(cid[:5]) or cid.startswith(raw_id[:5]):
+                        # 유사도 0.85 이상이거나, 8자 이상 동일 접두사일 때만 같은 계정으로 판정
+                        # (wang_ 등 짧은 공통 prefix 오탐 방지)
+                        prefix_len = 8
+                        prefix_match = (
+                            len(cid) >= prefix_len and len(raw_id) >= prefix_len
+                            and (raw_id.startswith(cid[:prefix_len]) or cid.startswith(raw_id[:prefix_len]))
+                        )
+                        if sim >= 0.85 or prefix_match:
                             actual_login_id = raw_id
                             already_logged_in = True
                             self._log(
                                 f"  ✅ [단계 3.2] 계정 [{raw_id}] 이미 '로그인 중' 상태임"
-                                f" (유사도 {sim:.2f}, 입력 아이디: {cid})"
+                                f" (유사도 {sim:.2f}, 접두사매칭={prefix_match}, 입력 아이디: {cid})"
                             )
                             break
                     if already_logged_in:
@@ -3345,7 +3355,7 @@ class NaverOrderWorker:
                             if allow_scroll_up:
                                 self._log(f"  📌 {name} 상단 치우침(y={coords[1]}) -> 미세 스크롤 업")
                                 self._scroll_up(distance_ratio=0.18)
-                                time.sleep(1.0)
+                                time.sleep(0.5)
                                 adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                                 if adj:
                                     coords = adj
@@ -3357,7 +3367,7 @@ class NaverOrderWorker:
                         elif coords[1] > int(w_h * 0.94):
                             self._log(f"  📌 {name} 하단 끝 치우침(y={coords[1]}) -> 미세 스크롤 다운")
                             self._scroll_down(distance_ratio=0.12)
-                            time.sleep(1.0)
+                            time.sleep(0.5)
                             adj = self._find_image_coords(img_path, threshold=threshold, min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y)
                             if adj:
                                 coords = adj
@@ -3371,7 +3381,7 @@ class NaverOrderWorker:
 
             self._log(f"  ⬇ [{names_str}] 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.8)
+            time.sleep(0.4)
         self._log(f"  ❌ [{names_str}] 버튼 모두 탐색 실패")
         return False
 
@@ -3641,22 +3651,22 @@ class NaverOrderWorker:
         mid_bottom = int(w_h * 0.65)
 
         for attempt in range(1, max_scroll_attempts + 1):
-            # 1. 이미지 매칭 (threshold 0.70)
+            # 1. 이미지 매칭 (threshold 0.60으로 완화 → 더 빠른 인식)
             for img_path, name in bank_images:
                 if os.path.exists(img_path):
-                    coords = self._find_image_coords(img_path, threshold=0.70)
+                    coords = self._find_image_coords(img_path, threshold=0.60)
                     if coords:
                         if coords[1] < mid_top:
                             self._log(f"  📌 {name} 상단 치우침 -> 미세 스크롤 업")
                             self._scroll_up(distance_ratio=0.18)
-                            time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=0.70)
+                            time.sleep(0.5)
+                            adj = self._find_image_coords(img_path, threshold=0.60)
                             if adj: coords = adj
                         elif coords[1] > mid_bottom:
                             self._log(f"  📌 {name} 하단 치우침 -> 미세 스크롤 다운")
                             self._scroll_down(distance_ratio=0.18)
-                            time.sleep(1.0)
-                            adj = self._find_image_coords(img_path, threshold=0.70)
+                            time.sleep(0.5)
+                            adj = self._find_image_coords(img_path, threshold=0.60)
                             if adj: coords = adj
 
                         self._log(f"  🎯 {name} 이미지 발견! 화면 중앙 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭 및 존재 확인 성공")
@@ -3664,10 +3674,10 @@ class NaverOrderWorker:
                         time.sleep(1)
                         return True
 
-            # 2. XPath 매칭 폴백
+            # 2. XPath 매칭 폴백 (timeout 0.5초로 단축)
             for xpath in bank_xpaths:
                 try:
-                    if ah.element_exists(self.driver, xpath, timeout=1):
+                    if ah.element_exists(self.driver, xpath, timeout=0.5):
                         self._log(f"  🎯 은행 선택 XPath 발견: {xpath} -> 클릭 및 존재 확인 성공")
                         el = self.driver.find_element(By.XPATH, xpath)
                         if self._safe_click_element(el):
@@ -3678,7 +3688,7 @@ class NaverOrderWorker:
 
             self._log(f"  ⬇ '은행을' 미발견 -> 미세 스크롤 다운 ({attempt}/{max_scroll_attempts})")
             self._scroll_down(distance_ratio=0.20)
-            time.sleep(0.8)
+            time.sleep(0.4)
 
         self._log(f"  ⚠ 무통장입금 클릭 후 '은행을' 미발견 (최대 {max_scroll_attempts}회 시도 초과). 무시하고 계속 진행합니다.")
         return True

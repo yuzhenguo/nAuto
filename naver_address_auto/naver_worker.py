@@ -799,8 +799,11 @@ class NaverWorker:
                         actual_login_id = matches[0]
                         self._log(f"  ℹ 아이디 오타 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
                     else:
+                        # 접두사 보정: 8자 이상 동일할 때만 매칭 (wang_ 등 짧은 공통 prefix 오탐 방지)
+                        prefix_len = 8
                         for aid in available_ids:
-                            if aid.startswith(login_id[:4]) or login_id.startswith(aid[:4]):
+                            if (len(aid) >= prefix_len and len(login_id) >= prefix_len
+                                    and (aid.startswith(login_id[:prefix_len]) or login_id.startswith(aid[:prefix_len]))):
                                 actual_login_id = aid
                                 self._log(f"  ℹ 아이디 접두사 보정: '{login_id}' -> '{actual_login_id}' 로 매칭됨")
                                 break
@@ -840,12 +843,19 @@ class NaverWorker:
                         continue
                     for cid in [login_id, actual_login_id]:
                         sim = _difflib.SequenceMatcher(None, cid, raw_id).ratio()
-                        if sim >= 0.75 or raw_id.startswith(cid[:5]) or cid.startswith(raw_id[:5]):
+                        # 유사도 0.85 이상이거나, 8자 이상 동일 접두사일 때만 같은 계정으로 판정
+                        # (wang_ 등 짧은 공통 prefix 오탐 방지)
+                        prefix_len = 8
+                        prefix_match = (
+                            len(cid) >= prefix_len and len(raw_id) >= prefix_len
+                            and (raw_id.startswith(cid[:prefix_len]) or cid.startswith(raw_id[:prefix_len]))
+                        )
+                        if sim >= 0.85 or prefix_match:
                             actual_login_id = raw_id
                             already_logged_in = True
                             self._log(
                                 f"  ✅ [단계 3.2] 계정 [{raw_id}] 이미 '로그인 중' 상태임"
-                                f" (유사도 {sim:.2f}, 입력 아이디: {cid})"
+                                f" (유사도 {sim:.2f}, 접두사매칭={prefix_match}, 입력 아이디: {cid})"
                             )
                             break
                     if already_logged_in:
@@ -881,8 +891,11 @@ class NaverWorker:
                                 actual_login_id = matches[0]
                                 self._log(f"  ℹ 아이디 유사 보정 (스크롤 {scroll_idx+1}): '{login_id}' -> '{actual_login_id}'")
                             else:
+                                # 접두사 보정: 8자 이상 동일할 때만 매칭 (wang_ 등 짧은 공통 prefix 오탐 방지)
+                                prefix_len = 8
                                 for aid in available_ids:
-                                    if aid.startswith(login_id[:3]) or login_id.startswith(aid[:3]):
+                                    if (len(aid) >= prefix_len and len(login_id) >= prefix_len
+                                            and (aid.startswith(login_id[:prefix_len]) or login_id.startswith(aid[:prefix_len]))):
                                         actual_login_id = aid
                                         self._log(f"  ℹ 아이디 접두사 보정 (스크롤 {scroll_idx+1}): '{login_id}' -> '{actual_login_id}'")
                                         break
