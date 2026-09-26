@@ -80,6 +80,7 @@ IMG_CHECKBOX_TEMPLATES = [
 # 미체크 박스는 #F5F7FA 연한 회색 → 흰 배경과 대비 약함. 0.78은 놓치기 쉬워 0.70~0.80 사용
 CHECKBOX_MATCH_THRESHOLDS = (0.80, 0.75, 0.70)
 IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기 화살표
+IMG_ARROW2        = os.path.join(_IMG_DIR, "화살표2.png")    # 옵션 펼치기 화살표2
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
@@ -2226,14 +2227,18 @@ class NaverOrderWorker:
                 return False
             region = self._option_checkbox_region()
             arrow = None
-            if os.path.exists(IMG_ARROW):
-                arrow = self._find_image_coords(
-                    IMG_ARROW, threshold=0.70,
-                    min_x=int(region["w"] * 0.20),
-                    max_x=int(region["w"] * 0.98),
-                    min_y=region["min_y"],
-                    max_y=region["max_y"],
-                )
+            for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
+                if os.path.exists(arrow_tmpl):
+                    arrow = self._find_image_coords(
+                        arrow_tmpl, threshold=0.70,
+                        min_x=int(region["w"] * 0.20),
+                        max_x=int(region["w"] * 0.98),
+                        min_y=region["min_y"],
+                        max_y=region["max_y"],
+                    )
+                    if arrow:
+                        self._log(f"  🎯 화살표 발견! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
+                        break
             if not arrow:
                 self._log(f"  ℹ 화살표 미감지 → {n}번째 이후 옵션 펼치기 종료")
                 break

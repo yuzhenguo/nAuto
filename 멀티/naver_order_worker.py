@@ -80,6 +80,7 @@ IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
 IMG_BUY_NOW3      = os.path.join(_IMG_DIR, "바로구매3.png")
 IMG_BUY_NOW4      = os.path.join(_IMG_DIR, "바로구매4.png")
 IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기
+IMG_ARROW2        = os.path.join(_IMG_DIR, "화살표2.png")    # 옵션 펼치기2
 IMG_CART1         = os.path.join(_IMG_DIR, "장바구니1.png")  # 장바구니 담기
 IMG_CART2         = os.path.join(_IMG_DIR, "장바구니2.png")
 IMG_CART3         = os.path.join(_IMG_DIR, "장바구니3.png")
@@ -1683,14 +1684,18 @@ class NaverOrderWorker:
                 return False
             region = self._option_checkbox_region()
             arrow = None
-            if os.path.exists(IMG_ARROW):
-                arrow = self._find_image_coords(
-                    IMG_ARROW, threshold=0.70,
-                    min_x=int(region["w"] * 0.20),
-                    max_x=int(region["w"] * 0.98),
-                    min_y=region["min_y"],
-                    max_y=region["max_y"],
-                )
+            for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
+                if os.path.exists(arrow_tmpl):
+                    arrow = self._find_image_coords(
+                        arrow_tmpl, threshold=0.70,
+                        min_x=int(region["w"] * 0.20),
+                        max_x=int(region["w"] * 0.98),
+                        min_y=region["min_y"],
+                        max_y=region["max_y"],
+                    )
+                    if arrow:
+                        self._log(f"  🎯 화살표 발견! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
+                        break
             if not arrow:
                 self._log(f"  ℹ 화살표 미감지 → {n}번째 이후 옵션 펼치기 종료")
                 break
