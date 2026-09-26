@@ -79,9 +79,14 @@ IMG_CHECKBOX_TEMPLATES = [
 ]
 # 미체크 박스는 #F5F7FA 연한 회색 → 흰 배경과 대비 약함. 0.78은 놓치기 쉬워 0.70~0.80 사용
 CHECKBOX_MATCH_THRESHOLDS = (0.80, 0.75, 0.70)
-IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기 화살표
-IMG_ARROW2        = os.path.join(_IMG_DIR, "화살표2.png")    # 옵션 펼치기 화살표2
-IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
+IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기 화살표 (폴백)
+IMG_ARROW2        = os.path.join(_IMG_DIR, "화살표2.png")    # 옵션 펼치기 화살표2 (폴백)
+IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트
+IMG_OPTION_SELECT2 = os.path.join(_IMG_DIR, "옵션선택2.png")  # 옵션 선택 텍스트 변형
+IMG_OPTION_SELECT_TEMPLATES = [
+    (IMG_OPTION_SELECT, "옵션 선택"),
+    (IMG_OPTION_SELECT2, "옵션선택2"),
+]
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
 IMG_BUY_NOW2      = os.path.join(_IMG_DIR, "바로구매2.png")
@@ -2056,6 +2061,70 @@ class NaverOrderWorker:
             return None
         return cx, cy, float(best_score)
 
+    def _find_option_select_coords(self, w_h: int = 2400, w_w: int = 1080):
+        """옵션 선택.png / 옵션선택2.png 인식 → (x, y, name) 또는 None."""
+        min_y = int(w_h * 0.08)
+        max_y = int(w_h * 0.75)
+        best = None
+        for thr in (0.70, 0.62, 0.55):
+            for path, name in IMG_OPTION_SELECT_TEMPLATES:
+                if not os.path.exists(path):
+                    continue
+                coords = self._find_image_coords(
+                    path, threshold=thr, min_y=min_y, max_y=max_y,
+                )
+                if not coords:
+                    continue
+                cx, cy = coords
+                if best is None or cy < best[1]:
+                    best = (cx, cy, name, thr)
+            if best:
+                break
+        if not best:
+            return None
+        self._log(
+            f"  🎯 {best[2]} 이미지 발견 thr={best[3]:.2f} 좌표: ({best[0]}, {best[1]})"
+        )
+        return best[0], best[1], best[2]
+
+    def _click_option_dropdown_by_label(self, region: dict, first_cy=None) -> bool:
+        """옵션 선택.png/옵션선택2.png 좌표 기준으로 바로 아래 드롭다운 클릭.
+
+        첨부 화면: '옵션 선택 (필수) *' 바로 아래 '옵션 필수선택' 박스.
+        화살표 이미지 인식은 사용하지 않음.
+        """
+        w_w, w_h = region["w"], region["h"]
+        max_cta_y = int(w_h * 0.78)
+
+        opt = self._find_option_select_coords(w_h=w_h, w_w=w_w)
+        if opt:
+            ox, oy, name = opt
+            tap_x = int(w_w * 0.88)
+            tap_y = min(oy + int(w_h * 0.045), oy + 140, max_cta_y)
+            self._log(
+                f"  👉 [{name}] 좌표 기준 드롭다운 클릭 "
+                f"기준=({ox},{oy}) → 탭=({tap_x},{tap_y})"
+            )
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            return True
+
+        opt_y = region.get("opt_y")
+        if opt_y:
+            tap_x = int(w_w * 0.88)
+            tap_y = min(opt_y + int(w_h * 0.045), opt_y + 140, max_cta_y)
+            self._log(f"  👉 옵션선택 y 폴백 드롭다운 클릭 ({tap_x}, {tap_y})")
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            return True
+
+        if first_cy:
+            tap_x = int(w_w * 0.88)
+            self._log(f"  👉 1행 y 폴백 드롭다운 클릭 ({tap_x}, {first_cy})")
+            ah.tap_by_coords(self.driver, tap_x, first_cy, self._log)
+            return True
+
+        self._log("  ⚠ 옵션 선택.png/옵션선택2.png 미발견 → 드롭다운 클릭 실패")
+        return False
+
     def _option_checkbox_region(self):
         """옵션선택~배송정보 사이 체크박스 탐색 영역."""
         w_h, w_w = 2400, 1080
@@ -2066,10 +2135,9 @@ class NaverOrderWorker:
             pass
 
         opt_y = del_y = None
-        if os.path.exists(IMG_OPTION_SELECT):
-            opt_coords = self._find_image_coords(IMG_OPTION_SELECT, threshold=0.70)
-            if opt_coords:
-                opt_y = opt_coords[1]
+        opt = self._find_option_select_coords(w_h=w_h, w_w=w_w)
+        if opt:
+            opt_y = opt[1]
         if os.path.exists(IMG_DELIVERY_INFO):
             del_coords = self._find_image_coords(IMG_DELIVERY_INFO, threshold=0.70)
             if del_coords:
@@ -2216,9 +2284,19 @@ class NaverOrderWorker:
                 self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
 
         if not boxes:
-            self._log("  ⚠ 체크박스 없음 → 건너뜀")
-            self._log("✅ 옵션 체크박스 처리 완료")
-            return True
+            self._log("  ⚠ 체크박스 없음 → 옵션선택 좌표로 드롭다운 먼저 펼침")
+            self._click_option_dropdown_by_label(region, first_cy=None)
+            time.sleep(1.4)
+            region = self._option_checkbox_region()
+            for thr in CHECKBOX_MATCH_THRESHOLDS:
+                boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+                if boxes:
+                    self._log(f"  ℹ 펼친 후 체크박스 {len(boxes)}개 인식 (threshold={thr:.2f})")
+                    break
+            if not boxes:
+                self._log("  ⚠ 드롭다운 클릭 후에도 체크박스 미검출 → 건너뜀")
+                self._log("✅ 옵션 체크박스 처리 완료")
+                return True
 
         # ── 1번째 체크박스 탭 ──
         first_cx, first_cy, first_score = boxes[0]
@@ -2226,66 +2304,17 @@ class NaverOrderWorker:
         self._soft_tap(first_cx, first_cy, duration_ms=180)
         time.sleep(1.0)
 
-        # ── 화살표 클릭 (무조건 실행) ──
-        arrow_min_x = int(region["w"] * 0.80)
-        arrow_max_x = int(region["w"] * 0.98)
-        arrow = None
-
-        # 화살표는 '옵션선택' 헤더 바로 아래 행에 있음
-        # opt_y 기반으로 탐색 max_y 제한 (아래 '최대할인가 ∨' 화살표 오인식 방지)
-        opt_y = region.get("opt_y")
-        if opt_y:
-            arrow_max_y = min(region["max_y"], opt_y + 350)
-        else:
-            arrow_max_y = min(region["max_y"], first_cy + 120)
-        arrow_min_y = region["min_y"]
-        self._log(f"  ℹ 화살표 탐색 범위: y={arrow_min_y}~{arrow_max_y} (옵션선택 y={opt_y})")
-
-        # 1) 1번째 체크박스 Y좌표 근처 우선 탐색 (좁은 범위)
-        near_min_y = max(arrow_min_y, first_cy - 80)
-        near_max_y = min(arrow_max_y, first_cy + 80)
-        for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
-            if os.path.exists(arrow_tmpl):
-                arrow = self._find_image_coords(
-                    arrow_tmpl, threshold=0.58,
-                    min_x=arrow_min_x, max_x=arrow_max_x,
-                    min_y=near_min_y, max_y=near_max_y,
-                )
-                if arrow:
-                    self._log(f"  🎯 화살표 발견(행 부근)! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
-                    break
-
-        # 2) opt_y 제한 범위 내 전체 우측 탐색
-        if not arrow:
-            for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
-                if os.path.exists(arrow_tmpl):
-                    arrow = self._find_image_coords(
-                        arrow_tmpl, threshold=0.58,
-                        min_x=arrow_min_x, max_x=arrow_max_x,
-                        min_y=arrow_min_y, max_y=arrow_max_y,
-                    )
-                    if arrow:
-                        self._log(f"  🎯 화살표 발견! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
-                        break
-
-        # 3) 화살표 클릭 (이미지 미인식 시 폴백: 1번째 행 우측 끝)
-        if arrow:
-            self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]})")
-            ah.tap_by_coords(self.driver, arrow[0], arrow[1], self._log)
-        else:
-            fallback_x = int(region["w"] * 0.93)
-            self._log(f"  👉 화살표 미인식 → 폴백 클릭 ({fallback_x}, {first_cy})")
-            ah.tap_by_coords(self.driver, fallback_x, first_cy, self._log)
-
+        # ── 옵션선택 이미지 좌표 기준 드롭다운 클릭 (화살표 인식 안 함) ──
+        self._click_option_dropdown_by_label(region, first_cy=first_cy)
         time.sleep(1.2)
 
-        # ── 화살표 클릭 후 2번째 체크박스 탐색 및 탭 ──
+        # ── 드롭다운 클릭 후 2번째 체크박스 탐색 및 탭 ──
         region = self._option_checkbox_region()
         boxes2 = []
         for thr in CHECKBOX_MATCH_THRESHOLDS:
             boxes2 = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
             if boxes2:
-                self._log(f"  ℹ 화살표 클릭 후 체크박스 {len(boxes2)}개 인식 (threshold={thr:.2f})")
+                self._log(f"  ℹ 드롭다운 클릭 후 체크박스 {len(boxes2)}개 인식 (threshold={thr:.2f})")
                 break
 
         if len(boxes2) >= 2:
@@ -2299,7 +2328,7 @@ class NaverOrderWorker:
             self._soft_tap(cx2, cy2, duration_ms=180)
             time.sleep(1.0)
         else:
-            self._log("  ⚠ 화살표 클릭 후 체크박스 미감지")
+            self._log("  ⚠ 드롭다운 클릭 후 체크박스 미감지")
 
         self._log("✅ 옵션 체크박스 처리 완료")
         return True
