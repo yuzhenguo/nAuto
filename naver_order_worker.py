@@ -65,9 +65,19 @@ IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_MALL_SEARCH   = os.path.join(_IMG_DIR, "검색어를입력해주세요.png")
 IMG_MALL_SEARCH1  = os.path.join(_IMG_DIR, "검색어를입력해주세요1.png")
+IMG_REVIEW_SORT   = os.path.join(_IMG_DIR, "리뷰많은순.png")   # 리뷰많은순 정렬 팝업 전체
+IMG_REVIEW_SORT1  = os.path.join(_IMG_DIR, "리뷰많은순1.png")  # 리뷰많은순 선택 항목
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
 IMG_CHECKBOX2     = os.path.join(_IMG_DIR, "체크박스2.png")
 IMG_CHECKBOX4     = os.path.join(_IMG_DIR, "체크박스4.png")
+IMG_CHECKBOX5     = os.path.join(_IMG_DIR, "체크5.png")
+IMG_CHECKBOX6     = os.path.join(_IMG_DIR, "체크6.png")
+IMG_CHECKBOX_TEMPLATES = [
+    IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX, IMG_CHECKBOX5, IMG_CHECKBOX6,
+]
+# 미체크 박스는 #F5F7FA 연한 회색 → 흰 배경과 대비 약함. 0.78은 놓치기 쉬워 0.70~0.80 사용
+CHECKBOX_MATCH_THRESHOLDS = (0.80, 0.75, 0.70)
+IMG_ARROW         = os.path.join(_IMG_DIR, "화살표.png")     # 옵션 펼치기 화살표
 IMG_OPTION_SELECT = os.path.join(_IMG_DIR, "옵션 선택.png")  # 옵션 선택 텍스트 (체크박스 위)
 IMG_DELIVERY_INFO = os.path.join(_IMG_DIR, "배송정보.png")  # 배송정보 텍스트 (체크박스 아래)
 IMG_BUY_NOW       = os.path.join(_IMG_DIR, "바로구매.png")   # 바로구매 버튼 (단계 13)
@@ -1214,7 +1224,7 @@ class NaverOrderWorker:
 
         safe_seller = seller_name.replace('"', '').replace("'", '').strip()
 
-        # 1순위: 추천순 버튼 대기 (검색결과 로딩 확인)
+        # 1순위: 추천순 버튼 대기 (검색결과 로딩 확인) → 클릭 후 리뷰많은순 선택
         chk_xpath = '//android.widget.Button[@text="추천순"]'
         found_chk = False
         for _ in range(15):
@@ -1223,7 +1233,31 @@ class NaverOrderWorker:
                 break
             time.sleep(1)
         if found_chk:
-            self._log("  ✅ '추천순' 버튼 감지 → 검색결과 로딩 완료")
+            self._log("  ✅ '추천순' 버튼 감지 → 클릭하여 정렬 팝업 열기")
+            try:
+                ah.wait_and_click(self.driver, chk_xpath, timeout=3, log_callback=self._log)
+                time.sleep(1.2)
+            except Exception as _e:
+                self._log(f"  ⚠ '추천순' 클릭 실패: {_e}")
+
+            # 리뷰많은순1.png 이미지 인식 → 클릭
+            _clicked_review = False
+            if os.path.exists(IMG_REVIEW_SORT1):
+                _coords = self._find_image_coords(IMG_REVIEW_SORT1, threshold=0.70)
+                if _coords:
+                    self._log(f"  🎯 '리뷰많은순1' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
+                    time.sleep(1.5)
+                    _clicked_review = True
+            if not _clicked_review and os.path.exists(IMG_REVIEW_SORT):
+                _coords = self._find_image_coords(IMG_REVIEW_SORT, threshold=0.70)
+                if _coords:
+                    self._log(f"  🎯 '리뷰많은순' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
+                    time.sleep(1.5)
+                    _clicked_review = True
+            if not _clicked_review:
+                self._log("  ⚠ 리뷰많은순 이미지 미감지 → 정렬 변경 없이 계속 진행")
         else:
             self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
 
@@ -1956,12 +1990,8 @@ class NaverOrderWorker:
             return None
         return cx, cy, float(best_score)
 
-    def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 체크박스2/4/원본 중 인식률이 가장 높은 것을,
-        옵션선택과 배송정보 사이(왼쪽 열)에서만 찾아 클릭."""
-        self._set_status("체크박스/옵션 선택")
-        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중...")
-
+    def _option_checkbox_region(self):
+        """옵션선택~배송정보 사이 체크박스 탐색 영역."""
         w_h, w_w = 2400, 1080
         try:
             size = self.driver.get_window_size()
@@ -1979,8 +2009,6 @@ class NaverOrderWorker:
             if del_coords:
                 del_y = del_coords[1]
 
-        # 옵션선택 라벨·'옵션 필수선택' 헤더를 건너뛴 뒤 ~ 배송정보 직전
-        # = 화살표가 가리키는 옵션 행 체크박스 간격
         header_skip = max(85, int(w_h * 0.036))
         if opt_y and del_y and opt_y < del_y:
             min_y_check = opt_y + header_skip
@@ -2001,119 +2029,171 @@ class NaverOrderWorker:
             max_y_check = int(w_h * 0.82)
             self._log("  ⚠ 옵션선택 미검출 → 화면 하단 시트로 제한")
 
-        min_x_check = 0
-        max_x_check = int(w_w * 0.22)
+        return {
+            "w": w_w, "h": w_h,
+            "min_x": 0, "max_x": int(w_w * 0.22),
+            "min_y": min_y_check, "max_y": max_y_check,
+            "opt_y": opt_y, "del_y": del_y,
+        }
 
-        checkbox_imgs = [
-            p for p in (IMG_CHECKBOX2, IMG_CHECKBOX4, IMG_CHECKBOX) if os.path.exists(p)
-        ]
+    def _find_all_checkbox_hits(self, region: dict, max_n: int = 5, min_score: float = 0.70):
+        """구간 내 체크박스를 위에서부터 최대 max_n개 반환 [(cx,cy,score), ...].
+
+        미체크 박스는 #F5F7FA 계열 연한 회색이라 흰 배경에서 그레이스케일 대비가 약하다.
+        그레이 + 컬러 매칭을 함께 쓰고, threshold는 0.70~0.80.
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+        except ImportError:
+            return []
+
+        checkbox_imgs = [p for p in IMG_CHECKBOX_TEMPLATES if os.path.exists(p)]
         if not checkbox_imgs:
-            self._log("  ⚠ 체크박스 템플릿 파일 없음")
-            return True
+            return []
 
-        min_score = 0.78
+        png = self._get_screenshot()
+        pil = Image.open(io.BytesIO(png))
+        screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+        sh, sw = screen_gray.shape
+        min_x, max_x = region["min_x"], region["max_x"]
+        min_y, max_y = region["min_y"], region["max_y"]
 
-        def _pick_best():
-            try:
-                import cv2
-                import numpy as np
-                from PIL import Image
-                import io
-            except ImportError:
-                self._log("  [이미지 매칭] cv2/numpy/PIL 미설치")
-                return None
-            png = self._get_screenshot()
-            pil = Image.open(io.BytesIO(png))
-            screen_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
-            sh, sw = screen_gray.shape
-            ranked = []
-            for path in checkbox_imgs:
-                hit = self._score_template_in_region(
-                    path, screen_gray, sw, sh,
-                    min_x_check, max_x_check, min_y_check, max_y_check,
-                )
-                name = os.path.basename(path)
-                if hit is None:
-                    self._log(f"  ℹ {name}: 구간 내 매칭 없음")
-                    continue
-                cx, cy, score = hit
-                if not self._is_visible_coord(cx, cy):
-                    self._log(
-                        f"  ⏭ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy}) 는 화면 밖 → 제외"
-                    )
-                    continue
-                ranked.append((score, cx, cy, path))
-                self._log(f"  ℹ {name}: 점수 {score:.4f} 좌표 ({cx}, {cy})")
-            if not ranked:
-                return None
-            ranked.sort(key=lambda t: t[0], reverse=True)
-            best = ranked[0]
-            self._log(
-                f"  🎯 최고 인식: {os.path.basename(best[3])} "
-                f"점수 {best[0]:.4f} @ ({best[1]}, {best[2]})"
+        def _mask_roi(img):
+            roi = img.copy()
+            if min_y > 0:
+                roi[:min_y, ...] = 0
+            if max_y < sh:
+                roi[max_y:, ...] = 0
+            if min_x > 0:
+                roi[:, :min_x, ...] = 0
+            if max_x < sw:
+                roi[:, max_x:, ...] = 0
+            return roi
+
+        roi_gray = _mask_roi(screen_gray)
+        roi_bgr = _mask_roi(screen_bgr)
+
+        raw = []
+        for path in checkbox_imgs:
+            template_bgr = cv2.imdecode(
+                np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR
             )
-            if best[0] < min_score:
-                self._log(f"  ⚠ 최고점도 {best[0]:.4f} < {min_score} → 오탐 가능, 채택 안 함")
-                return None
-            return best
+            if template_bgr is None:
+                continue
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            t_h, t_w = template_gray.shape
 
-        best = _pick_best()
-        if best:
-            score, cx, cy, path = best
-            img_name = os.path.basename(path)
-            if not self._is_visible_coord(cx, cy):
-                self._log(f"  ⏭ {img_name} 좌표 ({cx}, {cy}) 화면 밖 → 클릭 안 함")
-            else:
-                self._log(f"  👉 {img_name} 체크박스 ADB soft tap: ({cx}, {cy})")
-                if self._soft_tap(cx, cy, duration_ms=50):
-                    time.sleep(0.8)
-                    self._log(f"✅ {img_name} 클릭 완료")
-                    return True
-
-        if product_name:
-            import re
-            hangul = re.sub(r'[^가-힣0-9]', ' ', product_name)
-            kws = [k for k in hangul.split() if len(k) >= 2][:4]
-            extra = []
-            for k in list(kws):
-                if len(k) >= 4:
-                    extra.append(k[:4])
-            for kw in kws + extra:
-                try:
-                    els = self.driver.find_elements(
-                        By.XPATH, f'//*[contains(@text, "{kw}")]'
-                    )
-                    for el in els:
-                        text = (el.get_attribute("text") or "")
-                        if any(s in text for s in ("옵션", "배송", "바로구매", "장바구니")):
-                            continue
-                        rect = el.rect
-                        cy = rect['y'] + rect['height'] // 2
-                        if min_y_check <= cy <= max_y_check:
-                            tap_x = int(w_w * 0.11)
-                            if not self._is_visible_coord(tap_x, cy):
-                                self._log(f"  ⏭ 옵션 행 좌표 ({tap_x}, {cy}) 화면 밖 → 스킵")
-                                continue
-                            self._log(f"  👉 옵션 행 '{text[:40]}' 왼쪽 체크박스 탭: ({tap_x}, {cy})")
-                            self._soft_tap(tap_x, cy, duration_ms=50)
-                            time.sleep(0.8)
-                            return True
-                except Exception:
+            for use_color, roi, templ in (
+                (False, roi_gray, template_gray),
+                (True, roi_bgr, template_bgr),
+            ):
+                best_score, best_r = -1.0, None
+                best_tw, best_th = t_w, t_h
+                for scale in np.linspace(0.55, 1.65, 12):
+                    new_w, new_h = int(t_w * scale), int(t_h * scale)
+                    if new_w >= sw or new_h >= sh or new_w < 8 or new_h < 8:
+                        continue
+                    resized = cv2.resize(templ, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    try:
+                        r = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                    except Exception:
+                        continue
+                    _, max_val, _, _ = cv2.minMaxLoc(r)
+                    if max_val > best_score:
+                        best_score, best_r, best_tw, best_th = (
+                            float(max_val), r, new_w, new_h
+                        )
+                if best_r is None or best_score < min_score:
                     continue
+                work = best_r.copy()
+                for _ in range(max_n + 2):
+                    _, val, _, loc = cv2.minMaxLoc(work)
+                    if val < min_score:
+                        break
+                    cx = int(loc[0] + best_tw // 2)
+                    cy = int(loc[1] + best_th // 2)
+                    if min_x <= cx <= max_x and min_y <= cy <= max_y and self._is_visible_coord(cx, cy):
+                        raw.append((cx, cy, float(val)))
+                    y1 = max(0, loc[1] - 25)
+                    y2 = min(work.shape[0], loc[1] + best_th + 25)
+                    x1 = max(0, loc[0] - 25)
+                    x2 = min(work.shape[1], loc[0] + best_tw + 25)
+                    work[y1:y2, x1:x2] = 0
 
-        if opt_y and del_y and opt_y < del_y:
-            tap_x = int(w_w * 0.11)
-            tap_y = (min_y_check + max_y_check) // 2
-            if not self._is_visible_coord(tap_x, tap_y):
-                self._log(f"  ⏭ 폴백 좌표 ({tap_x}, {tap_y}) 화면 밖 → 클릭 안 함")
+        merged = []
+        for cx, cy, score in sorted(raw, key=lambda t: t[2], reverse=True):
+            if any(abs(cx - mx) < 45 and abs(cy - my) < 40 for mx, my, _ in merged):
+                continue
+            merged.append((cx, cy, score))
+        merged.sort(key=lambda t: t[1])
+        return merged[:max_n]
+
+    def _click_checkbox(self, product_name: str = "") -> bool:
+        """[단계 12] 옵션 체크박스 최대 5개. 2번째부터는 화살표.png 있으면 펼친 뒤 클릭."""
+        self._set_status("체크박스/옵션 선택")
+        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (최대 5개, threshold 0.80→0.70)")
+
+        region = self._option_checkbox_region()
+        boxes = []
+        used_thr = CHECKBOX_MATCH_THRESHOLDS[-1]
+        for thr in CHECKBOX_MATCH_THRESHOLDS:
+            boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+            if boxes:
+                used_thr = thr
+                self._log(f"  ℹ threshold={thr:.2f} 에서 체크박스 {len(boxes)}개 인식")
+                break
+            if thr != CHECKBOX_MATCH_THRESHOLDS[-1]:
+                self._log(f"  ℹ threshold={thr:.2f} 미검출 (연한 회색 #F5F7FA) → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
             else:
-                self._log(f"  ⚠ 이미지 미채택 → 옵션~배송 사이 왼쪽 탭 ({tap_x}, {tap_y})")
-                self._soft_tap(tap_x, tap_y, duration_ms=50)
-                time.sleep(0.8)
-                return True
+                self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
+        if boxes:
+            self._log(f"  ℹ 인식된 체크박스 {len(boxes)}개: " +
+                      ", ".join(f"{i+1}=({x},{y}) {s:.3f}" for i, (x, y, s) in enumerate(boxes)))
+            # 1) 위에서부터 인식된 체크박스 전부 클릭 (최대 5)
+            for i, (cx, cy, score) in enumerate(boxes):
+                self._log(f"  👉 {i + 1}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._soft_tap(cx, cy, duration_ms=180)
+                time.sleep(1.0)
 
-        self._log("  ⚠ 체크박스 미발견 → 계속 진행")
+        # 2~5) 화살표가 있으면 펼치고, 위에서 n번째 체크박스 클릭
+        for n in range(2, 6):
+            if self._stop_event.is_set():
+                return False
+            region = self._option_checkbox_region()
+            arrow = None
+            if os.path.exists(IMG_ARROW):
+                arrow = self._find_image_coords(
+                    IMG_ARROW, threshold=0.70,
+                    min_x=int(region["w"] * 0.20),
+                    max_x=int(region["w"] * 0.98),
+                    min_y=region["min_y"],
+                    max_y=region["max_y"],
+                )
+            if not arrow:
+                self._log(f"  ℹ 화살표 미감지 → {n}번째 이후 옵션 펼치기 종료")
+                break
+            self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]}) → {n}번째 체크박스")
+            ah.tap_by_coords(self.driver, arrow[0], arrow[1], self._log)
+            time.sleep(1.2)
+            region = self._option_checkbox_region()
+            boxes = []
+            for thr in CHECKBOX_MATCH_THRESHOLDS:
+                boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+                if boxes:
+                    break
+            if len(boxes) < n:
+                self._log(f"  ⚠ 펼친 뒤 체크박스 {len(boxes)}개 < {n}번째 → 중단")
+                break
+            cx, cy, score = boxes[n - 1]
+            self._log(f"  👉 위에서 {n}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+            self._soft_tap(cx, cy, duration_ms=180)
+            time.sleep(1.0)
+
+        self._log("✅ 옵션 체크박스 처리 완료")
         return True
 
     # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
