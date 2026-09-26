@@ -1477,31 +1477,32 @@ class NaverOrderWorker:
             pass
         return False
 
-    def _input_search_keyword(self, keyword: str) -> bool:
+    def _input_search_keyword(self, keyword: str, allow_recent_click: bool = True) -> bool:
         """
         [단계 8] 검색 입력창 클릭 → 검색어 입력 (1회만)
-        - 0순위: 최근 검색어 클릭
-        - 1순위: '이전으로 가기' 오른쪽 탭 후 클립보드/send_keys 1회 입력
+        - allow_recent_click=True: 최근 검색어/자동완성 클릭 허용 (몰 검색 등)
+        - allow_recent_click=False: 최초 판매자명 검색 — 자동완성 첫 항목 클릭 금지, 입력 후 검색
         """
         self._set_status(f"검색어 입력: {keyword}")
-        self._log(f"🔍 검색어 입력: '{keyword}'")
+        self._log(f"🔍 검색어 입력: '{keyword}' (최근/자동완성클릭={'허용' if allow_recent_click else '금지'})")
 
         import subprocess
 
-        # 0순위: 최근 검색어 직접 클릭 (입력 생략)
-        if self._click_recent_search_keyword(keyword):
-            self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
-            return True
+        # 최근 검색어/자동완성 클릭 (최초 판매자 검색에서는 금지)
+        if allow_recent_click:
+            if self._click_recent_search_keyword(keyword):
+                self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
+                return True
 
         tap_coords = None
 
         # 1순위: 이전으로 가기 오른쪽 = 검색 입력칸
         tap_coords = self._tap_search_field_right_of_back()
 
-        # 탭 후 최근검색어가 보이면 클릭 (입력 생략)
-        if self._click_recent_search_keyword(keyword):
-            self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
-            return True
+        if allow_recent_click:
+            if self._click_recent_search_keyword(keyword):
+                self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
+                return True
 
         # 2순위: EditText XPath
         if not tap_coords:
@@ -1556,47 +1557,71 @@ class NaverOrderWorker:
             self._log(f"  ❌ 검색어 입력 실패: {e}")
             return False
 
-    def _click_search_button(self) -> bool:
+    def _click_search_button(self, prefer_icon: bool = False) -> bool:
         """
-        [단계 9] 검색 실행 (키보드 엔터 우선), 5초 대기
+        [단계 9] 검색 실행
+        - prefer_icon=True: 자동완성 첫 항목 선택 방지 → 검색 아이콘/우측 탭 우선
+          (엔터는 자동완성 1번을 고르는 경우가 많음)
+        - prefer_icon=False: 엔터 우선
         """
         self._set_status("검색 실행")
+        import subprocess
 
-        # 1순위: 키보드 엔터 (검색)
-        try:
-            import subprocess
-            subprocess.run(
-                ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
-                capture_output=True, timeout=5
-            )
-            self._log("  ✅ 엔터 키 전송 완료 (검색)")
+        def _tap_search_icon() -> bool:
+            # 1) 검색아이콘 이미지
+            if os.path.exists(IMG_SEARCH_ICON):
+                coords = self._find_image_coords(
+                    IMG_SEARCH_ICON, threshold=0.7, min_y=0, max_y=350, silent=True,
+                )
+                if coords:
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    self._log(f"  ✅ 검색아이콘 이미지 클릭 ({coords[0]}, {coords[1]})")
+                    return True
+            # 2) 상단 우측 검색 버튼 비율 탭
+            try:
+                size = self.driver.get_window_size()
+                w, h = size['width'], size['height']
+                tap_x = int(w * 0.94)
+                tap_y = int(h * 0.08)
+                ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+                self._log(f"  ✅ 검색 버튼 좌표 탭 ({tap_x}, {tap_y})")
+                return True
+            except Exception as e:
+                self._log(f"  ⚠ 검색 아이콘/좌표 탭 실패: {e}")
+                return False
+
+        def _send_enter() -> bool:
+            try:
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
+                    capture_output=True, timeout=5
+                )
+                self._log("  ✅ 엔터 키 전송 완료 (검색)")
+                return True
+            except Exception as e:
+                self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
+                return False
+
+        if prefer_icon:
+            self._log("  📌 자동완성 회피 → 검색 아이콘/좌표 우선")
+            if _tap_search_icon():
+                time.sleep(4)
+                return True
+            if _send_enter():
+                time.sleep(4)
+                return True
+            self._log("  ❌ 검색 버튼 클릭 최종 실패")
+            return False
+
+        # 기본: 엔터 우선
+        if _send_enter():
             time.sleep(4)
             return True
-        except Exception as e:
-            self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
-
-        # 2순위: 이미지 매칭 (검색아이콘.png 폴백)
-        if os.path.exists(IMG_SEARCH_ICON):
-            coords = self._find_image_coords(IMG_SEARCH_ICON, threshold=0.7)
-            if coords:
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                self._log("  ✅ 검색아이콘 이미지 인식 클릭 완료 (폴백)")
-                time.sleep(3)
-                return True
-
-        # 3순위: 좌표 탭
-        try:
-            size = self.driver.get_window_size()
-            w, h = size['width'], size['height']
-            tap_x = int(w * 0.94)
-            tap_y = int(h * 0.08)
-            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-            self._log(f"  ✅ 검색 버튼 좌표 탭 완료 ({tap_x}, {tap_y})")
+        if _tap_search_icon():
             time.sleep(3)
             return True
-        except Exception as e:
-            self._log(f"  ❌ 검색 버튼 클릭 최종 실패: {e}")
-            return False
+        self._log("  ❌ 검색 버튼 클릭 최종 실패")
+        return False
 
     # ─── 단계 8.5: 판매자(스토어) 카드 클릭 ────────────────────────────────────
 
@@ -7189,14 +7214,14 @@ class NaverOrderWorker:
             return False
 
         # [단계 8] 판매자명(스토어명)으로 검색어 입력
-        # 검색어(엑셀 search_keyword)를 판매자명으로 대체하여 검색
+        # 자동완성 첫 항목 클릭 금지 → 판매자명 그대로 입력 후 검색
         seller_search_kw = row.seller_name if row.seller_name else row.search_keyword
-        if not self._input_search_keyword(seller_search_kw):
+        if not self._input_search_keyword(seller_search_kw, allow_recent_click=False):
             self._log("❌ 판매자명 검색어 입력 실패")
             return False
 
-        # [단계 9] 검색 실행 (엔터)
-        if not self._click_search_button():
+        # [단계 9] 검색 실행 (엔터 대신 검색아이콘 — 자동완성 1번 선택 방지)
+        if not self._click_search_button(prefer_icon=True):
             self._log("❌ 판매자명 검색 실행 실패")
             return False
 
