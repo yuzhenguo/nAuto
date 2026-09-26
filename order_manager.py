@@ -10,7 +10,7 @@ order_manager.py
   전화번호    : 수취인 전화번호
   비밀번호    : 결제 비밀번호 (숫자, 예: 123456)
   2차비밀번호 : 현대카드 2차 비밀번호 (4자리)
-  완료여부    : 공백=미처리, Y=완료, F=실패, C=취소, H=연결실패, E=드라이브에러
+  완료여부    : 공백=미처리, Y=완료, F=실패, C=취소, H=연결실패, E=드라이브에러, B=본인인증
 
 헤더가 없거나 컬럼명이 다를 경우 컬럼 인덱스로 직접 지정 가능 (아래 COL_* 상수 참고)
 """
@@ -76,7 +76,16 @@ def is_conn_failed_status(st: str) -> bool:
 
 def is_driver_error_status(st: str) -> bool:
     s = str(st or "").strip().upper()
-    return s in ("E", "드라이브에러", "드라이버에러") or s.startswith("E") or "에러" in s
+    return s in ("E", "드라이브에러", "드라이버에러") or s.startswith("E") or "드라이브에러" in s or "드라이버에러" in s
+
+
+def is_birthday_auth_status(st: str) -> bool:
+    """현대카드 본인인증(이름/생년월일) 요구 — 상태 B"""
+    raw = str(st or "").strip()
+    s = raw.upper()
+    if s == "B":
+        return True
+    return "본인인증" in raw or "본인 인증" in raw
 
 
 def is_working_status(st: str) -> bool:
@@ -90,7 +99,8 @@ def is_pending_status(st: str) -> bool:
     if s in ("", "NONE", "대기", "미처리", "미완료"):
         return True
     return not (is_done_status(s) or is_failed_status(s) or is_cancelled_status(s) or
-                is_conn_failed_status(s) or is_driver_error_status(s) or is_working_status(s))
+                is_conn_failed_status(s) or is_driver_error_status(s) or
+                is_birthday_auth_status(s) or is_working_status(s))
 
 
 def _norm_device_id(val: str) -> str:
@@ -364,6 +374,10 @@ class OrderManager:
     def mark_driver_error(self, row_index: int):
         self._update_status(row_index, "E")
 
+    def mark_birthday_auth(self, row_index: int):
+        """현대카드 본인인증(이름/생년월일) 요구 → 상태 B"""
+        self._update_status(row_index, "B")
+
     def _update_status(self, row_index: int, status: str):
         with self._lock:
             for row in self._memory_rows:
@@ -376,7 +390,8 @@ class OrderManager:
         """전체 현황 요약 (메모리 집계)"""
         with self._lock:
             summary = {"total": 0, "done": 0, "failed": 0, "cancelled": 0,
-                       "pending": 0, "working": 0, "conn_failed": 0, "driver_error": 0}
+                       "pending": 0, "working": 0, "conn_failed": 0,
+                       "driver_error": 0, "birthday_auth": 0}
             for row in self._memory_rows:
                 summary["total"] += 1
                 st = str(row.status).strip().upper()
@@ -390,6 +405,8 @@ class OrderManager:
                     summary["conn_failed"] += 1
                 elif is_driver_error_status(st):
                     summary["driver_error"] += 1
+                elif is_birthday_auth_status(st):
+                    summary["birthday_auth"] += 1
                 elif is_working_status(st):
                     summary["working"] += 1
                     summary["pending"] += 1
@@ -407,6 +424,7 @@ class OrderManager:
                     counts[dev_key] = {
                         "total": 0, "pending": 0, "done": 0, "failed": 0,
                         "cancelled": 0, "conn_failed": 0, "driver_error": 0,
+                        "birthday_auth": 0,
                     }
                 
                 counts[dev_key]["total"] += 1
@@ -421,6 +439,8 @@ class OrderManager:
                     counts[dev_key]["conn_failed"] += 1
                 elif is_driver_error_status(st):
                     counts[dev_key]["driver_error"] += 1
+                elif is_birthday_auth_status(st):
+                    counts[dev_key]["birthday_auth"] += 1
                 elif is_working_status(st):
                     counts[dev_key]["pending"] += 1
                 else:
@@ -435,7 +455,10 @@ class OrderManager:
         for k, v in all_counts.items():
             if k == norm_id:
                 return v
-        return {"total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0, "conn_failed": 0, "driver_error": 0}
+        return {
+            "total": 0, "pending": 0, "done": 0, "failed": 0, "cancelled": 0,
+            "conn_failed": 0, "driver_error": 0, "birthday_auth": 0,
+        }
 
     def _excel_writer_loop(self):
         """백그라운드에서 큐에 쌓인 상태 업데이트를 일괄(Batch)로 엑셀에 저장"""

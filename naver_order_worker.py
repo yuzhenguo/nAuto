@@ -146,9 +146,17 @@ IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
-IMG_BIRTHDAY1     = os.path.join(_IMG_DIR, "생년월일1.png") # 현대카드 본인인증 팝업
+IMG_BIRTHDAY1     = os.path.join(_IMG_DIR, "생년월일1.png") # (레거시, 본인인증 판정에는 미사용)
 IMG_BIRTHDAY2     = os.path.join(_IMG_DIR, "생년월일2.png")
 IMG_BIRTHDAY3     = os.path.join(_IMG_DIR, "생년월일3.png")
+# 본인인증 화면 판정: 본인인증1/2/3.png 만 사용 (고임계값 정확 매칭)
+IMG_IDENTITY_AUTH = [
+    (os.path.join(_IMG_DIR, "본인인증1.png"), "본인인증1"),
+    (os.path.join(_IMG_DIR, "본인인증2.png"), "본인인증2"),
+    (os.path.join(_IMG_DIR, "본인인증3.png"), "본인인증3"),
+]
+# 본인인증 오감지 방지: 기본 임계값 (정확히 맞을 때만 인정)
+IDENTITY_AUTH_THRESHOLD = 0.78
 
 class BirthdayAuthRequiredError(Exception):
     pass
@@ -522,6 +530,14 @@ class NaverOrderWorker:
         extra = f" ({reason})" if reason else ""
         self._log(f"❌ 드라이브에러{extra}: {getattr(row, 'search_keyword', '')} → E 기록")
         self._set_status("드라이브에러")
+
+    def _mark_birthday_auth(self, row, reason: str = ""):
+        if not row:
+            return
+        self.order_manager.mark_birthday_auth(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 본인인증{extra}: {getattr(row, 'search_keyword', '')} → B 기록")
+        self._set_status("본인인증(B)")
 
     def _mark_next_pending_conn_failed(self):
         row = None
@@ -1376,11 +1392,34 @@ class NaverOrderWorker:
             pass
         return False
 
+    def _clear_search_field(self):
+        """검색 입력란 기존 텍스트 제거 (선택 후 삭제)."""
+        import subprocess
+        try:
+            # 전체선택(Ctrl+A 대체 어려움) → 끝으로 이동 후 DEL 다수
+            subprocess.run(
+                ["adb", "-s", self.device_id, "shell", "input", "keyevent", "123"],
+                capture_output=True, timeout=3,
+            )  # KEYCODE_MOVE_END
+            for _ in range(40):
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", "67"],
+                    capture_output=True, timeout=3,
+                )  # DEL
+            time.sleep(0.15)
+        except Exception:
+            pass
+
     def _type_search_keyword(self, keyword: str) -> bool:
-        """검색어 실제 입력 (한글: 클립보드 붙여넣기 우선)."""
+        """
+        검색어 실제 입력 — 한 번만 입력 (중복 입력 방지).
+        한글은 클립보드 붙여넣기 단일 경로 사용.
+        """
         import subprocess
 
-        # EditText 있으면 mobile:type / send_keys
+        self._clear_search_field()
+
+        # 1) EditText 가 있으면 send_keys / mobile:type 중 하나만
         el = None
         for xp in (
             '//android.widget.EditText[@focused="true"]',
@@ -1389,7 +1428,7 @@ class NaverOrderWorker:
             '//android.widget.EditText',
         ):
             try:
-                if ah.element_exists(self.driver, xp, timeout=1.2):
+                if ah.element_exists(self.driver, xp, timeout=1.0):
                     el = self.driver.find_element(By.XPATH, xp)
                     break
             except Exception:
@@ -1402,43 +1441,31 @@ class NaverOrderWorker:
             except Exception:
                 pass
             try:
-                self.driver.execute_script("mobile: type", {"text": keyword})
-                time.sleep(0.5)
-                if self._verify_search_keyword_entered(keyword):
-                    return True
-            except Exception as e:
-                self._log(f"  ⚠ mobile: type 실패: {e}")
-            try:
                 el.send_keys(keyword)
                 time.sleep(0.5)
-                if self._verify_search_keyword_entered(keyword):
-                    return True
+                self._log(f"  ✅ send_keys 입력: '{keyword}'")
+                return True
             except Exception as e:
                 self._log(f"  ⚠ send_keys 실패: {e}")
+                try:
+                    self._clear_search_field()
+                    self.driver.execute_script("mobile: type", {"text": keyword})
+                    time.sleep(0.5)
+                    self._log(f"  ✅ mobile: type 입력: '{keyword}'")
+                    return True
+                except Exception as e2:
+                    self._log(f"  ⚠ mobile: type 실패: {e2}")
+                    self._clear_search_field()
 
-        # 포커스만 있는 WebView 입력칸: mobile: type 단독 시도
-        try:
-            self.driver.execute_script("mobile: type", {"text": keyword})
-            time.sleep(0.5)
-            if self._verify_search_keyword_entered(keyword):
-                self._log("  ✅ mobile: type (포커스) 입력 성공")
-                return True
-        except Exception:
-            pass
-
-        # 한글 핵심: 클립보드 + PASTE (adb input text 금지)
-        self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 시도")
+        # 2) 한글 단일 경로: 클립보드 + PASTE (이전 입력과 겹치지 않도록 위에서 clear)
+        self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 (1회)")
         if self._paste_text_via_clipboard(keyword):
-            if self._verify_search_keyword_entered(keyword):
-                return True
-            # 검증 실패해도 붙여넣기는 됐을 수 있음 (WebView text 미노출)
-            self._log("  ⚠ 입력 텍스트 UI 검증 실패 → 붙여넣기 결과는 유지하고 진행")
             return True
 
-        # ASCII 전용 최후 폴백
+        # 3) ASCII 전용
         try:
-            ascii_only = all(ord(c) < 128 for c in keyword)
-            if ascii_only:
+            if all(ord(c) < 128 for c in keyword):
+                self._clear_search_field()
                 subprocess.run(
                     ["adb", "-s", self.device_id, "shell", "input", "text",
                      keyword.replace(" ", "%s")],
@@ -1452,17 +1479,16 @@ class NaverOrderWorker:
 
     def _input_search_keyword(self, keyword: str) -> bool:
         """
-        [단계 8] 검색 입력창 클릭 → 검색어 입력
-        - 0순위: 최근 검색어에 있으면 클릭
-        - 1순위: '이전으로 가기' 오른쪽 좌표 탭
-        - 입력: 클립보드 붙여넣기 (한글 adb input text 불가)
+        [단계 8] 검색 입력창 클릭 → 검색어 입력 (1회만)
+        - 0순위: 최근 검색어 클릭
+        - 1순위: '이전으로 가기' 오른쪽 탭 후 클립보드/send_keys 1회 입력
         """
         self._set_status(f"검색어 입력: {keyword}")
         self._log(f"🔍 검색어 입력: '{keyword}'")
 
         import subprocess
 
-        # 0순위: 최근 검색어 직접 클릭 (이미 펼쳐진 검색 UI)
+        # 0순위: 최근 검색어 직접 클릭 (입력 생략)
         if self._click_recent_search_keyword(keyword):
             self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
             return True
@@ -1472,7 +1498,7 @@ class NaverOrderWorker:
         # 1순위: 이전으로 가기 오른쪽 = 검색 입력칸
         tap_coords = self._tap_search_field_right_of_back()
 
-        # 탭 후 최근검색어가 보이면 클릭
+        # 탭 후 최근검색어가 보이면 클릭 (입력 생략)
         if self._click_recent_search_keyword(keyword):
             self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
             return True
@@ -1520,17 +1546,6 @@ class NaverOrderWorker:
                 tap_coords = (fx, fy)
             except Exception:
                 pass
-
-        # 입력 전 기존 내용 지우기 (DEL 반복)
-        try:
-            for _ in range(25):
-                subprocess.run(
-                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", "67"],
-                    capture_output=True, timeout=3,
-                )
-        except Exception:
-            pass
-        time.sleep(0.2)
 
         try:
             if self._type_search_keyword(keyword):
@@ -4498,8 +4513,9 @@ class NaverOrderWorker:
     def _handle_hyundai_safe_auth_popup(self) -> bool:
         """
         [22-10 이후] 현대결제하기 → 3초 대기 →
-        안전결재3 팝업 확인 1회 클릭 후 바로 현대카드비번 단계로 진행.
-        (잔존 감지/재시도 생략 — 안전한2 상단 오인으로 루프 방지)
+        안전결재3 팝업 확인 1회 클릭 후,
+        이어서 자주 뜨는 '본인 인증'(이름/생년월일) 화면을 우선 검사.
+        감지 시 BirthdayAuthRequiredError → 주문 1회 재시도.
         """
         self._log("  ⏳ [안전인증] 현대결제하기 후 3초 대기...")
         time.sleep(2.0)
@@ -4518,10 +4534,16 @@ class NaverOrderWorker:
             attempts=5, threshold=0.58, force_tap=bool(detected)
         )
         if clicked:
-            self._log("  ✅ [안전인증] 확인 클릭 완료 → 현대카드비번 단계로 진행 (잔존검사 패스)")
+            self._log("  ✅ [안전인증] 확인 클릭 완료 → 본인인증 화면 검사 후 진행")
         else:
-            self._log("  ℹ [안전인증] 확인 미클릭/팝업없음 → 현대카드비번 단계로 진행")
-        time.sleep(1.0)
+            self._log("  ℹ [안전인증] 확인 미클릭/팝업없음 → 본인인증 화면 검사 후 진행")
+
+        # 안전인증 확인 직후 보통 '본인 인증'(이름/생년월일 6자리) 화면이 뜸
+        # WebView 전환 대기 후 이미지+XPath 집중 검사 (미감지 시에도 예외 없음)
+        self._log("  🔍 [본인인증] 안전인증 직후 화면 전환 대기(2.5초) 후 검사...")
+        time.sleep(2.5)
+        self._check_birthday_auth(attempts=3)  # 본인인증1/2/3.png thr>=0.78
+        self._log("  ✅ [본인인증] 미감지 → 현대카드비번 단계로 진행")
         return True
 
     def _verify_bank_dropdown_opened(self) -> bool:
@@ -6235,6 +6257,9 @@ class NaverOrderWorker:
         for attempt in range(1, 8):
             if self._stop_event.is_set():
                 return False
+            # 2회마다 본인인증(이름/생년월일) 화면 검사 → 감지 시 재시도 예외
+            if attempt in (1, 3, 5, 7):
+                self._check_birthday_auth(attempts=1)
             hit = self._match_best_among_images(
                 IMG_HYUNDAI_CARD_PW, threshold=0.65, min_y=min_y, max_y=max_y
             )
@@ -6457,16 +6482,25 @@ class NaverOrderWorker:
         return False
 
     def _focus_hyundai_card_pw4_field(self) -> bool:
-        """[22-11] 현대카드비번 클릭 → 2차페이지 확인. 실패 시 1회 재시도."""
+        """[22-11] 현대카드비번 클릭 → 2차페이지 확인. 실패 시 1회 재시도.
+        중간에 '본인 인증'(이름/생년월일) 화면이면 BirthdayAuthRequiredError → 주문 재시도.
+        """
         time.sleep(1.0)
         for round_i in range(1, 3):
             self._log(f"  🔁 [22-11] 진입 라운드 {round_i}/2")
+            # 라운드 시작 전 본인인증 화면 여부 확인
+            self._check_birthday_auth(attempts=1)
             if not self._click_hyundai_card_pw_entry():
+                # 비번 이미지 실패 원인이 본인인증 화면일 수 있음
+                self._check_birthday_auth(attempts=2)
                 continue
             time.sleep(1.8)
             if self._wait_hyundai_2nd_page_and_focus():
                 return True
-            self._log("  ⚠ [22-11] 클릭 후 2차페이지 미진입 → 현대카드비번 재클릭")
+            self._log("  ⚠ [22-11] 클릭 후 2차페이지 미진입 → 본인인증 재확인 후 재클릭")
+            self._check_birthday_auth(attempts=2)
+        # 최종 실패 직전 한 번 더
+        self._check_birthday_auth(attempts=2)
         return False
 
     def _tap_2nd_page_keypad_digit(self, digit: str) -> bool:
@@ -6806,16 +6840,16 @@ class NaverOrderWorker:
                 self._log("❌ [22-10] 현대결제하기 이미지 미발견")
                 return False
 
-        # 22-10.5 안전한/추가인증 팝업 → 안전확인1~2 클릭 후 카드비번 진행
+        # 22-10.5 안전한/추가인증 팝업 → 확인 클릭 → (직후 본인인증 화면 검사 포함)
         if not self._handle_hyundai_safe_auth_popup():
             self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
             return False
 
-        # --- 2차 비번 입력 전 생년월일 확인 ---
-        self._check_birthday_auth()
-
         # 22-11a 현대카드비번1~7 클릭 → 22-11b 2차페이지1~3 인식 → 입력란 포커스
+        # (안전인증 직후 본인인증은 _handle_hyundai_safe_auth_popup 안에서 이미 검사)
         if not self._focus_hyundai_card_pw4_field():
+            # 실패 원인이 본인인증 화면인지 최종 확인 (감지 시 예외 → 주문 재시도)
+            self._check_birthday_auth(attempts=2)
             self._log("❌ [22-11] 현대카드비번 클릭 또는 2차페이지 진입 실패")
             return False
         self._log("  ⏳ [22-11] 2차비밀번호 입력 준비 (1초)...")
@@ -6841,13 +6875,40 @@ class NaverOrderWorker:
         # 22-14 주문완료 확인
         return self._verify_hyundai_order_complete()
 
-    def _check_birthday_auth(self):
-        """생년월일1~3.png 감지 시 BirthdayAuthRequiredError 예외 발생"""
-        for img in [IMG_BIRTHDAY1, IMG_BIRTHDAY2, IMG_BIRTHDAY3]:
-            if os.path.exists(img):
-                if self._find_image_coords(img, threshold=0.65):
-                    self._log(f"🚨 [본인인증 감지] {os.path.basename(img)} 발견됨!")
-                    raise BirthdayAuthRequiredError("생년월일(본인인증) 화면 감지")
+    def _check_birthday_auth(self, attempts: int = 2, threshold: float = None):
+        """
+        본인인증1/2/3.png 고임계값 정확 매칭 시에만 BirthdayAuthRequiredError.
+        XPath/생년월일1~3 은 오감지 원인이므로 사용하지 않음.
+        """
+        thr = IDENTITY_AUTH_THRESHOLD if threshold is None else threshold
+        # 호출부에서 낮은 값을 넘겨도 최소 0.75 유지 (오감지 방지)
+        thr = max(float(thr), 0.75)
+
+        try:
+            h = self._get_window_size()[1]
+        except Exception:
+            h = 2400
+        # 본인인증 폼은 화면 상단~중상단
+        max_y = int(h * 0.55)
+
+        for attempt in range(1, attempts + 1):
+            for img, name in IMG_IDENTITY_AUTH:
+                if not os.path.exists(img):
+                    self._log(f"  ⚠ [본인인증] 템플릿 없음: {name}")
+                    continue
+                coords = self._find_image_coords(
+                    img, threshold=thr, min_y=0, max_y=max_y, silent=True,
+                )
+                if coords:
+                    self._log(
+                        f"🚨 [본인인증 감지] '{name}' 정확매칭 "
+                        f"@ ({coords[0]},{coords[1]}) thr>={thr:.2f} "
+                        f"(시도 {attempt}/{attempts})"
+                    )
+                    raise BirthdayAuthRequiredError("본인 인증(이름/생년월일) 화면 감지")
+
+            if attempt < attempts:
+                time.sleep(0.7)
 
     # ─── 주문 루프 ────────────────────────────────────────────────────────────
 
@@ -6932,8 +6993,8 @@ class NaverOrderWorker:
                     try:
                         success = self._process_order_with_timeout(row)
                     except BirthdayAuthRequiredError:
-                        self._log("❌ [본인인증 감지] 2회차 연속 본인인증 요구됨 -> 상태값 '현대카드 본인인증' 처리")
-                        self.order_manager._update_status(row.row_index, "현대카드 본인인증")
+                        self._log("❌ [본인인증 감지] 2회차 연속 본인인증 요구됨 → 상태 B 기록")
+                        self._mark_birthday_auth(row, "2회차 연속")
                         self.current_row = None
                         self._log("⏹ 작업 종료")
                         break
@@ -7275,7 +7336,8 @@ class NaverOrderWorker:
                            min_y: Optional[int] = None,
                            max_y: Optional[int] = None,
                            cached_screen_gray: Optional[Any] = None,
-                           cached_screen_bgr: Optional[Any] = None) -> Optional[tuple]:
+                           cached_screen_bgr: Optional[Any] = None,
+                           silent: bool = False) -> Optional[tuple]:
         """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색 (캐시된 화면 이미지 지원으로 대량 매칭 초고속화)"""
         try:
             import cv2
@@ -7409,10 +7471,12 @@ class NaverOrderWorker:
 
                 return cx, cy
             else:
-                self._log(f"  ❌ [이미지 매칭] 실패 (점수 {best_score:.4f} < {threshold})")
+                if not silent:
+                    self._log(f"  ❌ [이미지 매칭] 실패 (점수 {best_score:.4f} < {threshold})")
                 return None
         except Exception as e:
-            self._log(f"  [이미지 매칭] 오류: {e}")
+            if not silent:
+                self._log(f"  [이미지 매칭] 오류: {e}")
             return None
 
     def _get_screenshot(self) -> bytes:

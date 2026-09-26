@@ -200,6 +200,8 @@ class DevicePanel(tk.Frame):
         self.status_label.config(text=status)
         if any(k in status for k in ["완료", "성공"]):
             dot_color = CLR_SUCCESS
+        elif any(k in status for k in ["본인인증", "본인 인증"]):
+            dot_color = "#ea580c"
         elif any(k in status for k in ["실패", "오류", "취소"]):
             dot_color = CLR_ERROR
         elif any(k in status for k in ["중", "클릭", "입력", "주문", "선택"]):
@@ -229,6 +231,8 @@ class DevicePanel(tk.Frame):
             current = min(done + 1, total)
         else:
             current = done
+        color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
+        self.task_count_label.config(text=f"{current}/{total}", fg=color)
 
     def set_working(self, is_working: bool):
         """작업 중일 때 테두리 강조"""
@@ -236,9 +240,6 @@ class DevicePanel(tk.Frame):
             self.configure(highlightbackground=CLR_WORKING, highlightthickness=2)
         else:
             self.configure(highlightbackground=CLR_BORDER, highlightthickness=1)
-
-        color = CLR_SUCCESS if pending == 0 and total > 0 else (CLR_PRIMARY if pending > 0 else CLR_TEXT_MUTE)
-        self.task_count_label.config(text=f"{current}/{total}", fg=color)
 
     def set_payment_method(self, method: str):
         """현재 작업 중인 결재방식 표시"""
@@ -880,13 +881,14 @@ class MainApp(tk.Tk):
 
         self.summary_labels = {}
         for key, label, color in [
-            ("total",     "전체",     CLR_TEXT),
-            ("pending",   "대기",     CLR_WARNING),
-            ("done",      "완료(Y)",  CLR_SUCCESS),
-            ("failed",       "실패(F)",       CLR_ERROR),
-            ("cancelled",    "취소(C)",       "#f43f5e"),
-            ("conn_failed",  "연결실패(H)",   CLR_ERROR),
-            ("driver_error", "드라이브에러(E)", CLR_ERROR),
+            ("total",          "전체",           CLR_TEXT),
+            ("pending",        "대기",           CLR_WARNING),
+            ("done",           "완료(Y)",        CLR_SUCCESS),
+            ("failed",         "실패(F)",        CLR_ERROR),
+            ("cancelled",      "취소(C)",        "#f43f5e"),
+            ("conn_failed",    "연결실패(H)",    CLR_ERROR),
+            ("driver_error",   "드라이브에러(E)", CLR_ERROR),
+            ("birthday_auth",  "본인인증(B)",    "#ea580c"),
         ]:
             lf = tk.Frame(summary_bar, bg=CLR_SURFACE2)
             lf.pack(side=tk.LEFT, padx=14)
