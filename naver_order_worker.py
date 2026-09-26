@@ -361,9 +361,30 @@ STORE_TAB_XPATH = (
     '/android.widget.ImageView[@resource-id="com.nhn.android.search:id/tabIcon"]'
 )
 
-# 팝업 처리 (단계 5, 6)
-HIDE_BTN_1DAY    = '//*[contains(@text, "하루") and contains(@text, "보")] | //*[contains(@content-desc, "하루") and contains(@content-desc, "보")]'
-HIDE_BTN_7DAY    = '//*[contains(@text, "7일") and contains(@text, "보")] | //*[contains(@content-desc, "7일") and contains(@content-desc, "보")]'
+# 팝업 처리 (단계 5, 6) — "하루 동안 보지 않기" / "하루 종일 보기 않기" / 7일 등
+HIDE_POPUP_XPATHS = [
+    '//android.widget.Button[@text="하루 동안 보지 않기"]',
+    '//android.widget.Button[@text="하루동안 보지 않기"]',
+    '//android.widget.Button[@text="하루 종일 보지 않기"]',
+    '//android.widget.Button[@text="하루종일 보지 않기"]',
+    '//android.widget.Button[@text="하루 종일 보기 않기"]',
+    '//android.widget.Button[@text="하루종일 보기 않기"]',
+    '//android.widget.Button[@text="오늘 하루 보지 않기"]',
+    '//android.widget.Button[@text="7일간 보지 않기"]',
+    '//android.widget.Button[@text="7일 동안 보지 않기"]',
+    '//android.widget.Button[@text="7일동안 보지 않기"]',
+    '//*[contains(@text,"하루") and contains(@text,"보지 않")]',
+    '//*[contains(@text,"하루") and contains(@text,"보기 않")]',
+    '//*[contains(@text,"하루종일") and contains(@text,"보")]',
+    '//*[contains(@text,"하루 종일") and contains(@text,"보")]',
+    '//*[contains(@text,"7일") and contains(@text,"보지 않")]',
+    '//*[contains(@text,"7일") and contains(@text,"보기 않")]',
+    '//*[contains(@content-desc,"하루") and contains(@content-desc,"보")]',
+    '//*[contains(@content-desc,"7일") and contains(@content-desc,"보")]',
+    '//*[contains(@text,"다시 보지 않기")]',
+]
+HIDE_BTN_1DAY = HIDE_POPUP_XPATHS[0]
+HIDE_BTN_7DAY = '//android.widget.Button[@text="7일간 보지 않기"]'
 
 # 3.1 & 7.1 웰컴 모달 / 팝업 닫기 버튼 목록
 WELCOME_MODAL_XPATHS = [
@@ -696,12 +717,14 @@ class NaverOrderWorker:
             self._log("⏭ 스토어 탭 없음 (이미 스토어 화면)")
             time.sleep(1)
 
-        # [단계 5] 팝업 처리
-        self._dismiss_popups()
+        # [단계 5] 팝업 처리 (마이쇼핑 클릭 전)
+        self._dismiss_popups(max_count=3)
 
-        # [단계 6] 마이쇼핑 클릭 -> 5초 대기
+        # [단계 6] 마이쇼핑 클릭 -> 대기
         self._set_status("마이쇼핑 클릭")
         if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=8):
+            # 클릭 직전 팝업이 가리는 경우 대비
+            self._dismiss_popups(max_count=2)
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
             self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
             time.sleep(3)
@@ -709,8 +732,10 @@ class NaverOrderWorker:
             self._log("⚠ 마이쇼핑 버튼 미발견")
             time.sleep(2)
 
-        # 마이쇼핑 진입 후 팝업 및 웰컴 모달 재처리
-        self._dismiss_popups()
+        # 마이쇼핑 진입 후 팝업(하루 종일/동안 보기 않기) 및 웰컴 모달 재처리
+        self._dismiss_popups(max_count=3)
+        time.sleep(0.5)
+        self._dismiss_popups(max_count=2)
         self._check_and_close_welcome_modals(step_label="6.1")
         return True
 
@@ -1052,17 +1077,68 @@ class NaverOrderWorker:
             if self._is_driver_session_error(e) or self._is_connection_refused(e):
                 raise
 
-    def _dismiss_popups(self):
-        """하루/7일 동안 보지 않기 팝업 처리 (통합 xpath 1회 대기, 미발견 시 최소 지연)"""
-        union_xpath = f"{HIDE_BTN_1DAY} | {HIDE_BTN_7DAY}"
-        # 팝업이 순차로 뜨는 경우(하루 닫으면 7일이 뜨는 등)를 대비해 최대 2회, 없으면 즉시 종료
-        for _ in range(2):
-            if ah.element_exists(self.driver, union_xpath, timeout=1):
-                self._log("📌 '보지 않기' 팝업 감지 → 클릭")
-                ah.wait_and_click(self.driver, union_xpath, timeout=1, log_callback=self._log)
-                time.sleep(0.5)
-            else:
+    def _dismiss_popups(self, max_count: int = 3):
+        """
+        '하루 동안/종일 보지(보기) 않기' / '7일간 보지 않기' 팝업 처리.
+        WebView Button.click() 실패 대비 → bounds ADB 탭.
+        """
+        import subprocess
+        import re as _re
+
+        union_xpath = " | ".join(HIDE_POPUP_XPATHS)
+        for i in range(max_count):
+            try:
+                if not ah.element_exists(self.driver, union_xpath, timeout=1.2):
+                    break
+            except Exception:
                 break
+
+            clicked = False
+            try:
+                els = self.driver.find_elements(By.XPATH, union_xpath)
+            except Exception:
+                els = []
+
+            for el in els:
+                try:
+                    txt = (el.get_attribute("text") or
+                           el.get_attribute("contentDescription") or "")
+                    bounds = el.get_attribute("bounds") or ""
+                    m = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                    if m:
+                        x1, y1, x2, y2 = map(int, m.groups())
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    else:
+                        rect = el.rect
+                        cx = rect["x"] + rect["width"] // 2
+                        cy = rect["y"] + rect["height"] // 2
+
+                    self._log(
+                        f"📌 '보지/보기 않기' 팝업 감지 → ADB 탭 "
+                        f"('{txt[:30]}' @ {cx},{cy}) [{i+1}/{max_count}]"
+                    )
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(cx), str(cy)],
+                        capture_output=True, timeout=5,
+                    )
+                    clicked = True
+                    time.sleep(1.0)
+                    break
+                except Exception:
+                    continue
+
+            if not clicked:
+                # wait_and_click 폴백
+                try:
+                    self._log("📌 '보지 않기' 팝업 → wait_and_click 폴백")
+                    ah.wait_and_click(
+                        self.driver, union_xpath, timeout=1.5,
+                        log_callback=self._log,
+                    )
+                    time.sleep(0.8)
+                except Exception:
+                    break
 
     # ─── 단계 7: 마이쇼핑 검색 버튼 클릭 ────────────────────────────────────
 
@@ -1073,6 +1149,10 @@ class NaverOrderWorker:
         + [단계 7.1] 웰컴 모달/팝업 처리
         """
         self._set_status("검색 버튼 클릭")
+
+        # 검색 전 팝업이 가리면 검색 버튼 미발견 → 선제 닫기
+        self._dismiss_popups(max_count=3)
+
         clicked = False
         if ah.element_exists(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5):
             ah.wait_and_click(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=5, log_callback=self._log)
@@ -1080,22 +1160,31 @@ class NaverOrderWorker:
             time.sleep(1.5)
             clicked = True
         else:
-            self._log("⚠ 검색 버튼 미발견 → 좌표 탭 시도")
-            try:
-                size = self.driver.get_window_size()
-                w, h = size['width'], size['height']
-                # 마이쇼핑.xml 기준 비율: x=523/1080, y=2136/2400
-                tap_x = int(w * 0.484)
-                tap_y = int(h * 0.890)
-                ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-                self._log(f"✅ 검색 버튼 좌표 탭 완료 ({tap_x}, {tap_y})")
+            # 팝업 때문에 가려졌을 수 있음 → 한 번 더 닫고 재탐색
+            self._dismiss_popups(max_count=2)
+            if ah.element_exists(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=3):
+                ah.wait_and_click(self.driver, SEARCH_BTN_IN_MY_XPATH, timeout=3, log_callback=self._log)
+                self._log("✅ 마이쇼핑 검색 버튼 클릭 완료 (팝업 닫은 후)")
                 time.sleep(1.5)
                 clicked = True
-            except Exception as e:
-                self._log(f"❌ 검색 버튼 클릭 실패: {e}")
-                clicked = False
+            else:
+                self._log("⚠ 검색 버튼 미발견 → 좌표 탭 시도")
+                try:
+                    size = self.driver.get_window_size()
+                    w, h = size['width'], size['height']
+                    # 마이쇼핑.xml 기준 비율: x=523/1080, y=2136/2400
+                    tap_x = int(w * 0.484)
+                    tap_y = int(h * 0.890)
+                    ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+                    self._log(f"✅ 검색 버튼 좌표 탭 완료 ({tap_x}, {tap_y})")
+                    time.sleep(1.5)
+                    clicked = True
+                except Exception as e:
+                    self._log(f"❌ 검색 버튼 클릭 실패: {e}")
+                    clicked = False
 
         # [단계 7.1] 웰컴 모달/팝업 닫기 버튼 발견 시 클릭
+        self._dismiss_popups(max_count=2)
         self._check_and_close_welcome_modals(step_label="7.1")
         return clicked
 
