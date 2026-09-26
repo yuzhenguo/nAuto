@@ -2199,92 +2199,93 @@ class NaverOrderWorker:
         return merged[:max_n]
 
     def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 옵션 체크박스: 1번째 체크박스 탭 → 1초 대기 → 우측 화살표 클릭 → 1.2초 대기 → 2번째 체크박스 탭 후 진행."""
+        """[단계 12] 옵션 체크박스: 1번째 탭 → 1초 대기 → 화살표 클릭 → 1.2초 대기 → 2번째 탭 (무조건)."""
         self._set_status("체크박스/옵션 선택")
         self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (threshold 0.80→0.70)")
 
         region = self._option_checkbox_region()
         boxes = []
-        used_thr = CHECKBOX_MATCH_THRESHOLDS[-1]
         for thr in CHECKBOX_MATCH_THRESHOLDS:
             boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
             if boxes:
-                used_thr = thr
                 self._log(f"  ℹ threshold={thr:.2f} 에서 체크박스 {len(boxes)}개 인식")
                 break
             if thr != CHECKBOX_MATCH_THRESHOLDS[-1]:
-                self._log(f"  ℹ threshold={thr:.2f} 미검출 (연한 회색 #F5F7FA) → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
+                self._log(f"  ℹ threshold={thr:.2f} 미검출 → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
             else:
                 self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
 
-        first_cx, first_cy = None, None
-        if boxes:
-            first_cx, first_cy, score = boxes[0]
-            self._log(f"  👉 1번째 체크박스 탭 ({first_cx}, {first_cy}) score={score:.4f}")
-            self._soft_tap(first_cx, first_cy, duration_ms=180)
-            time.sleep(1.0)
-        else:
-            self._log("  ⚠ 1번째 체크박스 미검출 → 계속 진행")
+        if not boxes:
+            self._log("  ⚠ 체크박스 없음 → 건너뜀")
+            self._log("✅ 옵션 체크박스 처리 완료")
+            return True
 
-        # 화살표 클릭 (옵션 펼치기)
-        # 화살표는 화면 맨 우측(80%~98%)에 위치함 (한글 텍스트 오인식 방지)
+        # ── 1번째 체크박스 탭 ──
+        first_cx, first_cy, first_score = boxes[0]
+        self._log(f"  👉 1번째 체크박스 탭 ({first_cx}, {first_cy}) score={first_score:.4f}")
+        self._soft_tap(first_cx, first_cy, duration_ms=180)
+        time.sleep(1.0)
+
+        # ── 화살표 클릭 (무조건 실행) ──
         arrow_min_x = int(region["w"] * 0.80)
         arrow_max_x = int(region["w"] * 0.98)
         arrow = None
 
-        # 1) 1번째 체크박스 Y좌표 근처 우선 탐색 (정확도 극대화)
-        if first_cy is not None:
-            near_min_y = max(region["min_y"], first_cy - 80)
-            near_max_y = min(region["max_y"], first_cy + 80)
-            for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
-                if os.path.exists(arrow_tmpl):
-                    arrow = self._find_image_coords(
-                        arrow_tmpl, threshold=0.68,
-                        min_x=arrow_min_x,
-                        max_x=arrow_max_x,
-                        min_y=near_min_y,
-                        max_y=near_max_y,
-                    )
-                    if arrow:
-                        self._log(f"  🎯 화살표 발견(행 부근)! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
-                        break
+        # 화살표는 '옵션선택' 헤더 바로 아래 행에 있음
+        # opt_y 기반으로 탐색 max_y 제한 (아래 '최대할인가 ∨' 화살표 오인식 방지)
+        opt_y = region.get("opt_y")
+        if opt_y:
+            arrow_max_y = min(region["max_y"], opt_y + 350)
+        else:
+            arrow_max_y = min(region["max_y"], first_cy + 120)
+        arrow_min_y = region["min_y"]
+        self._log(f"  ℹ 화살표 탐색 범위: y={arrow_min_y}~{arrow_max_y} (옵션선택 y={opt_y})")
 
-        # 2) 전체 옵션 영역 우측(80%~98%) 탐색
+        # 1) 1번째 체크박스 Y좌표 근처 우선 탐색 (좁은 범위)
+        near_min_y = max(arrow_min_y, first_cy - 80)
+        near_max_y = min(arrow_max_y, first_cy + 80)
+        for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
+            if os.path.exists(arrow_tmpl):
+                arrow = self._find_image_coords(
+                    arrow_tmpl, threshold=0.58,
+                    min_x=arrow_min_x, max_x=arrow_max_x,
+                    min_y=near_min_y, max_y=near_max_y,
+                )
+                if arrow:
+                    self._log(f"  🎯 화살표 발견(행 부근)! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
+                    break
+
+        # 2) opt_y 제한 범위 내 전체 우측 탐색
         if not arrow:
             for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
                 if os.path.exists(arrow_tmpl):
                     arrow = self._find_image_coords(
-                        arrow_tmpl, threshold=0.68,
-                        min_x=arrow_min_x,
-                        max_x=arrow_max_x,
-                        min_y=region["min_y"],
-                        max_y=region["max_y"],
+                        arrow_tmpl, threshold=0.58,
+                        min_x=arrow_min_x, max_x=arrow_max_x,
+                        min_y=arrow_min_y, max_y=arrow_max_y,
                     )
                     if arrow:
                         self._log(f"  🎯 화살표 발견! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
                         break
 
-        # 3) 화살표 클릭 실행 (이미지 미매칭 시 1번째 행 우측 끝 좌표로 자동 클릭)
+        # 3) 화살표 클릭 (이미지 미인식 시 폴백: 1번째 행 우측 끝)
         if arrow:
             self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]})")
             ah.tap_by_coords(self.driver, arrow[0], arrow[1], self._log)
-        elif first_cy is not None:
-            fallback_x = int(region["w"] * 0.93)
-            self._log(f"  👉 화살표 이미지 미인식 → 1번째 옵션 우측 화살표 영역 클릭 ({fallback_x}, {first_cy})")
-            ah.tap_by_coords(self.driver, fallback_x, first_cy, self._log)
         else:
-            self._log("  ⚠ 화살표 위치 감지 실패")
+            fallback_x = int(region["w"] * 0.93)
+            self._log(f"  👉 화살표 미인식 → 폴백 클릭 ({fallback_x}, {first_cy})")
+            ah.tap_by_coords(self.driver, fallback_x, first_cy, self._log)
 
-        # 화살표 클릭 후 옵션 펼쳐지도록 1.2초 휴식
         time.sleep(1.2)
 
-        # 펼쳐진 화면에서 2번째 체크박스 탐색 및 탭
+        # ── 화살표 클릭 후 2번째 체크박스 탐색 및 탭 ──
         region = self._option_checkbox_region()
         boxes2 = []
         for thr in CHECKBOX_MATCH_THRESHOLDS:
             boxes2 = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
             if boxes2:
-                self._log(f"  ℹ 펼친 뒤 threshold={thr:.2f} 에서 체크박스 {len(boxes2)}개 인식")
+                self._log(f"  ℹ 화살표 클릭 후 체크박스 {len(boxes2)}개 인식 (threshold={thr:.2f})")
                 break
 
         if len(boxes2) >= 2:
@@ -2298,10 +2299,11 @@ class NaverOrderWorker:
             self._soft_tap(cx2, cy2, duration_ms=180)
             time.sleep(1.0)
         else:
-            self._log("  ⚠ 펼친 뒤 체크박스 미감지")
+            self._log("  ⚠ 화살표 클릭 후 체크박스 미감지")
 
         self._log("✅ 옵션 체크박스 처리 완료")
         return True
+
 
     # ─── 단계 13: 바로구매 이미지 인식 클릭 ──────────────────────────────────
 
