@@ -65,6 +65,7 @@ IMG_SEARCH_INPUT2 = os.path.join(_IMG_DIR, "검색입력2.png")  # 검색 입력
 IMG_SEARCH_ICON   = os.path.join(_IMG_DIR, "검색아이콘.png") # 검색 아이콘 (단계 9)
 IMG_MALL_SEARCH   = os.path.join(_IMG_DIR, "검색어를입력해주세요.png")
 IMG_MALL_SEARCH1  = os.path.join(_IMG_DIR, "검색어를입력해주세요1.png")
+IMG_MALL_SEARCH2  = os.path.join(_IMG_DIR, "검색2.png")
 IMG_REVIEW_SORT   = os.path.join(_IMG_DIR, "리뷰많은순.png")   # 리뷰많은순 정렬 팝업 전체
 IMG_REVIEW_SORT1  = os.path.join(_IMG_DIR, "리뷰많은순1.png")  # 리뷰많은순 선택 항목
 IMG_CHECKBOX      = os.path.join(_IMG_DIR, "체크박스.png")   # 체크박스 (단계 12)
@@ -1240,24 +1241,56 @@ class NaverOrderWorker:
             except Exception as _e:
                 self._log(f"  ⚠ '추천순' 클릭 실패: {_e}")
 
-            # 리뷰많은순1.png 이미지 인식 → 클릭
+            # ── 리뷰 많은순 선택: XPath 1순위 → 이미지 인식 2순위 → 좌표 고정 폴백 ──
             _clicked_review = False
-            if os.path.exists(IMG_REVIEW_SORT1):
-                _coords = self._find_image_coords(IMG_REVIEW_SORT1, threshold=0.70)
+
+            # 1순위: XPath 텍스트 매칭 (가장 안정적)
+            _review_xpaths = [
+                '//*[@text="리뷰 많은순"]',
+                '//*[contains(@text, "리뷰 많은순")]',
+                '//*[@text="리뷰많은순"]',
+                '//*[contains(@text, "리뷰많은순")]',
+                '//android.widget.TextView[@text="리뷰 많은순"]',
+                '//android.widget.TextView[contains(@text, "리뷰 많은순")]',
+            ]
+            for _xp in _review_xpaths:
+                try:
+                    if ah.element_exists(self.driver, _xp, timeout=2):
+                        _el = self.driver.find_element(By.XPATH, _xp)
+                        _rect = _el.rect
+                        _cx = _rect['x'] + _rect['width'] // 2
+                        _cy = _rect['y'] + _rect['height'] // 2
+                        self._log(f"  🎯 '리뷰 많은순' XPath 발견! ({_cx}, {_cy}) → 클릭")
+                        ah.tap_by_coords(self.driver, _cx, _cy, self._log)
+                        time.sleep(1.5)
+                        _clicked_review = True
+                        break
+                except Exception:
+                    continue
+
+            # 2순위: 리뷰많은순1.png 이미지 인식
+            if not _clicked_review and os.path.exists(IMG_REVIEW_SORT1):
+                _coords = self._find_image_coords(IMG_REVIEW_SORT1, threshold=0.65)
                 if _coords:
                     self._log(f"  🎯 '리뷰많은순1' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
                     ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
                     time.sleep(1.5)
                     _clicked_review = True
+
+            # 3순위: 리뷰많은순.png 전체 화면 이미지 인식
             if not _clicked_review and os.path.exists(IMG_REVIEW_SORT):
-                _coords = self._find_image_coords(IMG_REVIEW_SORT, threshold=0.70)
+                _coords = self._find_image_coords(IMG_REVIEW_SORT, threshold=0.65)
                 if _coords:
                     self._log(f"  🎯 '리뷰많은순' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
                     ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
                     time.sleep(1.5)
                     _clicked_review = True
+
+            # 최종 폴백: 고정 좌표 (247, 1545) — 리뷰많은순.png 기준 위치
             if not _clicked_review:
-                self._log("  ⚠ 리뷰많은순 이미지 미감지 → 정렬 변경 없이 계속 진행")
+                self._log("  ⚠ 리뷰많은순 이미지/XPath 미감지 → 고정 좌표(247, 1545) 탭")
+                ah.tap_by_coords(self.driver, 247, 1545, self._log)
+                time.sleep(1.5)
         else:
             self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
 
@@ -1294,53 +1327,63 @@ class NaverOrderWorker:
 
     def _open_mall_search_box(self) -> bool:
         """
-        [단계 8.6] 먽 내 검색창 열기
-        - //android.widget.Button[@text="검색창 펼치기"] 존재 시 클릭
-        - 후 검색어를입력해주세쥰1.png 이미지 매칭 클릭
+        [단계 8.6] 몰 내 검색창 열기
+        - '검색창 펼치기' 클릭 없이
+        - '검색어를입력해주세요1.png' 혹은 '검색2.png' 인식해서 클릭
         """
-        self._set_status("먽 검색창 오프")
+        self._set_status("몰 검색창 오픈")
+        self._log("🔍 몰 검색창 열기 시도: '검색어를입력해주세요1.png' 또는 '검색2.png' 인식")
 
-        # 1단계: '검색창 펼치기' 버튼 확인 및 클릭
-        expand_xpath = '//android.widget.Button[@text="검색창 펼치기"]'
-        if ah.element_exists(self.driver, expand_xpath, timeout=4):
-            self._log("  📌 '검색창 펼치기' 버튼 발견 → 클릭")
-            ah.wait_and_click(self.driver, expand_xpath, timeout=4, log_callback=self._log)
-            time.sleep(1.5)
+        # 스토어 진입 후 렌더링 대기 및 반복 탐색 (최대 약 8초)
+        start_time = time.time()
+        while time.time() - start_time < 8.0:
+            # 1순위: 검색어를입력해주세요1.png 인식
+            if os.path.exists(IMG_MALL_SEARCH1):
+                coords = self._find_image_coords(IMG_MALL_SEARCH1, threshold=0.70)
+                if coords:
+                    self._log(f"  🎯 '검색어를입력해주세요1' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(1.0)
+                    return True
 
-        # 2단계: 검색어를입력해주세쥰1.png 이미지 매칭 클릭
-        if os.path.exists(IMG_MALL_SEARCH1):
-            coords = self._find_image_coords(IMG_MALL_SEARCH1, threshold=0.70)
-            if coords:
-                self._log(f"  🎯 '검색어를입력해주세쥰1' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                time.sleep(1.0)
-                return True
+            # 2순위: 검색2.png 인식
+            if os.path.exists(IMG_MALL_SEARCH2):
+                coords = self._find_image_coords(IMG_MALL_SEARCH2, threshold=0.70)
+                if coords:
+                    self._log(f"  🎯 '검색2' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(1.0)
+                    return True
 
-        if os.path.exists(IMG_MALL_SEARCH):
-            coords = self._find_image_coords(IMG_MALL_SEARCH, threshold=0.70)
-            if coords:
-                self._log(f"  🎯 '검색어를입력해주세지' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                time.sleep(1.0)
-                return True
+            # 3순위: 폴백 - 기존 검색어를입력해주세요.png 인식
+            if os.path.exists(IMG_MALL_SEARCH):
+                coords = self._find_image_coords(IMG_MALL_SEARCH, threshold=0.70)
+                if coords:
+                    self._log(f"  🎯 '검색어를입력해주세요' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(1.0)
+                    return True
 
-        # 3단계: EditText[@hint] XPath 폴백
-        search_hint_xpaths = [
-            '//android.widget.EditText[@hint="검색어를 입력해주세지"]',
-            '//android.widget.EditText[@hint="검색어 입력"]',
-            '//android.widget.EditText[contains(@hint, "검색")]',
-        ]
-        for xp in search_hint_xpaths:
-            if ah.element_exists(self.driver, xp, timeout=2):
-                el = self.driver.find_element(By.XPATH, xp)
-                rect = el.rect
-                cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
-                self._log(f"  ✅ 검색 EditText 힙트 XPath 발견 ({cx}, {cy}) → 클릭")
-                ah.tap_by_coords(self.driver, cx, cy, self._log)
-                time.sleep(1.0)
-                return True
+            # 4순위: 폴백 - EditText 힌트 XPath
+            search_hint_xpaths = [
+                '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
+                '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
+                '//android.widget.EditText[@hint="검색어 입력"]',
+                '//android.widget.EditText[contains(@hint, "검색")]',
+            ]
+            for xp in search_hint_xpaths:
+                if ah.element_exists(self.driver, xp, timeout=1):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    rect = el.rect
+                    cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
+                    self._log(f"  ✅ 검색 EditText 힌트 XPath 발견 ({cx}, {cy}) → 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(1.0)
+                    return True
 
-        self._log("  ⚠ 먽 검색창 오프 미확인 → 계속 진행")
+            time.sleep(0.8)
+
+        self._log("  ⚠ 몰 검색창 오픈 미확인 → 계속 진행")
         return False
 
     def _click_mall_product(self, product_name: str) -> bool:
@@ -6498,12 +6541,12 @@ class NaverOrderWorker:
             self._log("❌ 스토어 카드 클릭 실패")
             return False
 
-        # [단계 8.6~8.7] '검색창 펼치기' + '검색어를입력해주세쥰1.png' 클릭
+        # [단계 8.6] 몰 내 검색창 클릭 ('검색어를입력해주세요1.png' 혹은 '검색2.png')
         self._open_mall_search_box()
 
-        # [단계 9.5] 엑셀 search_keyword()진짜 검색어)를 먽 검색상자에 입력
+        # [단계 9.5] 엑셀 search_keyword (실제 상품 검색어)를 몰 검색상자에 입력
         if not self._input_search_keyword(row.search_keyword):
-            self._log("❌ 먽 검색어 입력 실패")
+            self._log("❌ 몰 검색어 입력 실패")
             return False
 
         # [단계 9.6] 먽 검색 실행 (엔터)
