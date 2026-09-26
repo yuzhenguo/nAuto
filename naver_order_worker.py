@@ -15,7 +15,7 @@ naver_order_worker.py
 9     검색아이콘.png 이미지 인식 클릭, 5초 대기
 10    상품 리스트에서 판매자명 + 상품명 매칭 클릭, 5초 대기
 11    구매하기 버튼 클릭, 5초 대기
-12    체크박스.png 이미지 인식 클릭, 2초 대기
+12    옵션 체크박스 최대 5개 (1번째 탭 → 드롭다운 펼침 → 2~5번째 순차 체크)
 13    바로구매.png / 바로구매2/3/4 이미지 인식 클릭, 8초 대기
 14    변경 버튼 클릭, 3초 대기
 15    스크롤 다운
@@ -2780,33 +2780,36 @@ class NaverOrderWorker:
         merged.sort(key=lambda t: t[1])
         return merged[:max_n]
 
-    def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 옵션 체크박스: 1번째 탭 → 1초 대기 → 화살표 클릭 → 1.2초 대기 → 2번째 탭 (무조건)."""
-        self._set_status("체크박스/옵션 선택")
-        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (threshold 0.80→0.70)")
-
-        region = self._option_checkbox_region()
+    def _find_checkbox_boxes(self, region: dict, max_n: int = 5):
+        """threshold 내림차순으로 체크박스 탐색. [(cx,cy,score), ...]"""
         boxes = []
         for thr in CHECKBOX_MATCH_THRESHOLDS:
-            boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+            boxes = self._find_all_checkbox_hits(region, max_n=max_n, min_score=thr)
             if boxes:
                 self._log(f"  ℹ threshold={thr:.2f} 에서 체크박스 {len(boxes)}개 인식")
                 break
-            if thr != CHECKBOX_MATCH_THRESHOLDS[-1]:
-                self._log(f"  ℹ threshold={thr:.2f} 미검출 → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
-            else:
-                self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
+        return boxes
+
+    def _click_checkbox(self, product_name: str = "") -> bool:
+        """
+        [단계 12] 옵션 체크박스 최대 5개까지 체크
+        1) 위에서부터 1번째 체크
+        2) 옵션선택 드롭다운 펼침 → 2번째 체크
+        3)~5) 드롭다운 재펼침 후 3~5번째가 있으면 순차 체크
+        """
+        self._set_status("체크박스/옵션 선택")
+        self._log("🔍 체크박스 및 옵션 항목 탐색 (최대 5개, threshold 0.80→0.70)")
+
+        MAX_CHECKS = 5
+        region = self._option_checkbox_region()
+        boxes = self._find_checkbox_boxes(region, max_n=MAX_CHECKS)
 
         if not boxes:
             self._log("  ⚠ 체크박스 없음 → 옵션선택 좌표로 드롭다운 먼저 펼침")
             self._click_option_dropdown_by_label(region, first_cy=None)
             time.sleep(1.4)
             region = self._option_checkbox_region()
-            for thr in CHECKBOX_MATCH_THRESHOLDS:
-                boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
-                if boxes:
-                    self._log(f"  ℹ 펼친 후 체크박스 {len(boxes)}개 인식 (threshold={thr:.2f})")
-                    break
+            boxes = self._find_checkbox_boxes(region, max_n=MAX_CHECKS)
             if not boxes:
                 self._log("  ⚠ 드롭다운 클릭 후에도 체크박스 미검출 → 건너뜀")
                 self._log("✅ 옵션 체크박스 처리 완료")
@@ -2817,34 +2820,40 @@ class NaverOrderWorker:
         self._log(f"  👉 1번째 체크박스 탭 ({first_cx}, {first_cy}) score={first_score:.4f}")
         self._soft_tap(first_cx, first_cy, duration_ms=180)
         time.sleep(1.0)
+        checked = 1
 
-        # ── 옵션선택 이미지 좌표 기준 드롭다운 클릭 (화살표 인식 안 함) ──
-        self._click_option_dropdown_by_label(region, first_cy=first_cy)
-        time.sleep(1.2)
+        # ── 2~5번째: 드롭다운 펼침 → N번째 체크박스 탭 ──
+        for n in range(2, MAX_CHECKS + 1):
+            region = self._option_checkbox_region()
+            self._log(f"  📌 {n}번째 체크박스 위해 드롭다운 펼침 시도")
+            self._click_option_dropdown_by_label(region, first_cy=first_cy)
+            time.sleep(1.2)
 
-        # ── 드롭다운 클릭 후 2번째 체크박스 탐색 및 탭 ──
-        region = self._option_checkbox_region()
-        boxes2 = []
-        for thr in CHECKBOX_MATCH_THRESHOLDS:
-            boxes2 = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
-            if boxes2:
-                self._log(f"  ℹ 드롭다운 클릭 후 체크박스 {len(boxes2)}개 인식 (threshold={thr:.2f})")
+            region = self._option_checkbox_region()
+            boxes_n = self._find_checkbox_boxes(region, max_n=MAX_CHECKS)
+            if len(boxes_n) >= n:
+                cx, cy, score = boxes_n[n - 1]
+                self._log(f"  👉 {n}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._soft_tap(cx, cy, duration_ms=180)
+                time.sleep(1.0)
+                checked = n
+                first_cy = cy  # 이후 드롭다운 y 기준 갱신
+            elif len(boxes_n) == 1 and n == 2:
+                # 펼친 직후 새 옵션 1개만 보이는 경우
+                cx, cy, score = boxes_n[0]
+                self._log(f"  👉 펼친 옵션 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._soft_tap(cx, cy, duration_ms=180)
+                time.sleep(1.0)
+                checked = n
+                first_cy = cy
+            else:
+                self._log(
+                    f"  ℹ {n}번째 체크박스 없음 "
+                    f"(인식 {len(boxes_n)}개) → {checked}개까지 체크 완료"
+                )
                 break
 
-        if len(boxes2) >= 2:
-            cx2, cy2, score2 = boxes2[1]
-            self._log(f"  👉 2번째 체크박스 탭 ({cx2}, {cy2}) score={score2:.4f}")
-            self._soft_tap(cx2, cy2, duration_ms=180)
-            time.sleep(1.0)
-        elif len(boxes2) == 1:
-            cx2, cy2, score2 = boxes2[0]
-            self._log(f"  👉 펼친 옵션 체크박스 탭 ({cx2}, {cy2}) score={score2:.4f}")
-            self._soft_tap(cx2, cy2, duration_ms=180)
-            time.sleep(1.0)
-        else:
-            self._log("  ⚠ 드롭다운 클릭 후 체크박스 미감지")
-
-        self._log("✅ 옵션 체크박스 처리 완료")
+        self._log(f"✅ 옵션 체크박스 처리 완료 (총 {checked}개 / 최대 {MAX_CHECKS})")
         return True
 
 
