@@ -1102,22 +1102,301 @@ class NaverOrderWorker:
 
     # ─── 단계 8~9: 검색어 입력 + 검색 실행 ──────────────────────────────────
 
+    def _tap_search_field_right_of_back(self) -> Optional[tuple]:
+        """
+        '이전으로 가기' 버튼/이미지 좌표 기준 오른쪽으로 검색 입력창 탭.
+        첨부의 몰 검색 UI: ← 바로 오른쪽에 '검색어를 입력해주세요.' 입력칸이 있음.
+        Returns: 탭한 (x, y) 또는 None
+        """
+        import subprocess
+        import re as _re
+
+        back_xpaths = [
+            '//android.view.View[@content-desc="이전으로 가기"]/android.widget.Image',
+            '//android.view.View[@content-desc="이전으로 가기"]',
+            '//*[@content-desc="이전으로 가기"]',
+        ]
+        for xp in back_xpaths:
+            try:
+                if not ah.element_exists(self.driver, xp, timeout=2.0):
+                    continue
+                el = self.driver.find_element(By.XPATH, xp)
+                bounds = el.get_attribute("bounds") or ""
+                m = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                if m:
+                    x1, y1, x2, y2 = map(int, m.groups())
+                else:
+                    rect = el.rect
+                    x1 = rect["x"]
+                    y1 = rect["y"]
+                    x2 = x1 + rect["width"]
+                    y2 = y1 + rect["height"]
+
+                # 뒤로가기 오른쪽 = 검색 입력칸 시작부 (첨부 기준)
+                # 이미지 우측 끝 + 여유 → 입력칸 중앙 쪽으로
+                try:
+                    size = self.driver.get_window_size()
+                    w = size["width"]
+                except Exception:
+                    w = 1080
+                cy = (y1 + y2) // 2
+                # 뒤로가기 우측 + 120~220px, 또는 화면 35% 지점 중 더 오른쪽
+                tap_x = max(x2 + 150, int(w * 0.35))
+                # 검색 아이콘(우측)을 치지 않도록 상한
+                tap_x = min(tap_x, int(w * 0.70))
+                tap_y = cy
+                if tap_y < 40 or tap_y > 400:
+                    continue
+
+                self._log(
+                    f"  📌 '이전으로 가기' bounds=[{x1},{y1}][{x2},{y2}] "
+                    f"→ 오른쪽 검색창 탭 ({tap_x},{tap_y})"
+                )
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap",
+                     str(tap_x), str(tap_y)],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(0.8)
+                return (tap_x, tap_y)
+            except Exception:
+                continue
+        return None
+
+    def _paste_text_via_clipboard(self, text: str) -> bool:
+        """
+        한글 등 유니코드 입력용: 클립보드 설정 후 PASTE(keyevent 279).
+        adb input text 는 ASCII만 지원해 한글이 비어 들어간다.
+        """
+        import subprocess
+        if not text:
+            return False
+
+        # 1) Appium 클립보드
+        set_ok = False
+        try:
+            self.driver.set_clipboard_text(text)
+            set_ok = True
+        except Exception:
+            try:
+                self.driver.execute_script(
+                    "mobile: setClipboard",
+                    {"content": text, "contentType": "plaintext"},
+                )
+                set_ok = True
+            except Exception as e:
+                self._log(f"  ⚠ Appium 클립보드 설정 실패: {e}")
+
+        # 2) ADB Appium Settings 클립보드 브로드캐스트 폴백
+        if not set_ok:
+            try:
+                subprocess.run(
+                    [
+                        "adb", "-s", self.device_id, "shell",
+                        "am", "broadcast", "-a", "io.appium.settings.clipboard.set",
+                        "--es", "text", text,
+                    ],
+                    capture_output=True, timeout=5,
+                )
+                set_ok = True
+            except Exception as e:
+                self._log(f"  ⚠ ADB 클립보드 폴백 실패: {e}")
+
+        if not set_ok:
+            return False
+
+        time.sleep(0.3)
+        # 포커스 필드에 붙여넣기
+        subprocess.run(
+            ["adb", "-s", self.device_id, "shell", "input", "keyevent", "279"],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(0.6)
+        self._log(f"  ✅ 클립보드 붙여넣기 완료: '{text}'")
+        return True
+
+    def _click_recent_search_keyword(self, keyword: str) -> bool:
+        """최근 검색어 목록에 동일 키워드가 있으면 클릭 (입력 생략)."""
+        if not keyword:
+            return False
+        safe = keyword.replace('"', "").replace("'", "").strip()
+        xpaths = [
+            f'//android.widget.TextView[@text="{safe}"]',
+            f'//*[(@text="{safe}") and not(contains(@content-desc,"이전"))]',
+            f'//android.view.View[contains(@text,"{safe}")]',
+            f'//*[contains(@text,"{safe}")]',
+        ]
+        for xp in xpaths:
+            try:
+                if not ah.element_exists(self.driver, xp, timeout=1.2):
+                    continue
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    try:
+                        rect = el.rect
+                    except Exception:
+                        continue
+                    cy = rect["y"] + rect["height"] // 2
+                    # 최근검색어는 상단~중상단 (상태바/GNB 아래)
+                    if cy < 180 or cy > 900:
+                        continue
+                    cx = rect["x"] + min(rect["width"] // 2, 200)
+                    self._log(f"  🎯 최근 검색어 클릭: '{safe}' ({cx},{cy})")
+                    import subprocess
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(cx), str(cy)],
+                        capture_output=True, timeout=5,
+                    )
+                    time.sleep(1.5)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _verify_search_keyword_entered(self, keyword: str) -> bool:
+        """입력란/화면에 검색어가 반영됐는지 확인."""
+        if not keyword:
+            return False
+        safe = keyword.replace('"', "").replace("'", "").strip()
+        # EditText value
+        for xp in (
+            '//android.widget.EditText[@focused="true"]',
+            '//android.widget.EditText[@resource-id="input_text"]',
+            '//android.widget.EditText',
+        ):
+            try:
+                if not ah.element_exists(self.driver, xp, timeout=0.8):
+                    continue
+                el = self.driver.find_element(By.XPATH, xp)
+                val = (el.text or el.get_attribute("text") or
+                       el.get_attribute("contentDescription") or "")
+                if safe[:6] in (val or ""):
+                    return True
+            except Exception:
+                continue
+        # 화면에 텍스트 노드로 노출
+        try:
+            if ah.element_exists(
+                self.driver,
+                f'//*[contains(@text,"{safe[:8]}")]',
+                timeout=0.8,
+            ):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _type_search_keyword(self, keyword: str) -> bool:
+        """검색어 실제 입력 (한글: 클립보드 붙여넣기 우선)."""
+        import subprocess
+
+        # EditText 있으면 mobile:type / send_keys
+        el = None
+        for xp in (
+            '//android.widget.EditText[@focused="true"]',
+            '//android.widget.EditText[@resource-id="input_text"]',
+            '//android.widget.EditText[contains(@hint,"검색")]',
+            '//android.widget.EditText',
+        ):
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1.2):
+                    el = self.driver.find_element(By.XPATH, xp)
+                    break
+            except Exception:
+                continue
+
+        if el:
+            try:
+                el.clear()
+                time.sleep(0.2)
+            except Exception:
+                pass
+            try:
+                self.driver.execute_script("mobile: type", {"text": keyword})
+                time.sleep(0.5)
+                if self._verify_search_keyword_entered(keyword):
+                    return True
+            except Exception as e:
+                self._log(f"  ⚠ mobile: type 실패: {e}")
+            try:
+                el.send_keys(keyword)
+                time.sleep(0.5)
+                if self._verify_search_keyword_entered(keyword):
+                    return True
+            except Exception as e:
+                self._log(f"  ⚠ send_keys 실패: {e}")
+
+        # 포커스만 있는 WebView 입력칸: mobile: type 단독 시도
+        try:
+            self.driver.execute_script("mobile: type", {"text": keyword})
+            time.sleep(0.5)
+            if self._verify_search_keyword_entered(keyword):
+                self._log("  ✅ mobile: type (포커스) 입력 성공")
+                return True
+        except Exception:
+            pass
+
+        # 한글 핵심: 클립보드 + PASTE (adb input text 금지)
+        self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 시도")
+        if self._paste_text_via_clipboard(keyword):
+            if self._verify_search_keyword_entered(keyword):
+                return True
+            # 검증 실패해도 붙여넣기는 됐을 수 있음 (WebView text 미노출)
+            self._log("  ⚠ 입력 텍스트 UI 검증 실패 → 붙여넣기 결과는 유지하고 진행")
+            return True
+
+        # ASCII 전용 최후 폴백
+        try:
+            ascii_only = all(ord(c) < 128 for c in keyword)
+            if ascii_only:
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "text",
+                     keyword.replace(" ", "%s")],
+                    capture_output=True, timeout=8,
+                )
+                time.sleep(0.5)
+                return True
+        except Exception:
+            pass
+        return False
+
     def _input_search_keyword(self, keyword: str) -> bool:
         """
-        [단계 8] 검색입력 이미지 / OCR 인식 → 검색 입력창 클릭 → 검색어 입력
+        [단계 8] 검색 입력창 클릭 → 검색어 입력
+        - 0순위: 최근 검색어에 있으면 클릭
+        - 1순위: '이전으로 가기' 오른쪽 좌표 탭
+        - 입력: 클립보드 붙여넣기 (한글 adb input text 불가)
         """
         self._set_status(f"검색어 입력: {keyword}")
         self._log(f"🔍 검색어 입력: '{keyword}'")
 
+        import subprocess
+
+        # 0순위: 최근 검색어 직접 클릭 (이미 펼쳐진 검색 UI)
+        if self._click_recent_search_keyword(keyword):
+            self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
+            return True
+
         tap_coords = None
 
-        # (사용자 요청으로 검색입력.png 등 이미지 매칭 및 OCR 검색 제외됨)
-        # 1순위: EditText XPath 탐색
+        # 1순위: 이전으로 가기 오른쪽 = 검색 입력칸
+        tap_coords = self._tap_search_field_right_of_back()
+
+        # 탭 후 최근검색어가 보이면 클릭
+        if self._click_recent_search_keyword(keyword):
+            self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
+            return True
+
+        # 2순위: EditText XPath
         if not tap_coords:
             search_xpaths = [
+                '//android.widget.EditText[@resource-id="input_text"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
+                '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
                 '//android.widget.EditText[@hint="검색어 입력"]',
                 '//android.widget.EditText[@hint="상품, 브랜드, 쇼핑몰 검색"]',
+                '//android.widget.EditText[contains(@hint,"검색")]',
                 '//android.widget.EditText',
             ]
             for xpath in search_xpaths:
@@ -1128,50 +1407,47 @@ class NaverOrderWorker:
                         tap_coords = (rect['x'] + rect['width'] // 2,
                                       rect['y'] + rect['height'] // 2)
                         self._log(f"  ✅ EditText 발견 → 좌표: {tap_coords}")
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "tap",
+                             str(tap_coords[0]), str(tap_coords[1])],
+                            capture_output=True, timeout=5,
+                        )
+                        time.sleep(1.0)
                         break
                     except Exception:
                         continue
 
-        if tap_coords:
-            # 입력창 클릭
-            ah.tap_by_coords(self.driver, tap_coords[0], tap_coords[1], self._log)
-            time.sleep(1.0)
-        else:
-            self._log("  ⚠ 검색 입력창 좌표 획득 실패. (기본 화면 중앙 상단 클릭 폴백 시도)")
+        if not tap_coords:
+            self._log("  ⚠ 검색 입력창 좌표 획득 실패. (화면 상단 폴백)")
             try:
                 sz = self.driver.get_window_size()
-                ah.tap_by_coords(self.driver, int(sz['width'] * 0.5), int(sz['height'] * 0.15), self._log)
+                fx, fy = int(sz['width'] * 0.40), int(sz['height'] * 0.08)
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap",
+                     str(fx), str(fy)],
+                    capture_output=True, timeout=5,
+                )
                 time.sleep(1.0)
+                tap_coords = (fx, fy)
             except Exception:
                 pass
 
-        # 텍스트 입력
+        # 입력 전 기존 내용 지우기 (DEL 반복)
         try:
-            focused_xpath = '//android.widget.EditText[@focused="true"]'
-            el = None
-            if ah.element_exists(self.driver, focused_xpath, timeout=2):
-                el = self.driver.find_element(By.XPATH, focused_xpath)
-            elif ah.element_exists(self.driver, '//android.widget.EditText', timeout=2):
-                el = self.driver.find_element(By.XPATH, '//android.widget.EditText')
+            for _ in range(25):
+                subprocess.run(
+                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", "67"],
+                    capture_output=True, timeout=3,
+                )
+        except Exception:
+            pass
+        time.sleep(0.2)
 
-            if el:
-                try:
-                    el.clear()
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-                try:
-                    self.driver.execute_script("mobile: type", {"text": keyword})
-                    time.sleep(0.5)
-                except Exception:
-                    el.send_keys(keyword)
-                    time.sleep(0.5)
-            else:
-                raise Exception("EditText 요소를 찾지 못함")
-
-            self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
-            return True
-            
+        try:
+            if self._type_search_keyword(keyword):
+                self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
+                return True
+            raise Exception("검색어 입력 방법 모두 실패 (한글 클립보드/EditText)")
         except Exception as e:
             self._log(f"  ❌ 검색어 입력 실패: {e}")
             return False
@@ -1339,77 +1615,211 @@ class NaverOrderWorker:
     def _open_mall_search_box(self) -> bool:
         """
         [단계 8.6] 몰 내 검색창 열기
-        - 1단계: '검색창 펼치기' 버튼 확인 및 클릭
-        - 2단계: 그 후 '검색어를입력해주세요1.png', '검색어3.png', '검색2.png' 등 이미지 매칭으로 찾아 클릭
+        - 1단계: '검색창 펼치기' 좌표 탭 (wait_and_click 실패 대비)
+        - 2단계: EditText/이미지로 검색창 확인·클릭
         """
         self._set_status("몰 검색창 오픈")
 
-        # 1단계: '검색창 펼치기' 버튼 확인 및 클릭
-        expand_xpath = '//android.widget.Button[@text="검색창 펼치기"]'
-        if ah.element_exists(self.driver, expand_xpath, timeout=4):
-            self._log("  📌 '검색창 펼치기' 버튼 발견 → 클릭")
-            ah.wait_and_click(self.driver, expand_xpath, timeout=4, log_callback=self._log)
-            time.sleep(1.5)
+        expand_xpaths = [
+            '//android.widget.Button[@text="검색창 펼치기"]',
+            '//android.widget.Button[contains(@text,"검색창 펼치기")]',
+            '//*[contains(@content-desc,"검색창 펼치기")]',
+            '//*[contains(@text,"검색창 펼치기")]',
+        ]
 
-        self._log("🔍 몰 검색창 이미지 매칭 탐색: '검색어를입력해주세요1' / '검색어3' / '검색2'")
-
-        # 2단계: 이미지 매칭으로 검색창 찾아 클릭 (최대 약 8초 동안 반복 탐색)
-        start_time = time.time()
-        while time.time() - start_time < 8.0:
-            # 1순위: 검색어를입력해주세요1.png 인식
-            if os.path.exists(IMG_MALL_SEARCH1):
-                coords = self._find_image_coords(IMG_MALL_SEARCH1, threshold=0.70)
-                if coords:
-                    self._log(f"  🎯 '검색어를입력해주세요1' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(1.0)
-                    return True
-
-            # 2순위: 검색어3.png 인식 ("검색어를")
-            if os.path.exists(IMG_MALL_SEARCH3):
-                coords = self._find_image_coords(IMG_MALL_SEARCH3, threshold=0.70)
-                if coords:
-                    self._log(f"  🎯 '검색어3' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(1.0)
-                    return True
-
-            # 3순위: 검색2.png 인식
-            if os.path.exists(IMG_MALL_SEARCH2):
-                coords = self._find_image_coords(IMG_MALL_SEARCH2, threshold=0.70)
-                if coords:
-                    self._log(f"  🎯 '검색2' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(1.0)
-                    return True
-
-            # 4순위: 폴백 - 기존 검색어를입력해주세요.png 인식
-            if os.path.exists(IMG_MALL_SEARCH):
-                coords = self._find_image_coords(IMG_MALL_SEARCH, threshold=0.70)
-                if coords:
-                    self._log(f"  🎯 '검색어를입력해주세요' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    time.sleep(1.0)
-                    return True
-
-            # 5순위: 폴백 - EditText 힌트 XPath
-            search_hint_xpaths = [
+        def _mall_search_edit_ready() -> bool:
+            for xp in (
+                '//android.widget.EditText[@resource-id="input_text"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
                 '//android.widget.EditText[@hint="검색어 입력"]',
-                '//android.widget.EditText[contains(@hint, "검색")]',
-            ]
+                '//android.widget.EditText[contains(@hint,"검색어")]',
+                '//android.widget.EditText[contains(@hint,"검색")]',
+            ):
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=0.8):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _click_expand_button() -> bool:
+            """
+            상단 GNB '검색창 펼치기'는 y≈146 이라 _safe_click_element(y>=150)에서
+            화면 밖으로 오판 → 스크롤 후 실패한다. ADB 좌표 탭만 사용.
+            """
+            import subprocess
+            for xp in expand_xpaths:
+                try:
+                    if not ah.element_exists(self.driver, xp, timeout=2.5):
+                        continue
+                    els = self.driver.find_elements(By.XPATH, xp)
+                    for el in els:
+                        try:
+                            bounds = el.get_attribute("bounds") or ""
+                            import re as _re
+                            m = _re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                            if m:
+                                x1, y1, x2, y2 = map(int, m.groups())
+                                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                            else:
+                                rect = el.rect
+                                cx = rect["x"] + rect["width"] // 2
+                                cy = rect["y"] + rect["height"] // 2
+                        except Exception:
+                            continue
+                        # 상단 툴바 영역만 (잘못 클릭 방지)
+                        if cy > 350:
+                            continue
+                        self._log(f"  📌 '검색창 펼치기' 발견 → ADB 좌표 탭 ({cx},{cy})")
+                        # WebView 내 Button.click() 은 먹히지 않는 경우가 많아 ADB 직접 탭
+                        try:
+                            subprocess.run(
+                                ["adb", "-s", self.device_id, "shell", "input", "tap",
+                                 str(cx), str(cy)],
+                                capture_output=True, timeout=5,
+                            )
+                            return True
+                        except Exception:
+                            ah.tap_by_coords(self.driver, cx, cy, self._log)
+                            return True
+                except Exception:
+                    continue
+            return False
+
+        # 이미 검색창이 열려 있으면 바로 클릭
+        if _mall_search_edit_ready():
+            self._log("  ✅ 몰 검색 EditText 이미 열림")
+        else:
+            expanded = False
+            for attempt in range(1, 4):
+                if not _click_expand_button():
+                    # 버튼 텍스트가 사라진 경우: 이미 펼쳐졌을 수 있음
+                    if _mall_search_edit_ready():
+                        expanded = True
+                        break
+                    self._log(f"  ⚠ '검색창 펼치기' 미발견 ({attempt}/3)")
+                    time.sleep(0.8)
+                    continue
+                time.sleep(1.8)
+                if _mall_search_edit_ready():
+                    self._log(f"  ✅ 검색창 펼치기 성공 (시도 {attempt})")
+                    expanded = True
+                    break
+                # 버튼이 아직 있으면 클릭이 안 된 것 → 재시도
+                still = False
+                for xp in expand_xpaths:
+                    if ah.element_exists(self.driver, xp, timeout=1.0):
+                        still = True
+                        break
+                if still:
+                    self._log(f"  ⚠ 펼치기 후에도 버튼 잔존 → 재클릭 ({attempt}/3)")
+                else:
+                    # 버튼은 사라졌는데 EditText가 아직이면 조금 더 대기
+                    time.sleep(1.0)
+                    if _mall_search_edit_ready():
+                        expanded = True
+                        break
+                    self._log("  ℹ 펼치기 버튼은 사라짐 → 검색창 후속 탐색")
+                    expanded = True
+                    break
+            if not expanded and not _mall_search_edit_ready():
+                # 최후: 상품페이지.xml 기준 상단 검색 아이콘 비율 탭
+                try:
+                    import subprocess
+                    size = self.driver.get_window_size()
+                    w, h = size["width"], size["height"]
+                    # bounds [720,75][835,218] @1080x2400 → 중심 (777, 146)
+                    fx, fy = int(w * 0.72), int(h * 0.061)
+                    self._log(f"  👉 검색창 펼치기 비율 폴백 ADB 탭 ({fx},{fy})")
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(fx), str(fy)],
+                        capture_output=True, timeout=5,
+                    )
+                    time.sleep(1.8)
+                except Exception:
+                    pass
+
+        self._log("🔍 몰 검색창 탐색: '이전으로 가기' 오른쪽 → EditText → 이미지")
+
+        # 1순위: 이전으로 가기 오른쪽 탭 (첨부 UI — EditText 인식 실패율 높음)
+        if self._tap_search_field_right_of_back():
+            return True
+
+        # 2순위: EditText
+        search_hint_xpaths = [
+            '//android.widget.EditText[@resource-id="input_text"]',
+            '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
+            '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
+            '//android.widget.EditText[@hint="검색어 입력"]',
+            '//android.widget.EditText[contains(@hint, "검색어")]',
+            '//android.widget.EditText[contains(@hint, "검색")]',
+        ]
+        start_time = time.time()
+        while time.time() - start_time < 6.0:
+            # 매 루프마다 뒤로가기 기준 재시도
+            if self._tap_search_field_right_of_back():
+                return True
+
             for xp in search_hint_xpaths:
-                if ah.element_exists(self.driver, xp, timeout=1):
+                try:
+                    if not ah.element_exists(self.driver, xp, timeout=0.6):
+                        continue
                     el = self.driver.find_element(By.XPATH, xp)
                     rect = el.rect
-                    cx, cy = rect['x'] + rect['width'] // 2, rect['y'] + rect['height'] // 2
-                    self._log(f"  ✅ 검색 EditText 힌트 XPath 발견 ({cx}, {cy}) → 클릭")
-                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    cx = rect["x"] + rect["width"] // 2
+                    cy = rect["y"] + rect["height"] // 2
+                    if cy > 500:
+                        continue
+                    self._log(f"  ✅ 검색 EditText 발견 ({cx}, {cy}) → 클릭")
+                    import subprocess
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(cx), str(cy)],
+                        capture_output=True, timeout=5,
+                    )
+                    time.sleep(0.8)
+                    return True
+                except Exception:
+                    continue
+
+            # 이미지 폴백 (임계값 완화)
+            for img_path, label, thr in (
+                (IMG_MALL_SEARCH1, "검색어를입력해주세요1", 0.55),
+                (IMG_MALL_SEARCH3, "검색어3", 0.55),
+                (IMG_MALL_SEARCH2, "검색2", 0.55),
+                (IMG_MALL_SEARCH, "검색어를입력해주세요", 0.55),
+            ):
+                if not os.path.exists(img_path):
+                    continue
+                coords = self._find_image_coords(
+                    img_path, threshold=thr, min_y=0, max_y=420,
+                )
+                if coords:
+                    self._log(f"  🎯 '{label}' 이미지 발견! ({coords[0]}, {coords[1]}) → 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     time.sleep(1.0)
                     return True
 
-            time.sleep(0.8)
+            time.sleep(0.5)
+
+        # 최후 폴백: 상단 검색 입력 영역 탭
+        try:
+            import subprocess
+            size = self.driver.get_window_size()
+            w, h = size["width"], size["height"]
+            fx, fy = int(w * 0.40), int(h * 0.08)
+            self._log(f"  👉 몰 검색창 상단 폴백 탭 ({fx},{fy})")
+            subprocess.run(
+                ["adb", "-s", self.device_id, "shell", "input", "tap",
+                 str(fx), str(fy)],
+                capture_output=True, timeout=5,
+            )
+            time.sleep(1.0)
+            return True
+        except Exception:
+            pass
 
         self._log("  ⚠ 몰 검색창 오픈 미확인 → 계속 진행")
         return False
@@ -6637,12 +7047,21 @@ class NaverOrderWorker:
             return False
 
         # [단계 8.6] 몰 내 검색창 클릭 ('검색어를입력해주세요1.png' 혹은 '검색2.png')
-        self._open_mall_search_box()
+        # 스토어 진입 직후 GNB 렌더 대기
+        time.sleep(1.5)
+        if not self._open_mall_search_box():
+            self._log("  ⚠ 몰 검색창 오픈 미확인 → 1회 재시도")
+            time.sleep(1.0)
+            self._open_mall_search_box()
 
         # [단계 9.5] 엑셀 search_keyword (실제 상품 검색어)를 몰 검색상자에 입력
         if not self._input_search_keyword(row.search_keyword):
-            self._log("❌ 몰 검색어 입력 실패")
-            return False
+            # 검색창이 아직 안 열린 경우 펼치기 재시도 후 재입력
+            self._log("  ⚠ 몰 검색어 입력 실패 → 검색창 재오픈 후 재시도")
+            self._open_mall_search_box()
+            if not self._input_search_keyword(row.search_keyword):
+                self._log("❌ 몰 검색어 입력 실패")
+                return False
 
         # [단계 9.6] 먽 검색 실행 (엔터)
         if not self._click_search_button():
