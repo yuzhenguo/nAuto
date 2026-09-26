@@ -1264,7 +1264,7 @@ class NaverOrderWorker:
                         _cy = _rect['y'] + _rect['height'] // 2
                         self._log(f"  🎯 '리뷰 많은순' XPath 발견! ({_cx}, {_cy}) → 클릭")
                         ah.tap_by_coords(self.driver, _cx, _cy, self._log)
-                        time.sleep(1.5)
+                        time.sleep(2.5)
                         _clicked_review = True
                         break
                 except Exception:
@@ -1276,7 +1276,7 @@ class NaverOrderWorker:
                 if _coords:
                     self._log(f"  🎯 '리뷰많은순1' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
                     ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
-                    time.sleep(1.5)
+                    time.sleep(2.5)
                     _clicked_review = True
 
             # 3순위: 리뷰많은순.png 전체 화면 이미지 인식
@@ -1285,28 +1285,32 @@ class NaverOrderWorker:
                 if _coords:
                     self._log(f"  🎯 '리뷰많은순' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
                     ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
-                    time.sleep(1.5)
+                    time.sleep(2.5)
                     _clicked_review = True
 
             # 최종 폴백: 고정 좌표 (247, 1545) — 리뷰많은순.png 기준 위치
             if not _clicked_review:
                 self._log("  ⚠ 리뷰많은순 이미지/XPath 미감지 → 고정 좌표(247, 1545) 탭")
                 ah.tap_by_coords(self.driver, 247, 1545, self._log)
-                time.sleep(1.5)
+                time.sleep(2.5)
         else:
             self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
 
-        # 2순위: basic_product_card_information 내 스토어명 XPath 탐색
+        # 2순위: basic_product_card_information 내 스토어 링크 XPath 탐색 (사용자 제공 규격)
         store_xpaths = [
-            # 판매자명 + "새 창에서 열림" content-desc 보유 View 및 하위 TextView
-            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]//android.widget.TextView[@text="{safe_seller}"]',
-            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
-            # 판매자명 TextView 직접 탐색
-            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]//android.widget.TextView[@text="{safe_seller}"]',
-            # content-desc만으로 판매자 스토어 View
-            f'//android.view.View[contains(@content-desc, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
-            # 전체 타이틀 포함
-            f'//*[contains(@text, "{safe_seller}") and contains(@content-desc, "새 창에서 열림")]',
+            # 1순위: [사용자 지정] basic_product_card_information_.../스토어 View/TextView[@text="판매자명"]
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
+            # 2순위: contains resource-id 버전
+            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
+            # 3순위: // 계층 버전
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]//android.widget.TextView[@text="{safe_seller}"]',
+            # 4순위: 스토어 View (clickable 컨테이너)
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]',
+            # 5순위: content-desc View 단독
+            f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
+            f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]',
+            # 6순위: 판매자명 TextView 단독
+            f'//android.widget.TextView[@text="{safe_seller}"]',
         ]
 
         for xpath in store_xpaths:
@@ -1318,7 +1322,7 @@ class NaverOrderWorker:
                     cy = rect['y'] + rect['height'] // 2
                     self._log(f"  🎯 스토어 카드 발견! 좌표 ({cx}, {cy}) [xpath={xpath[:60]}] → 클릭")
                     ah.tap_by_coords(self.driver, cx, cy, self._log)
-                    time.sleep(3)
+                    time.sleep(3.0)
                     return True
             except Exception as e:
                 self._log(f"  ⚠ XPath 시도 실패: {e}")
@@ -2195,9 +2199,9 @@ class NaverOrderWorker:
         return merged[:max_n]
 
     def _click_checkbox(self, product_name: str = "") -> bool:
-        """[단계 12] 옵션 체크박스 최대 5개. 2번째부터는 화살표.png 있으면 펼친 뒤 클릭."""
+        """[단계 12] 옵션 체크박스: 1번째 체크박스 탭 → 1초 대기 → 우측 화살표 클릭 → 1.2초 대기 → 2번째 체크박스 탭 후 진행."""
         self._set_status("체크박스/옵션 선택")
-        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (최대 5개, threshold 0.80→0.70)")
+        self._log("🔍 체크박스 및 옵션 항목 탐색 시도 중... (threshold 0.80→0.70)")
 
         region = self._option_checkbox_region()
         boxes = []
@@ -2212,52 +2216,89 @@ class NaverOrderWorker:
                 self._log(f"  ℹ threshold={thr:.2f} 미검출 (연한 회색 #F5F7FA) → {CHECKBOX_MATCH_THRESHOLDS[CHECKBOX_MATCH_THRESHOLDS.index(thr)+1]:.2f}로 재시도")
             else:
                 self._log("  ⚠ 체크박스 미검출 (threshold 0.70까지)")
-        if boxes:
-            self._log(f"  ℹ 인식된 체크박스 {len(boxes)}개: " +
-                      ", ".join(f"{i+1}=({x},{y}) {s:.3f}" for i, (x, y, s) in enumerate(boxes)))
-            # 1) 위에서부터 인식된 체크박스 전부 클릭 (최대 5)
-            for i, (cx, cy, score) in enumerate(boxes):
-                self._log(f"  👉 {i + 1}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
-                self._soft_tap(cx, cy, duration_ms=180)
-                time.sleep(1.0)
 
-        # 2~5) 화살표가 있으면 펼치고, 위에서 n번째 체크박스 클릭
-        for n in range(2, 6):
-            if self._stop_event.is_set():
-                return False
-            region = self._option_checkbox_region()
-            arrow = None
+        first_cx, first_cy = None, None
+        if boxes:
+            first_cx, first_cy, score = boxes[0]
+            self._log(f"  👉 1번째 체크박스 탭 ({first_cx}, {first_cy}) score={score:.4f}")
+            self._soft_tap(first_cx, first_cy, duration_ms=180)
+            time.sleep(1.0)
+        else:
+            self._log("  ⚠ 1번째 체크박스 미검출 → 계속 진행")
+
+        # 화살표 클릭 (옵션 펼치기)
+        # 화살표는 화면 맨 우측(80%~98%)에 위치함 (한글 텍스트 오인식 방지)
+        arrow_min_x = int(region["w"] * 0.80)
+        arrow_max_x = int(region["w"] * 0.98)
+        arrow = None
+
+        # 1) 1번째 체크박스 Y좌표 근처 우선 탐색 (정확도 극대화)
+        if first_cy is not None:
+            near_min_y = max(region["min_y"], first_cy - 80)
+            near_max_y = min(region["max_y"], first_cy + 80)
             for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
                 if os.path.exists(arrow_tmpl):
                     arrow = self._find_image_coords(
-                        arrow_tmpl, threshold=0.70,
-                        min_x=int(region["w"] * 0.20),
-                        max_x=int(region["w"] * 0.98),
+                        arrow_tmpl, threshold=0.68,
+                        min_x=arrow_min_x,
+                        max_x=arrow_max_x,
+                        min_y=near_min_y,
+                        max_y=near_max_y,
+                    )
+                    if arrow:
+                        self._log(f"  🎯 화살표 발견(행 부근)! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
+                        break
+
+        # 2) 전체 옵션 영역 우측(80%~98%) 탐색
+        if not arrow:
+            for arrow_tmpl in [IMG_ARROW2, IMG_ARROW]:
+                if os.path.exists(arrow_tmpl):
+                    arrow = self._find_image_coords(
+                        arrow_tmpl, threshold=0.68,
+                        min_x=arrow_min_x,
+                        max_x=arrow_max_x,
                         min_y=region["min_y"],
                         max_y=region["max_y"],
                     )
                     if arrow:
                         self._log(f"  🎯 화살표 발견! ({os.path.basename(arrow_tmpl)}) 좌표: ({arrow[0]}, {arrow[1]})")
                         break
-            if not arrow:
-                self._log(f"  ℹ 화살표 미감지 → {n}번째 이후 옵션 펼치기 종료")
-                break
-            self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]}) → {n}번째 체크박스")
+
+        # 3) 화살표 클릭 실행 (이미지 미매칭 시 1번째 행 우측 끝 좌표로 자동 클릭)
+        if arrow:
+            self._log(f"  👉 화살표 클릭 ({arrow[0]}, {arrow[1]})")
             ah.tap_by_coords(self.driver, arrow[0], arrow[1], self._log)
-            time.sleep(1.2)
-            region = self._option_checkbox_region()
-            boxes = []
-            for thr in CHECKBOX_MATCH_THRESHOLDS:
-                boxes = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
-                if boxes:
-                    break
-            if len(boxes) < n:
-                self._log(f"  ⚠ 펼친 뒤 체크박스 {len(boxes)}개 < {n}번째 → 중단")
+        elif first_cy is not None:
+            fallback_x = int(region["w"] * 0.93)
+            self._log(f"  👉 화살표 이미지 미인식 → 1번째 옵션 우측 화살표 영역 클릭 ({fallback_x}, {first_cy})")
+            ah.tap_by_coords(self.driver, fallback_x, first_cy, self._log)
+        else:
+            self._log("  ⚠ 화살표 위치 감지 실패")
+
+        # 화살표 클릭 후 옵션 펼쳐지도록 1.2초 휴식
+        time.sleep(1.2)
+
+        # 펼쳐진 화면에서 2번째 체크박스 탐색 및 탭
+        region = self._option_checkbox_region()
+        boxes2 = []
+        for thr in CHECKBOX_MATCH_THRESHOLDS:
+            boxes2 = self._find_all_checkbox_hits(region, max_n=5, min_score=thr)
+            if boxes2:
+                self._log(f"  ℹ 펼친 뒤 threshold={thr:.2f} 에서 체크박스 {len(boxes2)}개 인식")
                 break
-            cx, cy, score = boxes[n - 1]
-            self._log(f"  👉 위에서 {n}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
-            self._soft_tap(cx, cy, duration_ms=180)
+
+        if len(boxes2) >= 2:
+            cx2, cy2, score2 = boxes2[1]
+            self._log(f"  👉 2번째 체크박스 탭 ({cx2}, {cy2}) score={score2:.4f}")
+            self._soft_tap(cx2, cy2, duration_ms=180)
             time.sleep(1.0)
+        elif len(boxes2) == 1:
+            cx2, cy2, score2 = boxes2[0]
+            self._log(f"  👉 펼친 옵션 체크박스 탭 ({cx2}, {cy2}) score={score2:.4f}")
+            self._soft_tap(cx2, cy2, duration_ms=180)
+            time.sleep(1.0)
+        else:
+            self._log("  ⚠ 펼친 뒤 체크박스 미감지")
 
         self._log("✅ 옵션 체크박스 처리 완료")
         return True
