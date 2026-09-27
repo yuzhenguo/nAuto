@@ -161,6 +161,12 @@ IDENTITY_AUTH_THRESHOLD = 0.78
 class BirthdayAuthRequiredError(Exception):
     pass
 
+
+class UiAutomator2ProxyError(Exception):
+    """cannot be proxied to UiAutomator2 — 2분 대기 후 재시도, 사이클당 3회면 종료"""
+    pass
+
+
 # 현대카드 결제 이미지 (단계 22)
 _HYUNDAI_NUM_DIR = os.path.join(_IMG_DIR, "현대숫자")
 IMG_HYUNDAI_NUMS = {
@@ -468,6 +474,10 @@ class NaverOrderWorker:
         self._hyundai_pw4_keypad_box = None
         self._hyundai_pw4_key_origin = None
         self._hyundai_pw4_key_map = None
+        # cannot be proxied to UiAutomator2 사이클(워커 1회 실행)당 발생 횟수
+        self._uia2_proxy_error_count = 0
+        self._uia2_proxy_error_limit = 3
+        self._uia2_proxy_wait_sec = 120  # 2분
 
     def _skip_final_order_click(self) -> bool:
         """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
@@ -514,6 +524,84 @@ class NaverOrderWorker:
         )
         low = s.lower()
         return any((k.lower() in low) if k.isascii() else (k in s) for k in keys)
+
+    @staticmethod
+    def _is_uia2_proxy_error(err) -> bool:
+        """Appium ↔ UiAutomator2 프록시 단절 오류"""
+        s = str(err)
+        keys = (
+            "cannot be proxied to UiAutomator2",
+            "Could not proxy command to the remote server",
+            "proxied to UiAutomator2",
+        )
+        return any(k in s for k in keys)
+
+    def _handle_uia2_proxy_pause(self) -> bool:
+        """
+        UiAutomator2 proxy 오류 처리.
+        - 2분 대기 후 True → 작업 계속(재시도)
+        - 사이클당 3회 이상이면 False → 작업 종료
+        """
+        self._uia2_proxy_error_count += 1
+        n = self._uia2_proxy_error_count
+        limit = self._uia2_proxy_error_limit
+        wait_sec = self._uia2_proxy_wait_sec
+        self._log(
+            f"⚠ [UiAutomator2] cannot be proxied 감지 "
+            f"({n}/{limit}회, 사이클당)"
+        )
+        if n >= limit:
+            self._log(
+                f"❌ [UiAutomator2] 사이클당 {limit}회 이상 proxy 오류 → 작업 종료"
+            )
+            self._set_status("UiAutomator2 오류 종료")
+            return False
+
+        self._log(
+            f"⏳ [UiAutomator2] {wait_sec}초(2분) 대기 후 작업 계속 "
+            f"(남은 허용 {limit - n}회)..."
+        )
+        self._set_status(f"UiAutomator2 대기 ({n}/{limit})")
+        if not self._sleep_interruptible(wait_sec):
+            self._log("⏹ 대기 중 중지 요청")
+            return False
+        self._log("✅ [UiAutomator2] 대기 완료 → 작업 재개")
+        try:
+            if self.driver:
+                _ = self.driver.current_package
+                self._log("  ✅ UiAutomator2 응답 확인")
+        except Exception as e:
+            self._log(f"  ⚠ 대기 후에도 응답 불안정: {str(e).splitlines()[0]}")
+            try:
+                self._wait_for_uiautomator_ready(max_wait=15)
+            except Exception:
+                pass
+        return True
+
+    def _process_order_with_uia2_retry(self, row) -> tuple:
+        """
+        주문 처리 + UiAutomator2 proxy 재시도.
+        Returns: (success: bool, should_stop_worker: bool)
+        BirthdayAuth / 연결/세션 오류는 그대로 raise.
+        """
+        while True:
+            try:
+                ok = self._process_order_with_timeout(row)
+                return ok, False
+            except BirthdayAuthRequiredError:
+                raise
+            except UiAutomator2ProxyError:
+                if not self._handle_uia2_proxy_pause():
+                    return False, True
+                self._log(f"🔁 [UiAutomator2] 대기 후 주문 재시도: {row.search_keyword}")
+                continue
+            except Exception as e:
+                if self._is_uia2_proxy_error(e):
+                    if not self._handle_uia2_proxy_pause():
+                        return False, True
+                    self._log(f"🔁 [UiAutomator2] 대기 후 주문 재시도: {row.search_keyword}")
+                    continue
+                raise
 
     def _mark_conn_failed(self, row, reason: str = ""):
         if not row:
@@ -596,6 +684,8 @@ class NaverOrderWorker:
         else:
             self._log("🚀 자동 주문 워커 시작")
 
+        # 워커 1회 실행 = 1 사이클
+        self._uia2_proxy_error_count = 0
 
         max_restarts = 10
 
@@ -1477,14 +1567,19 @@ class NaverOrderWorker:
             pass
         return False
 
-    def _input_search_keyword(self, keyword: str, allow_recent_click: bool = True) -> bool:
+    def _input_search_keyword(self, keyword: str, allow_recent_click: bool = True,
+                              send_enter: bool = False) -> bool:
         """
         [단계 8] 검색 입력창 클릭 → 검색어 입력 (1회만)
-        - allow_recent_click=True: 최근 검색어/자동완성 클릭 허용 (몰 검색 등)
-        - allow_recent_click=False: 최초 판매자명 검색 — 자동완성 첫 항목 클릭 금지, 입력 후 검색
+        - allow_recent_click=False: 최초 판매자명 검색 — 자동완성/최근검색 클릭 금지
+        - send_enter=True: 입력 직후 엔터(검색 실행). 검색아이콘 클릭 안 함.
         """
         self._set_status(f"검색어 입력: {keyword}")
-        self._log(f"🔍 검색어 입력: '{keyword}' (최근/자동완성클릭={'허용' if allow_recent_click else '금지'})")
+        self._log(
+            f"🔍 검색어 입력: '{keyword}' "
+            f"(최근/자동완성클릭={'허용' if allow_recent_click else '금지'}, "
+            f"엔터={'포함' if send_enter else '별도'})"
+        )
 
         import subprocess
 
@@ -1551,6 +1646,14 @@ class NaverOrderWorker:
         try:
             if self._type_search_keyword(keyword):
                 self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
+                if send_enter:
+                    # 검색아이콘 오인식 회피 → 입력 직후 엔터로 검색
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
+                        capture_output=True, timeout=5,
+                    )
+                    self._log("  ✅ 입력 후 엔터 키 전송 (검색 실행)")
+                    time.sleep(4)
                 return True
             raise Exception("검색어 입력 방법 모두 실패 (한글 클립보드/EditText)")
         except Exception as e:
@@ -1559,69 +1662,36 @@ class NaverOrderWorker:
 
     def _click_search_button(self, prefer_icon: bool = False) -> bool:
         """
-        [단계 9] 검색 실행
-        - prefer_icon=True: 자동완성 첫 항목 선택 방지 → 검색 아이콘/우측 탭 우선
-          (엔터는 자동완성 1번을 고르는 경우가 많음)
-        - prefer_icon=False: 엔터 우선
+        [단계 9] 검색 실행 — 기본은 엔터. 검색아이콘은 오인식(좌상단 등)이 많아 최후 폴백만.
         """
         self._set_status("검색 실행")
         import subprocess
 
-        def _tap_search_icon() -> bool:
-            # 1) 검색아이콘 이미지
-            if os.path.exists(IMG_SEARCH_ICON):
-                coords = self._find_image_coords(
-                    IMG_SEARCH_ICON, threshold=0.7, min_y=0, max_y=350, silent=True,
-                )
-                if coords:
-                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
-                    self._log(f"  ✅ 검색아이콘 이미지 클릭 ({coords[0]}, {coords[1]})")
-                    return True
-            # 2) 상단 우측 검색 버튼 비율 탭
-            try:
-                size = self.driver.get_window_size()
-                w, h = size['width'], size['height']
-                tap_x = int(w * 0.94)
-                tap_y = int(h * 0.08)
-                ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-                self._log(f"  ✅ 검색 버튼 좌표 탭 ({tap_x}, {tap_y})")
-                return True
-            except Exception as e:
-                self._log(f"  ⚠ 검색 아이콘/좌표 탭 실패: {e}")
-                return False
-
-        def _send_enter() -> bool:
-            try:
-                subprocess.run(
-                    ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
-                    capture_output=True, timeout=5
-                )
-                self._log("  ✅ 엔터 키 전송 완료 (검색)")
-                return True
-            except Exception as e:
-                self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
-                return False
-
-        if prefer_icon:
-            self._log("  📌 자동완성 회피 → 검색 아이콘/좌표 우선")
-            if _tap_search_icon():
-                time.sleep(4)
-                return True
-            if _send_enter():
-                time.sleep(4)
-                return True
-            self._log("  ❌ 검색 버튼 클릭 최종 실패")
-            return False
-
-        # 기본: 엔터 우선
-        if _send_enter():
+        # 1순위: 키보드 엔터
+        try:
+            subprocess.run(
+                ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
+                capture_output=True, timeout=5,
+            )
+            self._log("  ✅ 엔터 키 전송 완료 (검색)")
             time.sleep(4)
             return True
-        if _tap_search_icon():
+        except Exception as e:
+            self._log(f"  ⚠ 엔터 키 전송 실패: {e}")
+
+        # 2순위: 상단 우측 검색 버튼 좌표 (이미지 매칭 오탐 방지 — 아이콘 이미지 미사용)
+        try:
+            size = self.driver.get_window_size()
+            w, h = size['width'], size['height']
+            tap_x = int(w * 0.94)
+            tap_y = int(h * 0.08)
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            self._log(f"  ✅ 검색 버튼 좌표 탭 ({tap_x}, {tap_y})")
             time.sleep(3)
             return True
-        self._log("  ❌ 검색 버튼 클릭 최종 실패")
-        return False
+        except Exception as e:
+            self._log(f"  ❌ 검색 버튼 클릭 최종 실패: {e}")
+            return False
 
     # ─── 단계 8.5: 판매자(스토어) 카드 클릭 ────────────────────────────────────
 
@@ -2627,42 +2697,42 @@ class NaverOrderWorker:
         return best[0], best[1], best[2]
 
     def _click_option_dropdown_by_label(self, region: dict, first_cy=None) -> bool:
-        """옵션 선택.png/옵션선택2.png 좌표 기준으로 바로 아래 드롭다운 클릭.
+        """옵션 선택.png/옵션선택2.png y 기준, 바로 아래 50px 이내만 드롭다운/화살표 클릭.
 
-        첨부 화면: '옵션 선택 (필수) *' 바로 아래 '옵션 필수선택' 박스.
-        화살표 이미지 인식은 사용하지 않음.
+        추가 옵션·하단 CTA 등 opt_y+50 아래는 절대 클릭하지 않음.
         """
+        OPTION_EXPAND_MAX_BELOW = 50  # 옵션 선택 y 아래로 최대 50px
         w_w, w_h = region["w"], region["h"]
-        max_cta_y = int(w_h * 0.78)
 
         opt = self._find_option_select_coords(w_h=w_h, w_w=w_w)
-        if opt:
-            ox, oy, name = opt
-            tap_x = int(w_w * 0.88)
-            tap_y = min(oy + int(w_h * 0.045), oy + 140, max_cta_y)
-            self._log(
-                f"  👉 [{name}] 좌표 기준 드롭다운 클릭 "
-                f"기준=({ox},{oy}) → 탭=({tap_x},{tap_y})"
-            )
-            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-            return True
+        opt_y = opt[1] if opt else region.get("opt_y")
 
-        opt_y = region.get("opt_y")
-        if opt_y:
-            tap_x = int(w_w * 0.88)
-            tap_y = min(opt_y + int(w_h * 0.045), opt_y + 140, max_cta_y)
-            self._log(f"  👉 옵션선택 y 폴백 드롭다운 클릭 ({tap_x}, {tap_y})")
-            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-            return True
+        if opt_y is None and first_cy is not None:
+            # 옵션선택 미검출 시 1행 y를 상한으로만 사용 (아래로 확장 금지)
+            opt_y = first_cy
 
-        if first_cy:
-            tap_x = int(w_w * 0.88)
-            self._log(f"  👉 1행 y 폴백 드롭다운 클릭 ({tap_x}, {first_cy})")
-            ah.tap_by_coords(self.driver, tap_x, first_cy, self._log)
-            return True
+        if opt_y is None:
+            self._log("  ⚠ 옵션 선택 y 미확인 → 드롭다운 클릭 생략 (하단 오클릭 방지)")
+            return False
 
-        self._log("  ⚠ 옵션 선택.png/옵션선택2.png 미발견 → 드롭다운 클릭 실패")
-        return False
+        y_min = int(opt_y)
+        y_max = int(opt_y) + OPTION_EXPAND_MAX_BELOW
+        tap_x = int(w_w * 0.88)
+        # 라벨 바로 아래 중앙(~25px), 절대 y_max 초과 금지
+        tap_y = int(opt_y) + 25
+        if tap_y > y_max:
+            tap_y = y_max
+        if tap_y < y_min:
+            tap_y = y_min
+
+        name = opt[2] if opt else "옵션선택y"
+        self._log(
+            f"  👉 [{name}] 드롭다운/화살표 클릭 "
+            f"opt_y={opt_y} → 탭=({tap_x},{tap_y}) "
+            f"(허용 y={y_min}~{y_max}, +{OPTION_EXPAND_MAX_BELOW}px 이내)"
+        )
+        ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+        return True
 
     def _option_checkbox_region(self):
         """옵션선택~배송정보 사이 체크박스 탐색 영역."""
@@ -2847,11 +2917,12 @@ class NaverOrderWorker:
         time.sleep(1.0)
         checked = 1
 
-        # ── 2~5번째: 드롭다운 펼침 → N번째 체크박스 탭 ──
+        # ── 2~5번째: 드롭다운 펼침(옵션선택 y+50px 이내만) → N번째 체크 ──
         for n in range(2, MAX_CHECKS + 1):
             region = self._option_checkbox_region()
-            self._log(f"  📌 {n}번째 체크박스 위해 드롭다운 펼침 시도")
-            self._click_option_dropdown_by_label(region, first_cy=first_cy)
+            self._log(f"  📌 {n}번째 체크박스 위해 드롭다운 펼침 (opt_y+50px 이내만)")
+            # first_cy는 참고용 — 실제 탭은 opt_y+50 초과 금지
+            self._click_option_dropdown_by_label(region, first_cy=None)
             time.sleep(1.2)
 
             region = self._option_checkbox_region()
@@ -7020,12 +7091,27 @@ class NaverOrderWorker:
                 self.has_dismissed_payment_benefit = False
 
                 try:
-                    # 1회 시도
-                    success = self._process_order_with_timeout(row)
+                    success, uia2_stop = self._process_order_with_uia2_retry(row)
+                    if uia2_stop:
+                        self.order_manager.mark_failed(row.row_index)
+                        self._log(
+                            f"❌ UiAutomator2 proxy 한도 초과 → F: {row.search_keyword}"
+                        )
+                        self.current_row = None
+                        self._log("⏹ 작업 종료")
+                        break
                 except BirthdayAuthRequiredError:
                     self._log("⚠ [본인인증 감지] 1회차 실패, 해당 주문을 재작업(처음부터)합니다.")
                     try:
-                        success = self._process_order_with_timeout(row)
+                        success, uia2_stop = self._process_order_with_uia2_retry(row)
+                        if uia2_stop:
+                            self.order_manager.mark_failed(row.row_index)
+                            self._log(
+                                f"❌ UiAutomator2 proxy 한도 초과 → F: {row.search_keyword}"
+                            )
+                            self.current_row = None
+                            self._log("⏹ 작업 종료")
+                            break
                     except BirthdayAuthRequiredError:
                         self._log("❌ [본인인증 감지] 2회차 연속 본인인증 요구됨 → 상태 B 기록")
                         self._mark_birthday_auth(row, "2회차 연속")
@@ -7185,10 +7271,16 @@ class NaverOrderWorker:
             err_str = str(exception[0])
             if isinstance(exception[0], BirthdayAuthRequiredError):
                 raise exception[0]
+            if isinstance(exception[0], UiAutomator2ProxyError):
+                raise exception[0]
+            if self._is_uia2_proxy_error(exception[0]):
+                self._log(f"❌ 처리 중 예외: {err_one}")
+                raise UiAutomator2ProxyError(err_one) from exception[0]
             if self._is_connection_refused(exception[0]):
                 self._log(f"❌ 처리 중 예외: {err_one}")
                 self._log("🔴 [연결실패] 대상 컴퓨터 연결 거부 감지 → H 기록 후 재연결")
                 raise exception[0]
+            # proxy 오류는 FATAL 세션 에러와 분리 (2분 대기 후 재시도)
             if self._is_driver_session_error(exception[0]) or any(p in err_str for p in FATAL_PATTERNS):
                 self._log(f"❌ 처리 중 예외: {err_one}")
                 self._log("🔴 [드라이브에러] 세션 소실 감지 → E 기록 후 재연결")
@@ -7213,17 +7305,15 @@ class NaverOrderWorker:
             self._log("❌ 검색 버튼 클릭 실패")
             return False
 
-        # [단계 8] 판매자명(스토어명)으로 검색어 입력
-        # 자동완성 첫 항목 클릭 금지 → 판매자명 그대로 입력 후 검색
+        # [단계 8] 판매자명 입력 + 엔터 (검색아이콘 클릭 안 함 — 오인식 방지)
         seller_search_kw = row.seller_name if row.seller_name else row.search_keyword
-        if not self._input_search_keyword(seller_search_kw, allow_recent_click=False):
+        if not self._input_search_keyword(
+            seller_search_kw, allow_recent_click=False, send_enter=True,
+        ):
             self._log("❌ 판매자명 검색어 입력 실패")
             return False
 
-        # [단계 9] 검색 실행 (엔터 대신 검색아이콘 — 자동완성 1번 선택 방지)
-        if not self._click_search_button(prefer_icon=True):
-            self._log("❌ 판매자명 검색 실행 실패")
-            return False
+        # 입력 시 이미 엔터 전송됨 — 결과 로딩만 확인 (아이콘 클릭 없음)
 
         # [단계 8.5] 판매자 스토어 카드 클릭
         if not self._click_store_card(row.seller_name if row.seller_name else row.search_keyword):
