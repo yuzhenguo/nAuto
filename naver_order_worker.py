@@ -1550,6 +1550,8 @@ class NaverOrderWorker:
         # 2) 한글 단일 경로: 클립보드 + PASTE (이전 입력과 겹치지 않도록 위에서 clear)
         self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 (1회)")
         if self._paste_text_via_clipboard(keyword):
+            # 붙여넣기 직후 바로 엔터치면 검색어 미반영될 수 있음 → 0.5초 대기
+            time.sleep(0.5)
             return True
 
         # 3) ASCII 전용
@@ -1647,7 +1649,7 @@ class NaverOrderWorker:
             if self._type_search_keyword(keyword):
                 self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
                 if send_enter:
-                    # 검색아이콘 오인식 회피 → 입력 직후 엔터로 검색
+                    # 검색아이콘 오인식 회피 → 붙여넣기 후 0.5초 대기(type경로) 뒤 엔터
                     subprocess.run(
                         ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
                         capture_output=True, timeout=5,
@@ -1667,7 +1669,7 @@ class NaverOrderWorker:
         self._set_status("검색 실행")
         import subprocess
 
-        # 1순위: 키보드 엔터
+        # 1순위: 키보드 엔터 (클립보드 붙여넣기 경로는 type 쪽에서 이미 0.5초 대기)
         try:
             subprocess.run(
                 ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
@@ -4605,7 +4607,7 @@ class NaverOrderWorker:
         [22-10 이후] 현대결제하기 → 3초 대기 →
         안전결재3 팝업 확인 1회 클릭 후,
         이어서 자주 뜨는 '본인 인증'(이름/생년월일) 화면을 우선 검사.
-        감지 시 BirthdayAuthRequiredError → 주문 1회 재시도.
+        감지 시 BirthdayAuthRequiredError → 주문 최대 3회차 재시도 후 B.
         """
         self._log("  ⏳ [안전인증] 현대결제하기 후 3초 대기...")
         time.sleep(2.0)
@@ -7085,7 +7087,37 @@ class NaverOrderWorker:
                 self.has_dismissed_payment_benefit = False
 
                 try:
-                    success, uia2_stop = self._process_order_with_uia2_retry(row)
+                    MAX_BIRTHDAY_AUTH_ROUNDS = 3  # 본인인증 감지 시 최대 3회차까지 재작업
+                    success = False
+                    uia2_stop = False
+                    birthday_auth_give_up = False
+                    for birthday_round in range(1, MAX_BIRTHDAY_AUTH_ROUNDS + 1):
+                        try:
+                            success, uia2_stop = self._process_order_with_uia2_retry(row)
+                            break  # 본인인증 없이 정상 종료(성공/실패 모두)
+                        except BirthdayAuthRequiredError:
+                            if birthday_round >= MAX_BIRTHDAY_AUTH_ROUNDS:
+                                self._log(
+                                    f"❌ [본인인증 감지] {birthday_round}회차 연속 "
+                                    f"본인인증 요구됨 → 상태 B 기록"
+                                )
+                                self._mark_birthday_auth(
+                                    row, f"{birthday_round}회차 연속"
+                                )
+                                self.current_row = None
+                                self._log("⏹ 작업 종료")
+                                birthday_auth_give_up = True
+                                break
+                            self._log(
+                                f"⚠ [본인인증 감지] {birthday_round}회차 실패, "
+                                f"해당 주문을 재작업(처음부터)합니다. "
+                                f"({birthday_round}/{MAX_BIRTHDAY_AUTH_ROUNDS})"
+                            )
+                            continue
+
+                    if birthday_auth_give_up:
+                        break  # 3회차 B 기록 후 워커 종료
+
                     if uia2_stop:
                         self.order_manager.mark_failed(row.row_index)
                         self._log(
@@ -7094,37 +7126,6 @@ class NaverOrderWorker:
                         self.current_row = None
                         self._log("⏹ 작업 종료")
                         break
-                except BirthdayAuthRequiredError:
-                    self._log("⚠ [본인인증 감지] 1회차 실패, 해당 주문을 재작업(처음부터)합니다.")
-                    try:
-                        success, uia2_stop = self._process_order_with_uia2_retry(row)
-                        if uia2_stop:
-                            self.order_manager.mark_failed(row.row_index)
-                            self._log(
-                                f"❌ UiAutomator2 proxy 한도 초과 → F: {row.search_keyword}"
-                            )
-                            self.current_row = None
-                            self._log("⏹ 작업 종료")
-                            break
-                    except BirthdayAuthRequiredError:
-                        self._log("❌ [본인인증 감지] 2회차 연속 본인인증 요구됨 → 상태 B 기록")
-                        self._mark_birthday_auth(row, "2회차 연속")
-                        self.current_row = None
-                        self._log("⏹ 작업 종료")
-                        break
-                    except Exception as fatal_err2:
-                        if self._stop_event.is_set():
-                            self.order_manager.mark_cancelled(row.row_index)
-                            self._log(f"⏹ 정지 요청으로 작업 취소: {row.search_keyword} → C 기록")
-                        elif self._is_connection_refused(fatal_err2):
-                            self._mark_conn_failed(row, "대상 컴퓨터 연결 거부")
-                        elif self._is_driver_session_error(fatal_err2):
-                            self._mark_driver_error(row, "세션 소실")
-                        else:
-                            self.order_manager.mark_failed(row.row_index)
-                            self._log(f"❌ 치명적 오류 (2회차): {fatal_err2}")
-                        self.current_row = None
-                        raise
                 except Exception as fatal_err:
                     if self._stop_event.is_set():
                         self.order_manager.mark_cancelled(row.row_index)

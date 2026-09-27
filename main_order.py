@@ -613,7 +613,9 @@ class MainApp(tk.Tk):
     def _toggle_remark_sort(self):
         self.sort_desc = not getattr(self, "sort_desc", False)
         self._draw_device_list()
-        if not self.running:
+        if self.running:
+            self._rearrange_device_panels()
+        else:
             self._rebuild_device_panels()
 
     def _remark_sort_key(self, item):
@@ -632,7 +634,9 @@ class MainApp(tk.Tk):
                 self.devices_data[device_id]["remark"] = remark
                 self._save_devices_config()
                 self._draw_device_list()
-                if not self.running:
+                if self.running:
+                    self._rearrange_device_panels()
+                else:
                     self._rebuild_device_panels()
 
     def _on_tethering_toggled(self, device_id: str, is_tethering: bool):
@@ -1009,13 +1013,12 @@ class MainApp(tk.Tk):
     # ─── 기기 패널 관리 ──────────────────────────────────────────────────────
 
     def _panel_sort_key(self, did: str):
-        """1차: 작업 중인 기기 우선(상단), 2차: 비고 정렬 순서"""
-        is_working = did in getattr(self, "working_devices", set())
+        """우측 작업리스트: 비고(remark) 기준 정렬"""
         info = self.devices_data.get(did, {})
-        return (0 if is_working else 1, self._remark_sort_key((did, info)))
+        return self._remark_sort_key((did, info))
 
     def _rebuild_device_panels(self):
-        """선택된 기기에 맞게 우측 패널 재구성"""
+        """선택된 기기에 맞게 우측 패널 재구성 (remark 정렬)"""
         for w in self.panels_frame.winfo_children():
             w.destroy()
         self.device_panels.clear()
@@ -1038,7 +1041,10 @@ class MainApp(tk.Tk):
             ).pack(expand=True, pady=60)
             return
 
-        sorted_devices = sorted(selected_devices, key=self._panel_sort_key)
+        is_desc = getattr(self, "sort_desc", False)
+        sorted_devices = sorted(
+            selected_devices, key=self._panel_sort_key, reverse=is_desc
+        )
         cols = min(count, 3)
         for i, did in enumerate(sorted_devices):
             remark = self.devices_data.get(did, {}).get("remark", "")
@@ -1071,11 +1077,14 @@ class MainApp(tk.Tk):
             self.panels_frame.columnconfigure(col, weight=1)
 
     def _rearrange_device_panels(self):
-        """작업 중인 기기 패널을 상단으로 올리고 비고 정렬 순서대로 재배치"""
+        """우측 작업리스트를 비고(remark) 순서로 재배치"""
         if not self.device_panels:
             return
 
-        sorted_dids = sorted(self.device_panels.keys(), key=self._panel_sort_key)
+        is_desc = getattr(self, "sort_desc", False)
+        sorted_dids = sorted(
+            self.device_panels.keys(), key=self._panel_sort_key, reverse=is_desc
+        )
         count = len(sorted_dids)
         cols = min(count, 3) if count > 0 else 1
 
@@ -1097,7 +1106,8 @@ class MainApp(tk.Tk):
             (did, info) for did, info in self.devices_data.items()
             if info.get("selected", False)
         ]
-        selected.sort(key=self._remark_sort_key)
+        is_desc = getattr(self, "sort_desc", False)
+        selected.sort(key=self._remark_sort_key, reverse=is_desc)
         return [did for did, _ in selected]
 
     def _get_port_for_device(self, index: int) -> int:
@@ -1531,7 +1541,7 @@ class MainApp(tk.Tk):
                     fg_color = CLR_TEXT if conn else CLR_TEXT_MUTE
                     lbl.config(fg=fg_color, font=("Segoe UI", 9, "bold" if conn else "normal"))
 
-            # 2. 우측 패널 재배치 (작업 중인 기기 상단 + 비고 정렬 순)
+            # 2. 우측 패널 재배치 (비고 remark 정렬 순)
             self._rearrange_device_panels()
 
         self.after(0, _update)
