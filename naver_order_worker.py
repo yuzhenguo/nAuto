@@ -9,7 +9,7 @@ naver_order_worker.py
 3     메인 페이지 진입, 7초 대기
 4     네이버 플러스 스토어 탭 클릭, 5초 대기
 5     스토어홈 팝업 처리 (하루/7일 보지 않기), 2초 대기
-6     마이쇼핑 클릭, 5초 대기 → 팝업 재처리
+6     마이쇼핑 클릭, 3초 대기 → 팝업 재처리
 7     마이쇼핑 화면 검색 버튼 클릭, 2초 대기
 8     검색입력.png 이미지 인식 → 검색어 입력
 9     검색아이콘.png 이미지 인식 클릭, 5초 대기
@@ -832,7 +832,7 @@ class NaverOrderWorker:
             # 클릭 직전 팝업이 가리는 경우 대비
             self._dismiss_popups(max_count=2)
             ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=7, log_callback=self._log)
-            self._log("✅ 마이쇼핑 클릭 완료 (5초 대기)")
+            self._log("✅ 마이쇼핑 클릭 완료 (3초 대기)")
             time.sleep(3)
         else:
             self._log("⚠ 마이쇼핑 버튼 미발견")
@@ -1570,20 +1570,41 @@ class NaverOrderWorker:
         return False
 
     def _input_search_keyword(self, keyword: str, allow_recent_click: bool = True,
-                              send_enter: bool = False) -> bool:
+                              send_enter: bool = False,
+                              skip_field_focus: bool = False) -> bool:
         """
         [단계 8] 검색 입력창 클릭 → 검색어 입력 (1회만)
         - allow_recent_click=False: 최초 판매자명 검색 — 자동완성/최근검색 클릭 금지
         - send_enter=True: 입력 직후 엔터(검색 실행). 검색아이콘 클릭 안 함.
+        - skip_field_focus=True: 몰 검색창이 이미 열린 상태 → 입력창 재탐색/재탭 생략, 바로 입력
         """
         self._set_status(f"검색어 입력: {keyword}")
+        import subprocess
+
+        # 몰 검색창 이미 포커스된 경우: 입력창 재탐색·최근검색 클릭 없이 바로 타이핑
+        if skip_field_focus:
+            self._log(f"🔍 몰 검색어 입력: '{keyword}' (검색창 이미 열림 → 바로 입력)")
+            try:
+                if self._type_search_keyword(keyword):
+                    self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
+                    if send_enter:
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
+                            capture_output=True, timeout=5,
+                        )
+                        self._log("  ✅ 입력 후 엔터 키 전송 (검색 실행)")
+                        time.sleep(4)
+                    return True
+                raise Exception("검색어 입력 방법 모두 실패 (한글 클립보드/EditText)")
+            except Exception as e:
+                self._log(f"  ❌ 검색어 입력 실패: {e}")
+                return False
+
         self._log(
             f"🔍 검색어 입력: '{keyword}' "
             f"(최근/자동완성클릭={'허용' if allow_recent_click else '금지'}, "
             f"엔터={'포함' if send_enter else '별도'})"
         )
-
-        import subprocess
 
         # 최근 검색어/자동완성 클릭 (최초 판매자 검색에서는 금지)
         if allow_recent_click:
@@ -1593,42 +1614,33 @@ class NaverOrderWorker:
 
         tap_coords = None
 
-        # 1순위: 이전으로 가기 오른쪽 = 검색 입력칸
-        tap_coords = self._tap_search_field_right_of_back()
-
-        if allow_recent_click:
-            if self._click_recent_search_keyword(keyword):
-                self._log(f"  ✅ 최근 검색어로 검색 실행: '{keyword}'")
-                return True
-
-        # 2순위: EditText XPath
-        if not tap_coords:
-            search_xpaths = [
-                '//android.widget.EditText[@resource-id="input_text"]',
-                '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
-                '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
-                '//android.widget.EditText[@hint="검색어 입력"]',
-                '//android.widget.EditText[@hint="상품, 브랜드, 쇼핑몰 검색"]',
-                '//android.widget.EditText[contains(@hint,"검색")]',
-                '//android.widget.EditText',
-            ]
-            for xpath in search_xpaths:
-                if ah.element_exists(self.driver, xpath, timeout=2):
-                    try:
-                        el = self.driver.find_element(By.XPATH, xpath)
-                        rect = el.rect
-                        tap_coords = (rect['x'] + rect['width'] // 2,
-                                      rect['y'] + rect['height'] // 2)
-                        self._log(f"  ✅ EditText 발견 → 좌표: {tap_coords}")
-                        subprocess.run(
-                            ["adb", "-s", self.device_id, "shell", "input", "tap",
-                             str(tap_coords[0]), str(tap_coords[1])],
-                            capture_output=True, timeout=5,
-                        )
-                        time.sleep(1.0)
-                        break
-                    except Exception:
-                        continue
+        # EditText XPath
+        search_xpaths = [
+            '//android.widget.EditText[@resource-id="input_text"]',
+            '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
+            '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
+            '//android.widget.EditText[@hint="검색어 입력"]',
+            '//android.widget.EditText[@hint="상품, 브랜드, 쇼핑몰 검색"]',
+            '//android.widget.EditText[contains(@hint,"검색")]',
+            '//android.widget.EditText',
+        ]
+        for xpath in search_xpaths:
+            if ah.element_exists(self.driver, xpath, timeout=2):
+                try:
+                    el = self.driver.find_element(By.XPATH, xpath)
+                    rect = el.rect
+                    tap_coords = (rect['x'] + rect['width'] // 2,
+                                  rect['y'] + rect['height'] // 2)
+                    self._log(f"  ✅ EditText 발견 → 좌표: {tap_coords}")
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "tap",
+                         str(tap_coords[0]), str(tap_coords[1])],
+                        capture_output=True, timeout=5,
+                    )
+                    time.sleep(1.0)
+                    break
+                except Exception:
+                    continue
 
         if not tap_coords:
             self._log("  ⚠ 검색 입력창 좌표 획득 실패. (화면 상단 폴백)")
@@ -3006,8 +3018,11 @@ class NaverOrderWorker:
                 continue
         return False
 
-    def _is_order_pay_screen(self) -> bool:
-        """주문/결제 화면 진입 여부 확인 (바로구매 성공 판정용)"""
+    def _is_order_pay_screen(self, use_image: bool = False) -> bool:
+        """주문/결제 화면 진입 여부 확인 (바로구매 성공 판정용).
+
+        use_image=False(기본): XPath 마커만 — 주문/결제.png 오매칭/대기 낭비 방지.
+        """
         markers = [
             '//android.webkit.WebView[@text="주문/결제"]',
             '//android.widget.TextView[@text="주문/결제"]',
@@ -3024,7 +3039,7 @@ class NaverOrderWorker:
                     return True
             except Exception:
                 continue
-        if os.path.exists(IMG_ORDER_PAY):
+        if use_image and os.path.exists(IMG_ORDER_PAY):
             try:
                 if self._find_image_coords(IMG_ORDER_PAY, threshold=0.65):
                     return True
@@ -3033,7 +3048,7 @@ class NaverOrderWorker:
         return False
 
     def _click_buy_now(self) -> bool:
-        """[단계 13] 바로구매 클릭 (XPath 우선 → 이미지 인식 → 우측 하단 CTA 탭 → 검증)"""
+        """[단계 13] 바로구매 이미지 인식 클릭 (XPath CTA/구매하기 제외)."""
         self._set_status("바로구매 클릭")
         time.sleep(1.0)
 
@@ -3045,12 +3060,13 @@ class NaverOrderWorker:
         w_w, w_h = self._get_window_size()
         left, top, right, bottom = self._visible_bounds()
 
-        # CTA는 화면 하단 영역 (화면 40% 이상, 화면 최하단까지 포함)
+        # CTA는 화면 하단 영역
         min_y_buynow = int(w_h * 0.40)
         max_y_buynow = min(int(w_h * 0.99), bottom)
         min_x_right = max(left + 15, int(w_w * 0.18))
         max_x_right = min(right, int(w_w * 0.99))
 
+        # 바로구매 이미지만 (구매하기 XPath/이미지는 상품페이지 CTA 오클릭 유발)
         buy_now_imgs = [
             (p, n) for p, n in (
                 (IMG_BUY_NOW, "바로구매"),
@@ -3058,31 +3074,22 @@ class NaverOrderWorker:
                 (IMG_BUY_NOW3, "바로구매3"),
                 (IMG_BUY_NOW4, "바로구매4"),
                 (IMG_BUY_NOW6, "바로구매6"),
-                (IMG_BUY_BTN, "구매하기"),
-                (IMG_BUY_BTN2, "구매하기2"),
-                (IMG_BUY_BTN3, "구매하기3"),
-                (IMG_BUY_BTN4, "구매하기4"),
-                (IMG_BUY_BTN5, "구매하기5"),
             ) if os.path.exists(p)
         ]
 
         def _confirm_after_click(label: str) -> bool:
             self._log(f"  ⏳ {label} 클릭 후 화면 전환 대기 중...")
-            for sec in range(1, 8):
+            for sec in range(1, 6):
                 time.sleep(1.0)
-                if self._is_order_pay_screen():
+                if self._is_order_pay_screen(use_image=False):
                     self._log(f"  ✅ {label} 후 주문/결제 화면 확인 ({sec}초)")
                     return True
             self._log(f"  ⚠ {label} 후 주문/결제 화면 미확인")
             return False
 
+        self._log("🔍 [바로구매] 이미지 인식 탐색 시작")
         for attempt in range(1, 4):
-            # 1) XPath 우선 (하단 CTA 버튼 탐색 및 클릭)
-            if self._click_bottom_cta(min_y_buynow, max_y_buynow, min_x=min_x_right):
-                if _confirm_after_click("XPath CTA"):
-                    return True
-
-            # 2) 이미지 인식: 하단 영역에서 바로구매/구매하기 템플릿 탐색
+            # 이미지 인식만 (XPath 하단 CTA 제외)
             for thr in (0.65, 0.58, 0.52, 0.48, 0.45):
                 for img_path, img_name in buy_now_imgs:
                     coords = self._find_image_coords(
@@ -3094,39 +3101,33 @@ class NaverOrderWorker:
                         continue
                     safe_x = max(left + 20, min(right - 15, coords[0]))
                     safe_y = max(min_y_buynow, min(max_y_buynow, coords[1]))
-                    self._log(f"  🎯 [{img_name}] 이미지 발견! ({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})")
+                    self._log(
+                        f"  🎯 [{img_name}] 이미지 발견! "
+                        f"({coords[0]}, {coords[1]}) → 화면 내 안전 좌표 ({safe_x}, {safe_y})"
+                    )
                     if not self._soft_tap(safe_x, safe_y, duration_ms=100):
                         ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
                     self._log(f"✅ {img_name} 이미지 인식 클릭 (threshold={thr}, y={safe_y})")
                     if _confirm_after_click(img_name):
                         return True
 
-            # 3) 화면 우측 하단 고정 CTA 좌표 탭 (네이버 쇼핑 공통 초록색 구매 버튼 위치)
+            # 폴백: 화면 우측 하단 바로구매 예상 좌표
             fallback_x = int(w_w * 0.78)
             fallback_y = min(int(w_h * 0.94), bottom - 25)
-            self._log(f"  👉 [폴백] 화면 우측 하단 구매 CTA 좌표 탭 시도: ({fallback_x}, {fallback_y})")
+            self._log(
+                f"  👉 [폴백] 화면 우측 하단 바로구매 좌표 탭 시도: "
+                f"({fallback_x}, {fallback_y})"
+            )
             if not self._soft_tap(fallback_x, fallback_y, duration_ms=100):
                 ah.tap_by_coords(self.driver, fallback_x, fallback_y, self._log)
-            if _confirm_after_click("우측 하단 CTA 좌표 탭"):
+            if _confirm_after_click("우측 하단 좌표 탭"):
                 return True
 
             if attempt < 3:
                 self._log(f"  ⚠ 바로구매 미확인 ({attempt}회차) → 재시도 대기")
                 time.sleep(1.5)
 
-        self._log("  ❌ 바로구매 버튼 미발견/미확인")
-        try:
-            btns = self.driver.find_elements(By.XPATH, '//android.widget.Button')
-            names = []
-            for b in btns[:12]:
-                t = (b.get_attribute("text") or b.get_attribute("content-desc") or "").strip()
-                if t:
-                    names.append(t)
-            if names:
-                self._log(f"  ℹ 현재 화면 Button: {names}")
-        except Exception:
-            pass
-
+        self._log("  ❌ 바로구매 이미지 미발견/미확인")
         if self._is_order_pay_screen():
             self._log("  ✅ 주문/결제 화면 확인됨 → 바로구매 성공으로 간주")
             return True
@@ -4858,20 +4859,11 @@ class NaverOrderWorker:
 
     def _click_other_pay_button(self, max_scroll_attempts: int = 20) -> bool:
         """
-        다른결재 버튼을 3중 인식 방식으로 탐색 후 화면 중앙에 안착시켜 클릭합니다.
-        0순위: 최우선 XPath (btn_payment_method_accordion 등)
-        1순위: 이미지 매칭 (다른결재.png, 다른결재수단2.png 등)
-        2순위: OCR (pytesseract)
-        3순위: XPath 텍스트 탐색
+        다른결재 버튼을 이미지 매칭만으로 탐색 후 화면 중앙에 안착시켜 클릭합니다.
+        OCR / XPath 는 사용하지 않음.
         """
         self._set_status("다른 결제수단 탐색 중")
-        self._log("🔍 [다른결재 버튼] 이미지/OCR/XPath 3중 탐색 시작")
-
-        other_pay_keywords = [
-            "다른결재수단", "다른 결재수단", "다른결제수단", "다른 결제수단",
-            "다른결재", "다른 결재", "결제수단보기",
-            "다른결재4", "보기"
-        ]
+        self._log("🔍 [다른결재 버튼] 이미지 매칭 탐색 시작")
 
         img_candidates = []
         for img_path, name in [
@@ -5040,8 +5032,7 @@ class NaverOrderWorker:
 
     def _process_bank_transfer(self) -> bool:
         self._log("💰 [무통장 결제] 프로세스 시작")
-        self._ocr_payment_screen(label="무통장결제_화면진입")
-        
+
         # 간혹 발생하는 "모달 닫기" 팝업 처리
         modal_xpaths = [
             '//android.widget.Button[@text="모달 닫기"]',
@@ -5058,7 +5049,7 @@ class NaverOrderWorker:
                     time.sleep(1.0)
             except Exception:
                 pass
-            
+
         if not self._click_other_pay_button(max_scroll_attempts=20):
             self._log("⚠ '다른결재 관련 버튼' 미발견 -> 스크롤을 위로 올린 후 탐색 시작")
             for _ in range(5):
@@ -7324,11 +7315,16 @@ class NaverOrderWorker:
             self._open_mall_search_box()
 
         # [단계 9.5] 엑셀 search_keyword (실제 상품 검색어)를 몰 검색상자에 입력
-        if not self._input_search_keyword(row.search_keyword):
+        # 검색창은 8.6에서 이미 연 상태 → 입력창 재탐색/최근검색 클릭 생략
+        if not self._input_search_keyword(
+            row.search_keyword, allow_recent_click=False, skip_field_focus=True,
+        ):
             # 검색창이 아직 안 열린 경우 펼치기 재시도 후 재입력
             self._log("  ⚠ 몰 검색어 입력 실패 → 검색창 재오픈 후 재시도")
             self._open_mall_search_box()
-            if not self._input_search_keyword(row.search_keyword):
+            if not self._input_search_keyword(
+                row.search_keyword, allow_recent_click=False, skip_field_focus=True,
+            ):
                 self._log("❌ 몰 검색어 입력 실패")
                 return False
 
