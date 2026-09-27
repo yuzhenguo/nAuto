@@ -1890,40 +1890,15 @@ class NaverOrderWorker:
         if _mall_search_edit_ready():
             self._log("  ✅ 몰 검색 EditText 이미 열림")
         else:
-            expanded = False
-            for attempt in range(1, 4):
-                if not _click_expand_button():
-                    # 버튼 텍스트가 사라진 경우: 이미 펼쳐졌을 수 있음
-                    if _mall_search_edit_ready():
-                        expanded = True
-                        break
-                    self._log(f"  ⚠ '검색창 펼치기' 미발견 ({attempt}/3)")
-                    time.sleep(0.8)
-                    continue
+            # 펼치기 버튼은 1회만 탭 (잔존 감지 재클릭 금지 — 1회로 충분)
+            if _click_expand_button():
                 time.sleep(1.8)
                 if _mall_search_edit_ready():
-                    self._log(f"  ✅ 검색창 펼치기 성공 (시도 {attempt})")
-                    expanded = True
-                    break
-                # 버튼이 아직 있으면 클릭이 안 된 것 → 재시도
-                still = False
-                for xp in expand_xpaths:
-                    if ah.element_exists(self.driver, xp, timeout=1.0):
-                        still = True
-                        break
-                if still:
-                    self._log(f"  ⚠ 펼치기 후에도 버튼 잔존 → 재클릭 ({attempt}/3)")
+                    self._log("  ✅ 검색창 펼치기 성공")
                 else:
-                    # 버튼은 사라졌는데 EditText가 아직이면 조금 더 대기
-                    time.sleep(1.0)
-                    if _mall_search_edit_ready():
-                        expanded = True
-                        break
-                    self._log("  ℹ 펼치기 버튼은 사라짐 → 검색창 후속 탐색")
-                    expanded = True
-                    break
-            if not expanded and not _mall_search_edit_ready():
-                # 최후: 상품페이지.xml 기준 상단 검색 아이콘 비율 탭
+                    self._log("  ℹ 펼치기 1회 완료 → 검색창 후속 탐색")
+            else:
+                self._log("  ⚠ '검색창 펼치기' 미발견 → 비율 폴백 시도")
                 try:
                     import subprocess
                     size = self.driver.get_window_size()
@@ -2697,39 +2672,30 @@ class NaverOrderWorker:
         return best[0], best[1], best[2]
 
     def _click_option_dropdown_by_label(self, region: dict, first_cy=None) -> bool:
-        """옵션 선택.png/옵션선택2.png y 기준, 바로 아래 50px 이내만 드롭다운/화살표 클릭.
+        """옵션 선택 이미지 좌표 기준 고정 오프셋으로 드롭다운 클릭.
 
-        추가 옵션·하단 CTA 등 opt_y+50 아래는 절대 클릭하지 않음.
+        화살표 이미지 매칭 없이 (opt_x+100, opt_y+120) 탭.
         """
-        OPTION_EXPAND_MAX_BELOW = 50  # 옵션 선택 y 아래로 최대 50px
+        OFFSET_X = 100
+        OFFSET_Y = 120
         w_w, w_h = region["w"], region["h"]
 
         opt = self._find_option_select_coords(w_h=w_h, w_w=w_w)
-        opt_y = opt[1] if opt else region.get("opt_y")
-
-        if opt_y is None and first_cy is not None:
-            # 옵션선택 미검출 시 1행 y를 상한으로만 사용 (아래로 확장 금지)
-            opt_y = first_cy
-
-        if opt_y is None:
-            self._log("  ⚠ 옵션 선택 y 미확인 → 드롭다운 클릭 생략 (하단 오클릭 방지)")
+        if not opt:
+            self._log("  ⚠ 옵션 선택 좌표 미확인 → 드롭다운 클릭 생략")
             return False
 
-        y_min = int(opt_y)
-        y_max = int(opt_y) + OPTION_EXPAND_MAX_BELOW
-        tap_x = int(w_w * 0.88)
-        # 라벨 바로 아래 중앙(~25px), 절대 y_max 초과 금지
-        tap_y = int(opt_y) + 25
-        if tap_y > y_max:
-            tap_y = y_max
-        if tap_y < y_min:
-            tap_y = y_min
+        opt_x, opt_y, name = opt[0], opt[1], opt[2]
+        tap_x = int(opt_x) + OFFSET_X
+        tap_y = int(opt_y) + OFFSET_Y
+        # 화면 밖으로 나가지 않게만 클램프
+        tap_x = max(0, min(tap_x, w_w - 1))
+        tap_y = max(0, min(tap_y, w_h - 1))
 
-        name = opt[2] if opt else "옵션선택y"
         self._log(
-            f"  👉 [{name}] 드롭다운/화살표 클릭 "
-            f"opt_y={opt_y} → 탭=({tap_x},{tap_y}) "
-            f"(허용 y={y_min}~{y_max}, +{OPTION_EXPAND_MAX_BELOW}px 이내)"
+            f"  👉 [{name}] 드롭다운 클릭 "
+            f"opt=({opt_x},{opt_y}) → 탭=({tap_x},{tap_y}) "
+            f"(+{OFFSET_X}, +{OFFSET_Y})"
         )
         ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
         return True
@@ -2887,10 +2853,10 @@ class NaverOrderWorker:
 
     def _click_checkbox(self, product_name: str = "") -> bool:
         """
-        [단계 12] 옵션 체크박스 최대 5개까지 체크
-        1) 위에서부터 1번째 체크
-        2) 옵션선택 드롭다운 펼침 → 2번째 체크
-        3)~5) 드롭다운 재펼침 후 3~5번째가 있으면 순차 체크
+        [단계 12] 옵션 체크박스 선택
+        - 최초 상품페이지 진입 시 체크박스 수량 확인
+        - 인식된 개수만큼만 체크 (2개→2개, 3개→3개, … 최대 5개)
+        - 1개면 1개만 체크 후 추가 옵션펼침 없이 바로구매로 진행
         """
         self._set_status("체크박스/옵션 선택")
         self._log("🔍 체크박스 및 옵션 항목 탐색 (최대 5개, threshold 0.80→0.70)")
@@ -2910,18 +2876,33 @@ class NaverOrderWorker:
                 self._log("✅ 옵션 체크박스 처리 완료")
                 return True
 
-        # ── 1번째 체크박스 탭 ──
-        first_cx, first_cy, first_score = boxes[0]
-        self._log(f"  👉 1번째 체크박스 탭 ({first_cx}, {first_cy}) score={first_score:.4f}")
-        self._soft_tap(first_cx, first_cy, duration_ms=180)
+        # 최초 인식 수량만큼만 체크 (최대 5)
+        target = min(len(boxes), MAX_CHECKS)
+        self._log(
+            f"  📌 최초 상품페이지 체크박스 수량: {len(boxes)}개 "
+            f"→ {target}개까지만 체크 (최대 {MAX_CHECKS})"
+        )
+
+        # ── 1번째 ──
+        cx, cy, score = boxes[0]
+        self._log(f"  👉 1/{target}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+        self._soft_tap(cx, cy, duration_ms=180)
         time.sleep(1.0)
         checked = 1
 
-        # ── 2~5번째: 드롭다운 펼침(옵션선택 y+50px 이내만) → N번째 체크 ──
-        for n in range(2, MAX_CHECKS + 1):
+        if target <= 1:
+            self._log(
+                "  ℹ 체크박스 1개만 있음 → 2번째 이후 옵션선택 패스, 바로구매로 진행"
+            )
+            self._log(
+                f"✅ 옵션 체크박스 처리 완료 (총 {checked}개 / 목표 {target}개 / 최대 {MAX_CHECKS})"
+            )
+            return True
+
+        # ── 2 ~ target번째만 (그 이상 펼침/체크 안 함) ──
+        for n in range(2, target + 1):
             region = self._option_checkbox_region()
-            self._log(f"  📌 {n}번째 체크박스 위해 드롭다운 펼침 (opt_y+50px 이내만)")
-            # first_cy는 참고용 — 실제 탭은 opt_y+50 초과 금지
+            self._log(f"  📌 {n}/{target}번째 위해 드롭다운 펼침 (opt+100,+120)")
             self._click_option_dropdown_by_label(region, first_cy=None)
             time.sleep(1.2)
 
@@ -2929,19 +2910,21 @@ class NaverOrderWorker:
             boxes_n = self._find_checkbox_boxes(region, max_n=MAX_CHECKS)
             if len(boxes_n) >= n:
                 cx, cy, score = boxes_n[n - 1]
-                self._log(f"  👉 {n}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._log(
+                    f"  👉 {n}/{target}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}"
+                )
                 self._soft_tap(cx, cy, duration_ms=180)
                 time.sleep(1.0)
                 checked = n
-                first_cy = cy  # 이후 드롭다운 y 기준 갱신
-            elif len(boxes_n) == 1 and n == 2:
-                # 펼친 직후 새 옵션 1개만 보이는 경우
+            elif len(boxes_n) == 1:
                 cx, cy, score = boxes_n[0]
-                self._log(f"  👉 펼친 옵션 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
+                self._log(
+                    f"  👉 {n}/{target}번째(펼친옵션) 체크박스 탭 "
+                    f"({cx}, {cy}) score={score:.4f}"
+                )
                 self._soft_tap(cx, cy, duration_ms=180)
                 time.sleep(1.0)
                 checked = n
-                first_cy = cy
             else:
                 self._log(
                     f"  ℹ {n}번째 체크박스 없음 "
@@ -2949,7 +2932,9 @@ class NaverOrderWorker:
                 )
                 break
 
-        self._log(f"✅ 옵션 체크박스 처리 완료 (총 {checked}개 / 최대 {MAX_CHECKS})")
+        self._log(
+            f"✅ 옵션 체크박스 처리 완료 (총 {checked}개 / 목표 {target}개 / 최대 {MAX_CHECKS})"
+        )
         return True
 
 
@@ -6093,6 +6078,10 @@ class NaverOrderWorker:
             self._log("  ❌ 현대 PIN 값 없음")
             return False
 
+        self._log("  🔍 [본인인증] 현대 PIN 키패드 입력 직전 검사...")
+        self._check_birthday_auth(attempts=2)
+        self._log("  ✅ [본인인증] 미감지 → 현대 PIN 키패드 입력 진행")
+
         self._log(f"  🔐 현대 PIN 입력: {'*' * len(pwd_digits)}자리")
         w_w, w_h = 1080, 2400
         try:
@@ -6928,6 +6917,11 @@ class NaverOrderWorker:
             self._log(f"  ⚠ [22-7] 이미지/XPath 미발견 → 화면 중앙({tap_x},{tap_y}) 강제 탭")
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
             time.sleep(1.5)
+
+        # 22-7.5 PIN 입력 직전 본인인증 화면 검사 (감지 시 재시도/B)
+        self._log("  🔍 [22-7.5] 현대 PIN 입력 전 본인인증 검사...")
+        self._check_birthday_auth(attempts=3)
+        self._log("  ✅ [22-7.5] 본인인증 미감지 → 6자리 PIN 입력 진행")
 
         # 22-8 현대숫자 6자리 PIN – 현대비번.png ROI 커팅 후 입력
         if not self._input_hyundai_digits_with_fallback(HYUNDAI_PIN6, expected_len=6, use_keypad_crop=True):
