@@ -10,6 +10,7 @@ order_manager.py
   전화번호    : 수취인 전화번호
   비밀번호    : 결제 비밀번호 (숫자, 예: 123456)
   2차비밀번호 : 현대카드 2차 비밀번호 (4자리)
+  카드번호    : 결제 카드 번호 (예: 591, 333, 80 등 - 현대카드)
   완료여부    : 공백=미처리, Y=완료, F=실패, C=취소, H=연결실패, E=드라이브에러, B=본인인증
 
 헤더가 없거나 컬럼명이 다를 경우 컬럼 인덱스로 직접 지정 가능 (아래 COL_* 상수 참고)
@@ -35,6 +36,7 @@ COL_PAYMENT_METHOD  = 8   # 결제방식
 COL_DEVICE_ID       = 9   # 폰ID (기기 ID)
 COL_LOGIN_ID        = 11  # 로그인아이디
 COL_SECOND_PASSWORD = 12  # 2차비밀번호 (현대카드)
+COL_CARD_NUMBER     = 13  # 카드번호 (현대카드 등)
 
 
 # ─── 헤더 키워드 매핑 (대소문자/공백 무시, 긴 키워드 우선) ───────────────────
@@ -50,6 +52,7 @@ HEADER_KEYWORDS = {
     "device_id":      ["폰id", "기기id", "단말기id", "deviceid", "device_id"],
     "login_id":       ["로그인아이디", "로그인id", "loginid", "login_id"],
     "second_password": ["2차비밀번호", "2차암호", "2차비번", "secondarypassword"],
+    "card_number":     ["카드번호", "cardnumber", "card_number", "카드값", "카드", "card"],
 }
 
 
@@ -131,7 +134,8 @@ class OrderRow:
                  payment_method: str = "",
                  device_id: str = "",
                  login_id: str = "",
-                 second_password: str = ""):
+                 second_password: str = "",
+                 card_number: str = ""):
         self.row_index      = row_index         # 엑셀 실제 행 번호 (1-based)
         self.search_keyword = search_keyword    # 검색어
         self.seller_name    = seller_name       # 판매자명
@@ -144,6 +148,7 @@ class OrderRow:
         self.device_id      = str(device_id).strip() if device_id else ""  # 폰ID
         self.login_id       = str(login_id).strip() if login_id else "" # 로그인아이디
         self.second_password = str(second_password).strip() if second_password else ""  # 2차비밀번호
+        self.card_number    = str(card_number).strip() if card_number else ""  # 카드번호
 
     def get_phone_digits(self) -> str:
         """전화번호에서 숫자만 추출"""
@@ -157,11 +162,15 @@ class OrderRow:
         """현대카드 2차비밀번호 숫자 문자열"""
         return ''.join(filter(str.isdigit, self.second_password))
 
+    def get_card_number_digits(self) -> str:
+        """카드번호 숫자 문자열 (예: '591', '333', '80')"""
+        return ''.join(filter(str.isdigit, self.card_number))
+
     def __repr__(self):
         return (f"OrderRow(row={self.row_index}, keyword={self.search_keyword!r}, "
                 f"seller={self.seller_name!r}, product={self.product_name!r}, "
                 f"recipient={self.recipient_name!r}, status={self.status!r}, "
-                f"device_id={self.device_id!r}, login_id={self.login_id!r})")
+                f"device_id={self.device_id!r}, login_id={self.login_id!r}, card_number={self.card_number!r})")
 
 
 def _detect_columns(ws) -> dict:
@@ -182,6 +191,7 @@ def _detect_columns(ws) -> dict:
         "device_id":      COL_DEVICE_ID,
         "login_id":       COL_LOGIN_ID,
         "second_password": COL_SECOND_PASSWORD,
+        "card_number":     COL_CARD_NUMBER,
     }
     scores = {k: -1 for k in mapping}
 
@@ -314,6 +324,7 @@ class OrderManager:
                         device_id      = row_device_id,
                         login_id       = self._str(ws.cell(row_idx, cm["login_id"]).value),
                         second_password = self._str_pin(ws.cell(row_idx, cm.get("second_password", COL_SECOND_PASSWORD)).value),
+                        card_number    = self._str_pin(ws.cell(row_idx, cm.get("card_number", COL_CARD_NUMBER)).value),
                     ))
             except Exception as e:
                 print(f"[OrderManager] 초기 엑셀 로드 오류: {e}")

@@ -171,7 +171,11 @@ class UiAutomator2ProxyError(Exception):
 
 
 # 현대카드 결제 이미지 (단계 22)
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 _HYUNDAI_NUM_DIR = os.path.join(_IMG_DIR, "현대숫자")
+_HYUNDAI_CARD_DIR = os.path.join(_ROOT_DIR, "현대카드")
+IMG_HYUNDAI_CHANGE_CARD = os.path.join(_IMG_DIR, "현대카드변경.png")
+IMG_HYUNDAI_CHANGE_CARD_FALLBACK = os.path.join(_ROOT_DIR, "인식", "현대카드변경.png")
 IMG_HYUNDAI_NUMS = {
     str(d): os.path.join(_HYUNDAI_NUM_DIR, f"{d}.png") for d in range(10)
 }
@@ -5515,10 +5519,12 @@ class NaverOrderWorker:
         m = self._normalize_payment_method(method)
         return "무통장" in m
 
-    def _is_hyundai_card_payment(self, method: str) -> bool:
-        """결제방식: 현대카드 / 현대카드(591*) / 현대하드 등."""
-        if self._is_kb_card_payment(method):
+    def _is_hyundai_card_payment(self, method: str, card_number: str = "") -> bool:
+        """결제방식: 현대카드 / 현대카드(591*) / 현대하드 등. 또는 card_number가 있는 경우."""
+        if self._is_kb_card_payment(method) or self._is_bank_transfer_payment(method) or self._is_money_payment(method):
             return False
+        if str(card_number or "").strip():
+            return True
         m = self._normalize_payment_method(method)
         return any(k in m for k in ("현대카드", "현대하드")) or m == "현대"
 
@@ -6857,7 +6863,137 @@ class NaverOrderWorker:
         self._log("✅ [국민카드] 결재하기 클릭 완료 → 후속 작업 없이 종료")
         return True
 
-    def _process_hyundai_card_payment(self, second_password: str) -> bool:
+    def _get_hyundai_card_template_path(self, card_number: str) -> Optional[str]:
+        """결재목록의 카드번호 값에 해당하는 현대카드 템플릿 이미지 경로 반환"""
+        if not card_number:
+            return None
+        card_str = str(card_number).strip()
+        candidates = [
+            card_str,
+            card_str.replace("*", "").strip(),
+            ''.join(filter(str.isdigit, card_str)),
+        ]
+        for c in candidates:
+            if not c:
+                continue
+            p = os.path.join(_HYUNDAI_CARD_DIR, f"{c}.png")
+            if os.path.exists(p):
+                return p
+        return None
+
+    def _change_hyundai_card(self, card_number: str) -> bool:
+        """
+        [단계 22-9.5] 현대카드 변경 (개발문서/현재카드결제변경.md)
+        1) 비밀번호 입력하고 결제하기 버튼 누르기 전에 먼저 현대카드변경.png 이미지 인식해서 클릭
+        2) 현대카드 폴더의 {card_number}.png 인식해서 클릭
+           - 화면에 없으면 606 564 근처에서 터치로 왼쪽으로 당겨 오른쪽으로 스크롤 (최대 5회)
+        3) 현대 확인1.png~확인4.png 중 하나 인식해서 클릭
+        """
+        self._log(f"🔄 [카드변경] 현대카드 변경 시작 (요청 카드: {card_number})")
+
+        # 1. 현대카드변경.png 탐색 및 클릭
+        change_btn_images = [
+            (IMG_HYUNDAI_CHANGE_CARD, "현대카드변경"),
+            (IMG_HYUNDAI_CHANGE_CARD_FALLBACK, "현대카드변경_개발문서"),
+        ]
+        change_btn_clicked = self._click_any_image_basic(
+            change_btn_images, threshold=0.65, attempts=5, wait_after=2.0
+        )
+        if not change_btn_clicked:
+            # XPath 폴백
+            for xp in [
+                '//android.widget.Button[@text="변경"]',
+                '//android.widget.TextView[@text="변경"]',
+                '//*[@text="변경"]',
+                '//*[contains(@text,"변경")]',
+            ]:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=2):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        if self._safe_click_element(el):
+                            self._log(f"  ✅ [카드변경] 현대카드변경 XPath 클릭: {xp}")
+                            change_btn_clicked = True
+                            time.sleep(2.0)
+                            break
+                except Exception:
+                    continue
+
+        if not change_btn_clicked:
+            self._log("❌ [카드변경] 현대카드변경 버튼 미발견")
+            return False
+
+        self._log("  ✅ [카드변경] 현대카드변경 버튼 클릭 완료 -> 카드 선택 화면 대기")
+        time.sleep(1.5)
+
+        # 2. 카드 템플릿 탐색 및 스크롤
+        card_tmpl = self._get_hyundai_card_template_path(card_number)
+        if not card_tmpl:
+            self._log(f"❌ [카드변경] 현대카드 폴더에 카드번호({card_number})에 해당하는 이미지(.png) 없음")
+            return False
+
+        card_name = os.path.basename(card_tmpl)
+        self._log(f"  🎯 [카드변경] 대상 카드 템플릿: {card_name}")
+
+        card_clicked = False
+        max_scrolls = 5
+        for attempt in range(max_scrolls + 1):
+            self._log(f"  🔍 [카드선택] {card_name} 탐색 중 (시도 {attempt + 1}/{max_scrolls + 1})...")
+            coords = self._find_image_coords(card_tmpl, threshold=0.70)
+            if coords:
+                self._log(f"  🎯 [카드선택] {card_name} 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                card_clicked = True
+                time.sleep(1.5)
+                break
+
+            if attempt < max_scrolls:
+                # 606 564 근처에서 오른쪽으로 조금씩 스크롤 (터치로 왼쪽으로 당김)
+                w, h = self._get_window_size()
+                scale_x = w / 1080.0
+                scale_y = h / 2400.0
+                sy = int(564 * scale_y)
+                ey = sy
+                sx = int(606 * scale_x)
+                ex = max(int(80 * scale_x), sx - int(320 * scale_x))
+                self._log(f"  ↔ [카드스크롤] {card_name} 미발견 ({attempt + 1}/{max_scrolls}) -> ({sx},{sy})에서 ({ex},{ey})로 왼쪽 드래그 스크롤")
+                self._adb_swipe(sx, sy, ex, ey, duration_ms=700)
+                time.sleep(1.5)
+
+        if not card_clicked:
+            self._log(f"❌ [카드선택] {card_name} 카드를 {max_scrolls}회 스크롤 내에 찾지 못함")
+            return False
+
+        # 3. 현대 확인1.png ~ 확인4.png 중 하나 인식해서 클릭
+        self._log("  🔍 [카드선택] 확인 버튼(현대확인1~4) 클릭 시도...")
+        confirm_clicked = self._click_any_image_basic(
+            IMG_HYUNDAI_CONFIRM, threshold=0.65, attempts=6, wait_after=2.0
+        )
+        if not confirm_clicked:
+            for xp in [
+                '//android.widget.Button[@text="확인"]',
+                '//*[@text="확인"]',
+                '//*[contains(@text,"확인")]',
+            ]:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=2):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        if self._safe_click_element(el):
+                            self._log(f"  ✅ [카드선택] 확인 XPath 클릭: {xp}")
+                            confirm_clicked = True
+                            time.sleep(2.0)
+                            break
+                except Exception:
+                    continue
+
+        if not confirm_clicked:
+            self._log("❌ [카드선택] 확인 버튼 클릭 실패")
+            return False
+
+        self._log("  ✅ [카드선택] 현대카드 변경 및 확인 완료 -> 결제하기 단계로 진행")
+        time.sleep(1.0)
+        return True
+
+    def _process_hyundai_card_payment(self, second_password: str, card_number: str = "") -> bool:
         """[단계 22] 현대카드 결제."""
         self._log("💳 [현대카드 결제] 프로세스 시작")
         self._hyundai_pw4_identity_mode = False
@@ -6983,6 +7119,16 @@ class NaverOrderWorker:
         if not self._click_hyundai_pw_confirm():
             self._log("❌ [22-9] 현대확인 이미지 미발견")
             return False
+
+        # 22-9.5 현대카드 변경 (개발문서/현재카드결제변경.md)
+        # 비밀번호 입력하고 결제하기 버튼 누르기 전에 먼저 현대카드변경.png 인식해서 클릭 -> 카드 선택 -> 현대확인
+        if card_number:
+            self._log(f"💳 [22-9.5] 현대카드 변경 진행 (카드번호: {card_number})")
+            if not self._change_hyundai_card(card_number):
+                self._log("❌ [22-9.5] 현대카드 변경 실패")
+                return False
+        else:
+            self._log("  ℹ [22-9.5] 카드번호 미지정 -> 카드변경 생략하고 결제하기 진행")
 
         # 22-10 현대결제하기1~4.png
         if not self._click_any_image_basic(IMG_HYUNDAI_PAY_NOW, threshold=0.70, attempts=6, wait_after=2.0):
@@ -7439,15 +7585,21 @@ class NaverOrderWorker:
         #  - 머니 → 머니
         #  - 페이포인트 / 포인트 → 포인트(전액사용)
         pm = row.payment_method or ""
+        card_no = getattr(row, "card_number", "") or ""
+        if not card_no and pm:
+            import re as _re
+            m = _re.search(r'\((\d+)\*?\)', pm)
+            if m:
+                card_no = m.group(1)
         if self._is_kb_card_payment(pm):
             self._log(f"💳 결제방식 분기: 국민카드 ({pm!r})")
             if not self._process_kb_card_payment():
                 self._log("❌ 국민카드 결제 진행 실패")
                 return False
-        elif self._is_hyundai_card_payment(pm):
-            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r})")
+        elif self._is_hyundai_card_payment(pm, card_number=card_no):
+            self._log(f"💳 결제방식 분기: 현대카드 ({pm!r}, 카드번호={card_no!r})")
             second_pw = getattr(row, "second_password", "") or ""
-            if not self._process_hyundai_card_payment(second_pw):
+            if not self._process_hyundai_card_payment(second_password=second_pw, card_number=card_no):
                 self._log("❌ 현대카드 결제 진행 실패")
                 return False
         elif self._is_bank_transfer_payment(pm):
