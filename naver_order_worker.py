@@ -5539,8 +5539,24 @@ class NaverOrderWorker:
         return m == "머니" or "머니" in m
 
     def _ensure_normal_pay_checked(self) -> bool:
-        """[22-2] 현대카드/국민카드 결제 시 일반결재.png, 일반결재3.png 둘 중 하나를 인식해서 클릭."""
-        self._log("🔍 [22-2] 일반결재 선택 확인 ('일반결재' / '일반결재3' 인식 및 클릭 시도)")
+        """[22-2] 현대카드/국민카드 결제 시 일반결재 선택 확인 및 클릭.
+        - 탐색 전 미세 스크롤 업으로 일반결재 버튼 영역을 화면에 올림
+        - 일반결재.png / 일반결재3.png / 일반결재체크.png 셋 중 하나 인식
+        - 일반결재체크(이미 선택됨) 인식 시 클릭 없이 통과
+        - 일반결재/일반결재3 인식 시 클릭하여 선택
+        """
+        self._log("🔍 [22-2] 일반결재 탐색 전 미세 스크롤 업")
+        self._scroll_up(distance_ratio=0.18)
+        time.sleep(0.5)
+
+        self._log("🔍 [22-2] 일반결재 선택 확인 시작 ('일반결재' / '일반결재3' / '일반결재체크' 인식)")
+
+        # 먼저 이미 체크된 상태인지 확인 (클릭 불필요)
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.75):
+            self._log("✅ [22-2] '일반결재체크' 이미 선택 상태 확인됨 → 클릭 건너뜀")
+            return True
+
+        # 미선택 상태이면 일반결재 / 일반결재3 탐색 및 클릭
         normal_pay_images = [
             (IMG_NORMAL_PAY, "일반결재"),
             (IMG_NORMAL_PAY3, "일반결재3"),
@@ -5548,11 +5564,17 @@ class NaverOrderWorker:
         if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8):
             self._log("✅ [22-2] 일반결재 클릭 완료")
             time.sleep(1.0)
+            # 클릭 후 체크 상태 재확인
+            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                self._log("✅ [22-2] 클릭 후 '일반결재체크' 확인됨")
             return True
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.85):
-            self._log("✅ [22-2] '일반결재체크' 상태 확인됨")
+
+        # 재탐색: 클릭 시도 후에도 체크 상태인지 재확인
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            self._log("✅ [22-2] '일반결재체크' 상태 확인됨 (재탐색 성공)")
             return True
-        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3 인식 및 클릭 실패)")
+
+        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3/일반결재체크 인식 실패)")
         return False
 
     def _card_placeholder_visible(self) -> bool:
