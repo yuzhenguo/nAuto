@@ -4090,21 +4090,20 @@ class NaverOrderWorker:
         return m == "머니" or "머니" in m
 
     def _ensure_normal_pay_checked(self) -> bool:
-        """[22-2] 일반결재가 체크되어 있어야 함. 아니면 클릭."""
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-            self._log("✅ [22-2] '일반결재체크' 상태 확인")
-            return True
+        """[22-2] 현대카드/국민카드 결제 시 일반결재.png, 일반결재3.png 둘 중 하나를 인식해서 클릭."""
+        self._log("🔍 [22-2] 일반결재 선택 확인 ('일반결재' / '일반결재3' 인식 및 클릭 시도)")
         normal_pay_images = [
             (IMG_NORMAL_PAY, "일반결재"),
             (IMG_NORMAL_PAY3, "일반결재3"),
         ]
-        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
+        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8):
             self._log("✅ [22-2] 일반결재 클릭 완료")
+            time.sleep(1.0)
             return True
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-            self._log("✅ [22-2] '일반결재체크' 발견")
+        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.85):
+            self._log("✅ [22-2] '일반결재체크' 상태 확인됨")
             return True
-        self._log("❌ [22-2] 일반결재 미확인")
+        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3 인식 및 클릭 실패)")
         return False
 
     def _card_placeholder_visible(self) -> bool:
