@@ -107,7 +107,10 @@ IMG_OTHER_PAY4    = os.path.join(_IMG_DIR, "다른결재4.png")
 IMG_PAY_METHOD    = os.path.join(_IMG_DIR, "결재수단.png")
 IMG_BOGI          = os.path.join(_IMG_DIR, "보기.png")
 IMG_NORMAL_PAY    = os.path.join(_IMG_DIR, "일반결재.png")
+IMG_NORMAL_PAY1   = os.path.join(_IMG_DIR, "일반결재1.png")
+IMG_NORMAL_PAY2   = os.path.join(_IMG_DIR, "일반결재2.png")
 IMG_NORMAL_PAY3   = os.path.join(_IMG_DIR, "일반결재3.png")
+IMG_NORMAL_PAY4   = os.path.join(_IMG_DIR, "일반결재4.png")
 IMG_NORMAL_PAY_CHECK = os.path.join(_IMG_DIR, "일반결재체크.png")
 IMG_BANK_TRANSFER = os.path.join(_IMG_DIR, "무통장입금.png")
 IMG_BANK_TRANSFER_CHECK = os.path.join(_IMG_DIR, "무통장체크.png")
@@ -5551,30 +5554,22 @@ class NaverOrderWorker:
 
         self._log("🔍 [22-2] 일반결재 선택 확인 시작 ('일반결재' / '일반결재3' / '일반결재체크' 인식)")
 
-        # 먼저 이미 체크된 상태인지 확인 (클릭 불필요)
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.75):
-            self._log("✅ [22-2] '일반결재체크' 이미 선택 상태 확인됨 → 클릭 건너뜀")
-            return True
-
-        # 미선택 상태이면 일반결재 / 일반결재3 탐색 및 클릭
+        # 무조건 일반결재 영역을 한 번 클릭 (일반결재체크 제외 — 오인식 방지)
         normal_pay_images = [
             (IMG_NORMAL_PAY, "일반결재"),
-            (IMG_NORMAL_PAY3, "일반결재3"),
+            (IMG_NORMAL_PAY1, "일반결재1"),
+            (IMG_NORMAL_PAY2, "일반결재2"),
+            (IMG_NORMAL_PAY4, "일반결재4"),
         ]
         if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8):
-            self._log("✅ [22-2] 일반결재 클릭 완료")
+            self._log("✅ [22-2] 일반결재 영역 클릭 완료 (무조건 클릭)")
             time.sleep(1.0)
-            # 클릭 후 체크 상태 재확인
+            # 클릭 후 체크 상태 최종 확인
             if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-                self._log("✅ [22-2] 클릭 후 '일반결재체크' 확인됨")
+                self._log("✅ [22-2] '일반결재체크' 최종 상태 확인됨")
             return True
-
-        # 재탐색: 클릭 시도 후에도 체크 상태인지 재확인
-        if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-            self._log("✅ [22-2] '일반결재체크' 상태 확인됨 (재탐색 성공)")
-            return True
-
-        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3/일반결재체크 인식 실패)")
+        
+        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3/일반결재체크 모두 인식 실패)")
         return False
 
     def _card_placeholder_visible(self) -> bool:
@@ -5672,7 +5667,7 @@ class NaverOrderWorker:
 
             if not clicked:
                 if self._click_any_image_with_scroll(
-                    IMG_HYUNDAI_CARDS, threshold=0.60, max_scroll_attempts=3,
+                    IMG_HYUNDAI_CARDS, threshold=0.53, max_scroll_attempts=3,
                     min_y=min_y, max_y=max_y,
                 ):
                     clicked = True
@@ -7579,6 +7574,28 @@ class NaverOrderWorker:
                         best_th    = new_h
                 except Exception:
                     pass
+
+            # 명암/대비 조절 2차 시도 (아깝게 실패한 경우)
+            if best_loc is not None and 0.40 <= best_score < threshold:
+                enhanced_gray = cv2.convertScaleAbs(screen_gray, alpha=1.2, beta=-15)
+                for scale in scales:
+                    new_w = int(t_w * scale)
+                    new_h = int(t_h * scale)
+                    if new_w >= screen_w or new_h >= screen_h or new_w < 10 or new_h < 5:
+                        continue
+                    resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    try:
+                        r = cv2.matchTemplate(enhanced_gray, resized_templ, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                        if max_val > best_score:
+                            best_score = max_val
+                            best_loc   = max_loc
+                            best_tw    = new_w
+                            best_th    = new_h
+                    except Exception:
+                        pass
+                if best_score >= threshold and not silent:
+                    self._log(f"  ✨ [이미지 매칭 보정] 명암/대비 조절로 인식 성공! (최종 점수: {best_score:.4f})")
 
             if best_score >= threshold and best_loc is not None:
                 raw_cx = best_loc[0] + best_tw // 2
