@@ -4373,7 +4373,8 @@ class NaverOrderWorker:
     def _click_any_image_with_scroll(self, images: list, threshold: float = 0.82, max_scroll_attempts: int = 15,
                                      min_x: Optional[int] = None, max_x: Optional[int] = None,
                                      min_y: Optional[int] = None, max_y: Optional[int] = None,
-                                     allow_scroll_up: bool = False) -> bool:
+                                     allow_scroll_up: bool = False,
+                                     mid_top_ratio: float = 0.35) -> bool:
         """여러 이미지 중 하나라도 발견되면 클릭 (기본 allow_scroll_up=False 로 위로 스크롤 방지)"""
         names_str = " / ".join(n for _, n in images)
         self._set_status(f"{names_str} 탐색 중")
@@ -4385,7 +4386,7 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        mid_top    = int(w_h * 0.35)
+        mid_top    = min_y if min_y is not None else int(w_h * mid_top_ratio)
         mid_bottom = int(w_h * 0.70)
 
         for attempt in range(1, max_scroll_attempts + 1):
@@ -5543,33 +5544,44 @@ class NaverOrderWorker:
 
     def _ensure_normal_pay_checked(self) -> bool:
         """[22-2] 현대카드/국민카드 결제 시 일반결재 선택 확인 및 클릭.
-        - 탐색 전 미세 스크롤 업으로 일반결재 버튼 영역을 화면에 올림
-        - 일반결재.png / 일반결재3.png / 일반결재체크.png 셋 중 하나 인식
-        - 일반결재체크(이미 선택됨) 인식 시 클릭 없이 통과
-        - 일반결재/일반결재3 인식 시 클릭하여 선택
+        - 일반결재4 / 일반결재2 / 일반결재 / 일반결재1 탐색 (인식률 높은 순)
+        - 현재 화면에서 즉시 발견 시 스크롤 없이 바로 탭 클릭
+        - 미발견 시 미세 스크롤과 함께 상단 안전영역(mid_top_ratio=0.15) 탐색
         """
-        self._log("🔍 [22-2] 일반결재 탐색 전 미세 스크롤 업")
-        self._scroll_up(distance_ratio=0.18)
-        time.sleep(0.5)
+        self._log("🔍 [22-2] 일반결재 선택 확인 시작")
 
-        self._log("🔍 [22-2] 일반결재 선택 확인 시작 ('일반결재' / '일반결재3' / '일반결재체크' 인식)")
-
-        # 무조건 일반결재 영역을 한 번 클릭 (일반결재체크 제외 — 오인식 방지)
         normal_pay_images = [
+            (IMG_NORMAL_PAY4, "일반결재4"),
+            (IMG_NORMAL_PAY2, "일반결재2"),
             (IMG_NORMAL_PAY, "일반결재"),
             (IMG_NORMAL_PAY1, "일반결재1"),
-            (IMG_NORMAL_PAY2, "일반결재2"),
-            (IMG_NORMAL_PAY4, "일반결재4"),
         ]
-        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8):
+
+        # 1차: 현재 화면 즉시 탐색 (스크롤 불필요 시 빠른 클릭)
+        screen_gray, screen_bgr = self._capture_screen_cv2()
+        for img_path, name in normal_pay_images:
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(
+                    img_path, threshold=0.72, min_y=100,
+                    cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr
+                )
+                if coords:
+                    self._log(f"  🎯 {name} 즉시 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
+                    time.sleep(1.0)
+                    if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                        self._log("✅ [22-2] '일반결재체크' 최종 상태 확인됨")
+                    return True
+
+        # 2차: 현재 화면에 없으면 스크롤 탐색 (상단 15% 이상 허용)
+        if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8, mid_top_ratio=0.15):
             self._log("✅ [22-2] 일반결재 영역 클릭 완료 (무조건 클릭)")
             time.sleep(1.0)
-            # 클릭 후 체크 상태 최종 확인
             if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
                 self._log("✅ [22-2] '일반결재체크' 최종 상태 확인됨")
             return True
         
-        self._log("❌ [22-2] 일반결재 미확인 (일반결재/일반결재3/일반결재체크 모두 인식 실패)")
+        self._log("❌ [22-2] 일반결재 미확인 (일반결재4/일반결재2/일반결재/일반결재1 모두 인식 실패)")
         return False
 
     def _card_placeholder_visible(self) -> bool:
@@ -7551,9 +7563,10 @@ class NaverOrderWorker:
             best_th    = t_h
 
             # 표준 Grayscale 매칭 (CLAHE 왜곡 없이 템플릿 원본 정밀 비교)
-            # 다양한 모바일 해상도(DPI) 대응을 위한 멀티스케일 (0.55 ~ 1.65x, 12단계)
-            scales = np.linspace(0.55, 1.65, 12)
-            for scale in scales:
+            # 다양한 모바일 해상도(DPI) 대응을 위한 Coarse-to-Fine 멀티스케일 (0.48 ~ 2.25x)
+            coarse_scales = np.arange(0.48, 2.25, 0.07)
+            best_scale = 1.0
+            for scale in coarse_scales:
                 new_w = int(t_w * scale)
                 new_h = int(t_h * scale)
                 if new_w >= screen_w or new_h >= screen_h:
@@ -7561,7 +7574,8 @@ class NaverOrderWorker:
                 if new_w < 10 or new_h < 5:
                     continue
 
-                resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+                resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=interp)
 
                 # 표준 TM_CCOEFF_NORMED 적용 (가장 정밀하고 오탐이 없는 방식)
                 try:
@@ -7569,21 +7583,49 @@ class NaverOrderWorker:
                     _, max_val, _, max_loc = cv2.minMaxLoc(r)
                     if max_val > best_score:
                         best_score = max_val
+                        best_scale = scale
                         best_loc   = max_loc
                         best_tw    = new_w
                         best_th    = new_h
                 except Exception:
                     pass
 
+            # 최고 후보 주변 미세 스케일 정밀 탐색 (Fine search)
+            if best_score > 0.35:
+                fine_scales = np.arange(max(0.45, best_scale - 0.06), min(2.30, best_scale + 0.061), 0.015)
+                for scale in fine_scales:
+                    new_w = int(t_w * scale)
+                    new_h = int(t_h * scale)
+                    if new_w >= screen_w or new_h >= screen_h:
+                        continue
+                    if new_w < 10 or new_h < 5:
+                        continue
+
+                    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+                    resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=interp)
+                    try:
+                        r = cv2.matchTemplate(screen_gray, resized_templ, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(r)
+                        if max_val > best_score:
+                            best_score = max_val
+                            best_scale = scale
+                            best_loc   = max_loc
+                            best_tw    = new_w
+                            best_th    = new_h
+                    except Exception:
+                        pass
+
             # 명암/대비 조절 2차 시도 (아깝게 실패한 경우)
             if best_loc is not None and 0.40 <= best_score < threshold:
                 enhanced_gray = cv2.convertScaleAbs(screen_gray, alpha=1.2, beta=-15)
-                for scale in scales:
+                enh_scales = np.arange(max(0.45, best_scale - 0.05), min(2.30, best_scale + 0.051), 0.015)
+                for scale in enh_scales:
                     new_w = int(t_w * scale)
                     new_h = int(t_h * scale)
                     if new_w >= screen_w or new_h >= screen_h or new_w < 10 or new_h < 5:
                         continue
-                    resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+                    resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=interp)
                     try:
                         r = cv2.matchTemplate(enhanced_gray, resized_templ, cv2.TM_CCOEFF_NORMED)
                         _, max_val, _, max_loc = cv2.minMaxLoc(r)
