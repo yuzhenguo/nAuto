@@ -41,6 +41,7 @@ from naver_order_worker import NaverOrderWorker
 # ─── 기본 설정 ────────────────────────────────────────────────────────────────
 XLSX_PATH           = os.path.join(_BASE_DIR, "개발문서", "결재목록.xlsx")
 DEVICES_CONFIG_PATH = os.path.join(_NAVER_DIR, "devices_config.json")
+ORDER_SETTINGS_PATH = os.path.join(_BASE_DIR, "order_settings.json")
 APPIUM_PORT_MIN     = 7723
 APPIUM_PORT_MAX     = 8500
 
@@ -491,6 +492,7 @@ class MainApp(tk.Tk):
         self.running_ports: set = set()
         self.running: bool = False
         self.max_workers_var = tk.IntVar(value=30)
+        self.hyundai_auth_retry_var = tk.BooleanVar(value=False)
         self.slot_manager = PrioritySlotManager(30)  # 동시 실행 최대 기기 수 및 잔여량 우선순위 제어
         self.slot_manager.set_priority_fn(self._get_device_priority)
         self.working_devices: set = set()            # 현재 실제 작업 중인 기기 ID 집합
@@ -512,6 +514,7 @@ class MainApp(tk.Tk):
 
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
+        self._load_order_settings()
 
         self._build_ui()
         self._refresh_summary()
@@ -533,6 +536,38 @@ class MainApp(tk.Tk):
                 json.dump(self.devices_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[MainApp] 설정 저장 오류: {e}")
+
+    def _load_order_settings(self):
+        """현대카드 본인인증 재결제 등 앱 옵션 불러오기"""
+        if os.path.exists(ORDER_SETTINGS_PATH):
+            try:
+                with open(ORDER_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "hyundai_auth_retry" in data:
+                        self.hyundai_auth_retry_var.set(bool(data["hyundai_auth_retry"]))
+            except Exception as e:
+                print(f"[MainApp] 주문 설정 로드 오류: {e}")
+
+    def _save_order_settings(self):
+        """현대카드 본인인증 재결제 등 앱 옵션 저장하기"""
+        try:
+            data = {
+                "hyundai_auth_retry": self.hyundai_auth_retry_var.get()
+            }
+            with open(ORDER_SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[MainApp] 주문 설정 저장 오류: {e}")
+
+    def _on_hyundai_auth_retry_changed(self):
+        """현대카드 본인인증 재결제 체크박스 토글 시 설정 저장 및 실행 중인 워커에 실시간 반영"""
+        val = self.hyundai_auth_retry_var.get()
+        self._save_order_settings()
+        for worker in self.workers.values():
+            if worker:
+                worker.hyundai_auth_retry = val
+        state_str = "ON (최대 3회 재결제 시도 후 B)" if val else "OFF (감지 시 즉시 F 처리 후 작업 종료)"
+        self._log_status(f"⚙ 현대카드 본인인증 재결제: {state_str}")
 
     def _sync_devices_with_adb(self):
         """현재 연결된 ADB 기기를 조회하여 로컬 설정과 동기화.
@@ -843,6 +878,15 @@ class MainApp(tk.Tk):
             font=("Segoe UI", 10, "bold")
         )
         self.test_mode_chk.pack(side=tk.LEFT, padx=10)
+
+        self.hyundai_auth_retry_chk = tk.Checkbutton(
+            right_ctrl, text="현대카드 본인인증 재결제", variable=self.hyundai_auth_retry_var,
+            command=self._on_hyundai_auth_retry_changed,
+            bg=CLR_SURFACE, fg="#fb923c", selectcolor="#ffffff",
+            activebackground=CLR_SURFACE, activeforeground="#fb923c",
+            font=("Segoe UI", 9, "bold")
+        )
+        self.hyundai_auth_retry_chk.pack(side=tk.LEFT, padx=(4, 10))
 
         self.adb_btn = self._make_btn(
             right_ctrl, "📱 ADB 조회", self._query_adb_devices,
@@ -1212,6 +1256,7 @@ class MainApp(tk.Tk):
             manual_mode=manual_mode,
             acquire_slot_callback=self._on_slot_acquire,
             release_slot_callback=self._on_slot_release,
+            hyundai_auth_retry=self.hyundai_auth_retry_var.get(),
         )
         worker._ui_gen = gen
         self.workers[device_id] = worker
@@ -1390,6 +1435,7 @@ class MainApp(tk.Tk):
                 manual_mode    = manual_mode,
                 acquire_slot_callback=self._on_slot_acquire,
                 release_slot_callback=self._on_slot_release,
+                hyundai_auth_retry=self.hyundai_auth_retry_var.get(),
             )
             worker._ui_gen = gen
             self.workers[did] = worker

@@ -30,7 +30,7 @@ import sys
 import time
 import random
 import threading
-from typing import Callable, Optional, Any
+from typing import Callable, Optional, Any, Tuple
 
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException, NoSuchElementException
@@ -458,7 +458,8 @@ class NaverOrderWorker:
                  test_mode: bool = False,
                  manual_mode: bool = False,
                  acquire_slot_callback: Optional[Callable] = None,
-                 release_slot_callback: Optional[Callable] = None):
+                 release_slot_callback: Optional[Callable] = None,
+                 hyundai_auth_retry: bool = False):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
@@ -470,6 +471,7 @@ class NaverOrderWorker:
         self.test_mode      = test_mode
         # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
         self.manual_mode    = manual_mode
+        self.hyundai_auth_retry = hyundai_auth_retry
         self.current_payment_method = ""
         self.current_row    = None
         self.driver         = None
@@ -633,6 +635,14 @@ class NaverOrderWorker:
         extra = f" ({reason})" if reason else ""
         self._log(f"❌ 본인인증{extra}: {getattr(row, 'search_keyword', '')} → B 기록")
         self._set_status("본인인증(B)")
+
+    def _mark_failed_birthday_auth(self, row, reason: str = ""):
+        if not row:
+            return
+        self.order_manager.mark_failed(row.row_index)
+        extra = f" ({reason})" if reason else ""
+        self._log(f"❌ 현대카드 본인인증 감지 (재결제 미체크){extra}: {getattr(row, 'search_keyword', '')} → F 기록")
+        self._set_status("본인인증(F)")
 
     def _mark_next_pending_conn_failed(self):
         row = None
@@ -6881,6 +6891,78 @@ class NaverOrderWorker:
                 return p
         return None
 
+    def _click_extra_auth_confirm(self, anchor_coords: Optional[Tuple[int, int]] = None) -> bool:
+        """
+        추가인증 팝업의 [확인] 버튼 클릭.
+        1) 추가인증확인.png / 안전확인1~3.png 이미지 매칭
+        2) XPath '확인' 버튼
+        3) anchor_coords(추가인증.png 위치) 기준 상대 좌표 (dy≈+225) 탭
+        """
+        w, h = self._get_window_size()
+        scale_y = h / 2400.0
+
+        # 1) 추가인증확인.png 탐색
+        for img_p in [
+            os.path.join(_IMG_DIR, "추가인증확인.png"),
+            os.path.join(_ROOT_DIR, "인식", "추가인증확인.png"),
+        ]:
+            if os.path.exists(img_p):
+                c = self._find_image_coords(img_p, threshold=0.60)
+                if c:
+                    self._log(f"  🎯 [추가인증확인] '추가인증확인.png' 발견 @ ({c[0]}, {c[1]}) -> 클릭")
+                    ah.tap_by_coords(self.driver, c[0], c[1], self._log)
+                    time.sleep(2.0)
+                    return True
+
+        # 2) 안전확인1~3.png 이미지 탐색
+        for img_p, name in IMG_HYUNDAI_SAFE_CONFIRM:
+            if os.path.exists(img_p):
+                c = self._find_image_coords(img_p, threshold=0.55)
+                if c:
+                    self._log(f"  🎯 [추가인증확인] '{name}' 발견 @ ({c[0]}, {c[1]}) -> 클릭")
+                    ah.tap_by_coords(self.driver, c[0], c[1], self._log)
+                    time.sleep(2.0)
+                    return True
+
+        # 3) XPath: '확인' 텍스트
+        min_y, max_y = int(h * 0.40), int(h * 0.70)
+        for xp in [
+            '//android.widget.Button[@text="확인"]',
+            '//*[@text="확인"]',
+            '//android.widget.Button[contains(@text,"확인")]',
+            '//*[contains(@text,"확인")]',
+        ]:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    loc = el.location
+                    sz = el.size
+                    cx = int(loc["x"] + sz["width"] / 2)
+                    cy = int(loc["y"] + sz["height"] / 2)
+                    if min_y <= cy <= max_y:
+                        if self._safe_click_element(el):
+                            self._log(f"  ✅ [추가인증확인] XPath 클릭: {xp} @ ({cx}, {cy})")
+                            time.sleep(2.0)
+                            return True
+            except Exception:
+                continue
+
+        # 4) 앵커(추가인증.png) 위치 기준 상대 탭 (y ≈ +225px)
+        if anchor_coords:
+            tap_x = anchor_coords[0]
+            tap_y = int(anchor_coords[1] + int(225 * scale_y))
+            self._log(f"  🎯 [추가인증확인] 앵커 상대 좌표 탭 ({tap_x}, {tap_y})")
+            ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            time.sleep(2.0)
+            return True
+
+        # 5) 기본 중앙 하단 탭
+        fallback_x, fallback_y = w // 2, int(h * 0.525)
+        self._log(f"  ⚠ [추가인증확인] 기본 예상 좌표 탭 ({fallback_x}, {fallback_y})")
+        ah.tap_by_coords(self.driver, fallback_x, fallback_y, self._log)
+        time.sleep(2.0)
+        return True
+
     def _change_hyundai_card(self, card_number: str) -> bool:
         """
         [단계 22-9.5] 현대카드 변경 (개발문서/현재카드결제변경.md)
@@ -6988,6 +7070,57 @@ class NaverOrderWorker:
         if not confirm_clicked:
             self._log("❌ [카드선택] 확인 버튼 클릭 실패")
             return False
+
+        # ── 현대확인 클릭 후: 추가인증.png 존재하면 [확인] 클릭, 없으면 클릭 안 하고 기존 로직 ──
+        self._log("  ⏳ [카드선택] 현대확인 후 화면 전환 대기 (2.0초)...")
+        time.sleep(2.0)
+
+        extra_auth_tmpl = os.path.join(_IMG_DIR, "추가인증.png")
+        if not os.path.exists(extra_auth_tmpl):
+            extra_auth_tmpl = os.path.join(_ROOT_DIR, "인식", "추가인증.png")
+
+        extra_auth_found = False
+        anchor_coords = None
+        self._log("  🔍 [추가인증] '추가인증.png' 탐색 중...")
+        for attempt in range(1, 4):
+            if os.path.exists(extra_auth_tmpl):
+                coords = self._find_image_coords(extra_auth_tmpl, threshold=0.55)
+                if coords:
+                    self._log(f"  🎯 [추가인증] '추가인증.png' 발견! 좌표 ({coords[0]}, {coords[1]})")
+                    extra_auth_found = True
+                    anchor_coords = coords
+                    break
+            # 텍스트 XPath 폴백
+            for xp in [
+                '//*[contains(@text,"추가 인증")]',
+                '//*[contains(@text,"추가인증")]',
+            ]:
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=0.5):
+                        el = self.driver.find_element(By.XPATH, xp)
+                        loc = el.location
+                        sz = el.size
+                        anchor_coords = (int(loc["x"] + sz["width"] / 2), int(loc["y"] + sz["height"] / 2))
+                        self._log(f"  🎯 [추가인증] 텍스트 감지: {xp} @ {anchor_coords}")
+                        extra_auth_found = True
+                        break
+                except Exception:
+                    continue
+            if extra_auth_found:
+                break
+            time.sleep(0.8)
+
+        if extra_auth_found:
+            self._log("  🎯 [추가인증] 추가인증 확인 버튼 클릭 시도...")
+            self._click_extra_auth_confirm(anchor_coords=anchor_coords)
+            self._log("  ✅ [추가인증] 추가인증 확인 클릭 완료")
+        else:
+            self._log("  ℹ [추가인증] 추가인증.png 미존재 -> 추가인증 확인 클릭 안 하고 기존 로직 진행")
+
+        # 본인인증 감지 로직 확인
+        self._log("  🔍 [본인인증] 본인인증 화면 검사...")
+        self._check_birthday_auth(attempts=3)
+        self._log("  ✅ [본인인증] 본인인증 미감지 → 결제하기 단계로 진행")
 
         self._log("  ✅ [카드선택] 현대카드 변경 및 확인 완료 -> 결제하기 단계로 진행")
         time.sleep(1.0)
@@ -7282,36 +7415,52 @@ class NaverOrderWorker:
                 self.has_dismissed_payment_benefit = False
 
                 try:
-                    MAX_BIRTHDAY_AUTH_ROUNDS = 3  # 본인인증 감지 시 최대 3회차까지 재작업
                     success = False
                     uia2_stop = False
                     birthday_auth_give_up = False
-                    for birthday_round in range(1, MAX_BIRTHDAY_AUTH_ROUNDS + 1):
+
+                    if not getattr(self, "hyundai_auth_retry", False):
+                        # [현대카드 본인인증 재결제 미체크] 본인인증 감지 시 F 처리 후 작업 종료
                         try:
                             success, uia2_stop = self._process_order_with_uia2_retry(row)
-                            break  # 본인인증 없이 정상 종료(성공/실패 모두)
                         except BirthdayAuthRequiredError:
-                            if birthday_round >= MAX_BIRTHDAY_AUTH_ROUNDS:
-                                self._log(
-                                    f"❌ [본인인증 감지] {birthday_round}회차 연속 "
-                                    f"본인인증 요구됨 → 상태 B 기록"
-                                )
-                                self._mark_birthday_auth(
-                                    row, f"{birthday_round}회차 연속"
-                                )
-                                self.current_row = None
-                                self._log("⏹ 작업 종료")
-                                birthday_auth_give_up = True
-                                break
                             self._log(
-                                f"⚠ [본인인증 감지] {birthday_round}회차 실패, "
-                                f"해당 주문을 재작업(처음부터)합니다. "
-                                f"({birthday_round}/{MAX_BIRTHDAY_AUTH_ROUNDS})"
+                                f"❌ [본인인증 감지] 현대카드 본인인증 재결제 미체크 "
+                                f"→ F 기록 및 작업 종료: {row.search_keyword}"
                             )
-                            continue
+                            self._mark_failed_birthday_auth(row, "재결제 미체크")
+                            self.current_row = None
+                            self._log("⏹ 작업 종료")
+                            break
+                    else:
+                        # [현대카드 본인인증 재결제 체크] 기존 로직 유지 (최대 3회차 재시도 후 B 기록 및 종료)
+                        MAX_BIRTHDAY_AUTH_ROUNDS = 3  # 본인인증 감지 시 최대 3회차까지 재작업
+                        for birthday_round in range(1, MAX_BIRTHDAY_AUTH_ROUNDS + 1):
+                            try:
+                                success, uia2_stop = self._process_order_with_uia2_retry(row)
+                                break  # 본인인증 없이 정상 종료(성공/실패 모두)
+                            except BirthdayAuthRequiredError:
+                                if birthday_round >= MAX_BIRTHDAY_AUTH_ROUNDS:
+                                    self._log(
+                                        f"❌ [본인인증 감지] {birthday_round}회차 연속 "
+                                        f"본인인증 요구됨 → 상태 B 기록"
+                                    )
+                                    self._mark_birthday_auth(
+                                        row, f"{birthday_round}회차 연속"
+                                    )
+                                    self.current_row = None
+                                    self._log("⏹ 작업 종료")
+                                    birthday_auth_give_up = True
+                                    break
+                                self._log(
+                                    f"⚠ [본인인증 감지] {birthday_round}회차 실패, "
+                                    f"해당 주문을 재작업(처음부터)합니다. "
+                                    f"({birthday_round}/{MAX_BIRTHDAY_AUTH_ROUNDS})"
+                                )
+                                continue
 
-                    if birthday_auth_give_up:
-                        break  # 3회차 B 기록 후 워커 종료
+                        if birthday_auth_give_up:
+                            break  # 3회차 B 기록 후 워커 종료
 
                     if uia2_stop:
                         self.order_manager.mark_failed(row.row_index)
