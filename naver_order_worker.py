@@ -2947,7 +2947,7 @@ class NaverOrderWorker:
         # ── 1번째 ──
         cx, cy, score = boxes[0]
         self._log(f"  👉 1/{target}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}")
-        self._soft_tap(cx, cy, duration_ms=180)
+        self._soft_tap(cx, cy, duration_ms=130)
         time.sleep(1.0)
         checked = 1
 
@@ -2974,7 +2974,7 @@ class NaverOrderWorker:
                 self._log(
                     f"  👉 {n}/{target}번째 체크박스 탭 ({cx}, {cy}) score={score:.4f}"
                 )
-                self._soft_tap(cx, cy, duration_ms=180)
+                self._soft_tap(cx, cy, duration_ms=130)
                 time.sleep(1.0)
                 checked = n
             elif len(boxes_n) == 1:
@@ -2983,7 +2983,7 @@ class NaverOrderWorker:
                     f"  👉 {n}/{target}번째(펼친옵션) 체크박스 탭 "
                     f"({cx}, {cy}) score={score:.4f}"
                 )
-                self._soft_tap(cx, cy, duration_ms=180)
+                self._soft_tap(cx, cy, duration_ms=130)
                 time.sleep(1.0)
                 checked = n
             else:
