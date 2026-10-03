@@ -181,13 +181,13 @@ IMG_HYUNDAI_NUMS = {
 }
 HYUNDAI_PIN6 = "115080"  # 현대카드 1차 PIN (6자리, 개발리스트 22-8)
 IMG_HYUNDAI_CARDS = [
-    (os.path.join(_IMG_DIR, "카드를.png"), "카드를"),
-    (os.path.join(_IMG_DIR, "카드를1.png"), "카드를1"),
-    (os.path.join(_IMG_DIR, "카드를2.png"), "카드를2"),
-    (os.path.join(_IMG_DIR, "카드를3.png"), "카드를3"),
-    (os.path.join(_IMG_DIR, "카드를4.png"), "카드를4"),
     (os.path.join(_IMG_DIR, "카드를6.png"), "카드를6"),
+    (os.path.join(_IMG_DIR, "카드를3.png"), "카드를3"),
+    (os.path.join(_IMG_DIR, "카드를1.png"), "카드를1"),
+    (os.path.join(_IMG_DIR, "카드를.png"), "카드를"),
     (os.path.join(_IMG_DIR, "카드를7.png"), "카드를7"),
+    (os.path.join(_IMG_DIR, "카드를2.png"), "카드를2"),
+    (os.path.join(_IMG_DIR, "카드를4.png"), "카드를4"),
 ]
 IMG_HYUNDAI_BRAND = [
     (os.path.join(_IMG_DIR, "현대1.png"), "현대1"),
@@ -274,8 +274,10 @@ IMG_HYUNDAI_SAFE_POPUP_BODY = [
 ]
 # 전체화면 참고 (안전결재3)
 IMG_HYUNDAI_SAFE_POPUP_FULL = os.path.join(_IMG_DIR, "안전결재3.png")
-# 팝업 닫기: 안전확인1~3 중 하나 클릭
+# 팝업 닫기: 추가인증확인 / 안전확인1~3 중 하나 클릭
 IMG_HYUNDAI_SAFE_CONFIRM = [
+    (os.path.join(_IMG_DIR, "추가인증확인.png"), "추가인증확인"),
+    (os.path.join(_ROOT_DIR, "인식", "추가인증확인.png"), "추가인증확인_인식"),
     (os.path.join(_IMG_DIR, "안전확인1.png"), "안전확인1"),
     (os.path.join(_IMG_DIR, "안전확인2.png"), "안전확인2"),
     (os.path.join(_IMG_DIR, "안전확인3.png"), "안전확인3"),
@@ -437,7 +439,87 @@ DELIVERY_LIST_WEBVIEW_XPATHS = [
 ]
 
 # 타임아웃
-TASK_TIMEOUT_SEC = 900  # 주문 1건 최대 15분 (현대카드 PIN 대기 포함)
+TASK_TIMEOUT_SEC = 1200  # 주문 1건 최대 20분 (현대카드 PIN 대기 포함)
+
+# ─── 이미지 매칭 오인식 방지 (2차 구조 검증) ───────────────────────────────
+# 점수가 이 값 이상이면 확실한 매칭으로 보고 검증 생략
+MATCH_VERIFY_SKIP_SCORE = 0.88
+
+
+def _verify_match_region(crop_bgr, templ_bgr):
+    """
+    템플릿 매칭으로 찾은 영역이 실제로 템플릿과 같은 '모양'인지 2차 검증.
+    (구분선/밑줄/빈 여백 등이 TM_CCOEFF 점수만 높게 나오는 오인식 차단)
+
+    검사 항목:
+      1) 대비(표준편차): 빈 영역/단색 영역 거부, 템플릿 대비와 지나치게 다르면 거부
+      2) 엣지 구조 일치: 템플릿 윤곽선이 후보 영역에 얼마나 존재하는지 (양방향)
+      3) 행/열 명암 프로파일 상관: 글자 배치(가로·세로 분포)가 비슷한지
+      4) 평균 색상 차이: 색이 완전히 다른 영역 거부
+    Returns: (ok: bool, reason: str)
+    """
+    import cv2
+    import numpy as np
+
+    if crop_bgr is None or templ_bgr is None or crop_bgr.size == 0:
+        return False, "빈 영역"
+    if crop_bgr.shape[:2] != templ_bgr.shape[:2]:
+        crop_bgr = cv2.resize(crop_bgr, (templ_bgr.shape[1], templ_bgr.shape[0]))
+
+    c_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    t_gray = cv2.cvtColor(templ_bgr, cv2.COLOR_BGR2GRAY)
+
+    # 1) 대비 검사
+    c_std = float(c_gray.std())
+    t_std = float(t_gray.std())
+    if c_std < min(6.0, t_std * 0.5):
+        return False, f"대비 없음(std={c_std:.1f})"
+    if t_std > 1e-3:
+        ratio = c_std / t_std
+        if ratio < 0.35 or ratio > 3.0:
+            return False, f"대비 불일치(ratio={ratio:.2f})"
+
+    # 2) 엣지 구조 일치 (dilate 로 1~2px 오차 허용)
+    k = np.ones((3, 3), np.uint8)
+    t_edge = cv2.Canny(t_gray, 50, 150) > 0
+    c_edge = cv2.Canny(c_gray, 50, 150) > 0
+    t_cnt, c_cnt = int(t_edge.sum()), int(c_edge.sum())
+    if t_cnt >= 15:
+        if c_cnt < t_cnt * 0.25:
+            return False, f"윤곽 부족(edge {c_cnt}/{t_cnt})"
+        t_dil = cv2.dilate(t_edge.astype(np.uint8), k, iterations=1) > 0
+        c_dil = cv2.dilate(c_edge.astype(np.uint8), k, iterations=1) > 0
+        recall = float((t_edge & c_dil).sum()) / max(1, t_cnt)      # 템플릿 윤곽이 후보에 존재
+        precision = float((c_edge & t_dil).sum()) / max(1, c_cnt)   # 후보 윤곽이 템플릿에 존재
+        if recall < 0.40 or precision < 0.30:
+            return False, f"윤곽 불일치(recall={recall:.2f}, precision={precision:.2f})"
+
+    # 3) 행/열 프로파일 상관 (글자 분포 비교: 가로 선 하나 vs 글자 줄 구분)
+    def _corr(a, b):
+        a = a - a.mean()
+        b = b - b.mean()
+        d = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        return float((a * b).sum()) / d if d > 1e-6 else 0.0
+
+    c_f = c_gray.astype(np.float32)
+    t_f = t_gray.astype(np.float32)
+    if t_f.shape[0] >= 6 and float(t_f.mean(axis=1).std()) > 2.0:
+        row_corr = _corr(c_f.mean(axis=1), t_f.mean(axis=1))
+        if row_corr < 0.30:
+            return False, f"세로 분포 불일치(row_corr={row_corr:.2f})"
+    if t_f.shape[1] >= 6 and float(t_f.mean(axis=0).std()) > 2.0:
+        col_corr = _corr(c_f.mean(axis=0), t_f.mean(axis=0))
+        if col_corr < 0.12:
+            return False, f"가로 분포 불일치(col_corr={col_corr:.2f})"
+
+    # 4) 평균 색상 차이
+    c_mean = crop_bgr.reshape(-1, 3).mean(axis=0)
+    t_mean = templ_bgr.reshape(-1, 3).mean(axis=0)
+    color_diff = float(np.abs(c_mean - t_mean).max())
+    if color_diff > 85:
+        return False, f"색상 불일치(diff={color_diff:.0f})"
+
+    return True, "ok"
 
 
 class NaverOrderWorker:
@@ -4554,7 +4636,7 @@ class NaverOrderWorker:
         max_y = int(h * 0.72)
         min_x = int(w * 0.20)
         max_x = int(w * 0.80)
-        expect_x, expect_y = w // 2, int(h * 0.52)  # ≈544,1250 @1080x2400
+        expect_x, expect_y = w // 2, int(h * 0.525)  # ≈540,1165 @1080x2220
 
         # 1) 팝업 본체(안전결재/안전한3) bbox → 하단 중앙 탭 (확인 위치)
         for img_path, name in IMG_HYUNDAI_SAFE_POPUP_BODY:
@@ -4575,22 +4657,37 @@ class NaverOrderWorker:
                 f"  🎯 [안전확인] 팝업본체 '{name}' bbox → 확인 탭 ({tap_x},{tap_y})"
             )
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            try:
+                self._soft_tap(tap_x, tap_y, duration_ms=120)
+            except Exception:
+                pass
             time.sleep(2.0)
             return True
 
-        # 2) 안전확인1~3 이미지 (중하단 ROI만)
+        # 2) 안전확인/추가인증확인 이미지 (중하단 ROI만)
         self._log(
             f"  🔍 [안전확인] 중하단 ROI 탐색 "
             f"x={min_x}~{max_x} y={min_y}~{max_y} (기대≈{expect_x},{expect_y})"
         )
-        if self._click_any_image_basic(
-            IMG_HYUNDAI_SAFE_CONFIRM,
-            threshold=threshold,
-            attempts=attempts,
-            wait_after=2.0,
-            min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
-        ):
-            return True
+        valid_confirms = [(p, n) for p, n in IMG_HYUNDAI_SAFE_CONFIRM if os.path.exists(p)]
+        for attempt in range(1, attempts + 1):
+            for img_path, name in valid_confirms:
+                coords = self._find_image_coords(
+                    img_path, threshold=threshold,
+                    min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y,
+                )
+                if coords:
+                    cx, cy = coords[0], coords[1]
+                    self._log(f"  🎯 [안전확인] '{name}' 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    try:
+                        self._soft_tap(cx, cy, duration_ms=120)
+                    except Exception:
+                        pass
+                    time.sleep(2.0)
+                    return True
+            if attempt < attempts:
+                time.sleep(0.8)
 
         # 3) XPath: 팝업 문구 근처 / 중하단 '확인'
         for xp in SAFE_AUTH_TEXT_XPATHS:
@@ -4612,6 +4709,10 @@ class NaverOrderWorker:
                                     continue
                                 if self._safe_click_element(el):
                                     self._log(f"  ✅ [안전확인] XPath 클릭 ({cx},{cy})")
+                                    try:
+                                        self._soft_tap(cx, cy, duration_ms=120)
+                                    except Exception:
+                                        pass
                                     time.sleep(2.0)
                                     return True
                         except Exception:
@@ -4621,8 +4722,12 @@ class NaverOrderWorker:
 
         # 4) 팝업이 확인된 경우에만 안전결재3 기준 강제 탭
         if force_tap:
-            self._log(f"  ⚠ [안전확인] 인식 실패 → 안전결재3 기준 강제 탭 ({expect_x},{expect_y})")
+            self._log(f"  ⚠ [안전확인] 인식 실패 → 기본 예상 좌표 강제 탭 ({expect_x},{expect_y})")
             ah.tap_by_coords(self.driver, expect_x, expect_y, self._log)
+            try:
+                self._soft_tap(expect_x, expect_y, duration_ms=120)
+            except Exception:
+                pass
             time.sleep(2.0)
             return True
         return False
@@ -4672,12 +4777,21 @@ class NaverOrderWorker:
 
         self._log(f"  🔍 [안전인증] 팝업닫기: {confirm_names}")
         clicked = self._click_hyundai_safe_confirm(
-            attempts=5, threshold=0.58, force_tap=bool(detected)
+            attempts=5, threshold=0.55, force_tap=bool(detected)
         )
         if clicked:
             self._log("  ✅ [안전인증] 확인 클릭 완료 → 본인인증 화면 검사 후 진행")
         else:
             self._log("  ℹ [안전인증] 확인 미클릭/팝업없음 → 본인인증 화면 검사 후 진행")
+
+        # 안전인증 확인 클릭 후 팝업 잔존 여부 검증 및 재시도 (최대 3회)
+        for retry in range(1, 4):
+            time.sleep(1.2)
+            still_visible = self._hyundai_safe_detect_visible(threshold=0.55)
+            if not still_visible:
+                break
+            self._log(f"  ⚠ [안전인증] 확인 클릭 후에도 팝업 감지 ('{still_visible}') → 재클릭 ({retry}/3)")
+            self._click_hyundai_safe_confirm(attempts=3, threshold=0.55, force_tap=True)
 
         # 안전인증 확인 직후 보통 '본인 인증'(이름/생년월일 6자리) 화면이 뜸
         # WebView 전환 대기 후 이미지+XPath 집중 검사 (미감지 시에도 예외 없음)
@@ -4913,11 +5027,16 @@ class NaverOrderWorker:
         self._set_status("다른 결제수단 탐색 중")
         self._log("🔍 [다른결재 버튼] 이미지 매칭 탐색 시작")
 
+        # 사용자 요청: 화면 상단(배송지/주문상품/쿠폰 영역) 오인식 방지를 위해 살짝 스크롤 다운 후 탐색 시작
+        self._log("  ⬇ [다른결재] 결제수단 영역 진입을 위해 살짝 스크롤 다운")
+        self._scroll_down_safe(distance_ratio=0.18)
+        time.sleep(0.6)
+
         img_candidates = []
         for img_path, name in [
             (IMG_OTHER_PAY,  "다른결재"),
-            (IMG_OTHER_PAY2, "다른결재수단2"),
             (IMG_OTHER_PAY4, "다른결재4"),
+            (IMG_OTHER_PAY2, "다른결재수단2"),
             (IMG_BOGI,       "보기"),
         ]:
             if os.path.exists(img_path):
@@ -4969,10 +5088,10 @@ class NaverOrderWorker:
             return True
 
         for attempt in range(1, max_scroll_attempts + 1):
-            # ── 이미지 매칭 (threshold 0.55: 로그상 0.50~0.61대 후보 허용) ──
+            # ── 이미지 매칭 (threshold 0.70: 구분선 등 오탐 방지) ──
             found_and_handled = False
             for img_path, name in img_candidates:
-                coords = self._find_image_coords(img_path, threshold=0.55)
+                coords = self._find_image_coords(img_path, threshold=0.70)
                 if coords:
                     res = _tap_coords_and_return(coords[0], coords[1], f"이미지/{name}", attempt_idx=attempt)
                     if res is True:
@@ -5563,6 +5682,7 @@ class NaverOrderWorker:
         - 일반결재4 / 일반결재2 / 일반결재 / 일반결재1 탐색 (인식률 높은 순)
         - 현재 화면에서 즉시 발견 시 스크롤 없이 바로 탭 클릭
         - 미발견 시 미세 스크롤과 함께 상단 안전영역(mid_top_ratio=0.15) 탐색
+        - 일반결재체크 확인 후 카드를 인식하기 전 스크롤 조금 내림 (사용자 지시)
         """
         self._log("🔍 [22-2] 일반결재 선택 확인 시작")
 
@@ -5573,8 +5693,26 @@ class NaverOrderWorker:
             (IMG_NORMAL_PAY1, "일반결재1"),
         ]
 
-        # 1차: 현재 화면 즉시 탐색 (스크롤 불필요 시 빠른 클릭)
         screen_gray, screen_bgr = self._capture_screen_cv2()
+
+        # 0차: 이미 일반결재가 체크되어 있는지 먼저 확인 (불필요한 재클릭 방지)
+        if os.path.exists(IMG_NORMAL_PAY_CHECK):
+            chk_coords = self._find_image_coords(
+                IMG_NORMAL_PAY_CHECK, threshold=0.70, min_y=100,
+                cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr
+            )
+            if chk_coords:
+                self._log(f"✅ [22-2] '일반결재체크' 이미 확인됨 (y={chk_coords[1]})")
+                self._last_normal_pay_y = chk_coords[1]
+                # 사용자 지시: 일반결재체크 확인 후 카드를 인식하기 전 스크롤 조금 내림
+                self._log("  ⬇ [22-2] '일반결재체크' 확인됨 → '카드를' 드롭다운 노출을 위해 스크롤 조금 내림")
+                self._scroll_down_safe(distance_ratio=0.12)
+                time.sleep(0.8)
+                w, h = self._get_window_size()
+                self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
+                return True
+
+        # 1차: 현재 화면 즉시 탐색 (스크롤 불필요 시 빠른 클릭)
         for img_path, name in normal_pay_images:
             if os.path.exists(img_path):
                 coords = self._find_image_coords(
@@ -5585,20 +5723,92 @@ class NaverOrderWorker:
                     self._log(f"  🎯 {name} 즉시 발견! 화면 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                     ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
                     time.sleep(1.0)
-                    if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-                        self._log("✅ [22-2] '일반결재체크' 최종 상태 확인됨")
+                    self._last_normal_pay_y = coords[1]
+                    if os.path.exists(IMG_NORMAL_PAY_CHECK):
+                        chk = self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70)
+                        if chk:
+                            self._log(f"✅ [22-2] '일반결재체크' 최종 상태 확인됨 (y={chk[1]})")
+                            self._last_normal_pay_y = chk[1]
+                    # 사용자 지시: 일반결재체크 확인 후 카드를 인식하기 전 스크롤 조금 내림
+                    self._log("  ⬇ [22-2] '일반결재체크' 확인됨 → '카드를' 드롭다운 노출을 위해 스크롤 조금 내림")
+                    self._scroll_down_safe(distance_ratio=0.12)
+                    time.sleep(0.8)
+                    w, h = self._get_window_size()
+                    self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
                     return True
 
         # 2차: 현재 화면에 없으면 스크롤 탐색 (상단 15% 이상 허용)
         if self._click_any_image_with_scroll(normal_pay_images, threshold=0.72, max_scroll_attempts=8, mid_top_ratio=0.15):
             self._log("✅ [22-2] 일반결재 영역 클릭 완료 (무조건 클릭)")
             time.sleep(1.0)
-            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
-                self._log("✅ [22-2] '일반결재체크' 최종 상태 확인됨")
+            if os.path.exists(IMG_NORMAL_PAY_CHECK):
+                chk = self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70)
+                if chk:
+                    self._log(f"✅ [22-2] '일반결재체크' 최종 상태 확인됨 (y={chk[1]})")
+                    self._last_normal_pay_y = chk[1]
+            # 사용자 지시: 일반결재체크 확인 후 카드를 인식하기 전 스크롤 조금 내림
+            self._log("  ⬇ [22-2] '일반결재체크' 확인됨 → '카드를' 드롭다운 노출을 위해 스크롤 조금 내림")
+            self._scroll_down_safe(distance_ratio=0.12)
+            time.sleep(0.8)
+            w, h = self._get_window_size()
+            if getattr(self, "_last_normal_pay_y", None):
+                self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
             return True
         
         self._log("❌ [22-2] 일반결재 미확인 (일반결재4/일반결재2/일반결재/일반결재1 모두 인식 실패)")
         return False
+
+    def _find_normal_pay_y_on_screen(self, screen_gray=None, screen_bgr=None) -> Optional[int]:
+        """현재 화면에서 '일반결제' 또는 '일반결재체크'의 Y 좌표 탐색 (카드를 오탐 방지용 기준점)."""
+        # 1. 일반결재체크.png
+        if os.path.exists(IMG_NORMAL_PAY_CHECK):
+            c = self._find_image_coords(
+                IMG_NORMAL_PAY_CHECK, threshold=0.68,
+                cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr,
+                silent=True
+            )
+            if c:
+                return c[1]
+
+        # 2. 일반결재4, 일반결재2, 일반결재, 일반결재1
+        for img_p, _ in [
+            (IMG_NORMAL_PAY4, "일반결재4"),
+            (IMG_NORMAL_PAY2, "일반결재2"),
+            (IMG_NORMAL_PAY, "일반결재"),
+            (IMG_NORMAL_PAY1, "일반결재1"),
+        ]:
+            if os.path.exists(img_p):
+                c = self._find_image_coords(
+                    img_p, threshold=0.70,
+                    cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr,
+                    silent=True
+                )
+                if c:
+                    return c[1]
+
+        # 3. XPath 텍스트 매칭
+        for xp in [
+            '//*[contains(@text,"일반결제")]',
+            '//*[contains(@text,"일반결재")]',
+            '//*[contains(@content-desc,"일반결제")]',
+            '//*[contains(@content-desc,"일반결재")]',
+        ]:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    bb = self._parse_element_bounds(el)
+                    if bb:
+                        cy = (bb[1] + bb[3]) // 2
+                        if cy > 250:
+                            return cy
+            except Exception:
+                pass
+
+        # 4. 이전 기록된 좌표
+        if getattr(self, "_last_normal_pay_y", None):
+            return self._last_normal_pay_y
+
+        return None
 
     def _card_placeholder_visible(self) -> bool:
         """드롭다운이 아직 '카드를 선택해주세요' 상태인지."""
@@ -5644,7 +5854,9 @@ class NaverOrderWorker:
         return False
 
     def _open_card_select_dropdown(self, brand: str = "hyundai") -> bool:
-        """[22-3] '카드를 선택해주세요' 드롭다운을 연다. brand=hyundai|kb"""
+        """[22-3] '카드를 선택해주세요' 드롭다운을 연다. brand=hyundai|kb
+        사용자 지시: 카드를 좌표는 반드시 일반결재 밑에 위치해야 함 (카드 간편결제 등 상단 오탐 원천 방지)
+        """
         self._set_status("카드 선택 드롭다운")
         self._log(f"🔍 [22-3] 카드 선택 드롭다운 열기 (brand={brand})")
         if brand == "kb":
@@ -5655,12 +5867,8 @@ class NaverOrderWorker:
             self._log("  ℹ 이미 현대카드가 선택되어 있음")
             return True
 
-        w_h = 2400
-        try:
-            w_h = self.driver.get_window_size()["height"]
-        except Exception:
-            pass
-        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+        w_w, w_h = self._get_window_size()
+        max_y = int(w_h * 0.88)
 
         xpaths = [
             '//*[contains(@text,"카드를 선택해주세요")]',
@@ -5672,7 +5880,24 @@ class NaverOrderWorker:
         ]
 
         for attempt in range(1, 7):
+            screen_gray, screen_bgr = self._capture_screen_cv2()
+
+            # 일반결제 Y좌표 기준점 계산 (카드를 좌표는 반드시 일반결제 밑이어야 함)
+            normal_pay_y = self._find_normal_pay_y_on_screen(screen_gray, screen_bgr)
+            if normal_pay_y:
+                effective_min_y = normal_pay_y + 30
+                self._last_normal_pay_y = normal_pay_y
+                self._log(f"  📌 [22-3] 일반결제 기준 y={normal_pay_y} → '카드를' 탐색 최소 Y={effective_min_y} (카드 간편결제 상단 오탐 방지)")
+            elif getattr(self, "_last_normal_pay_y", None):
+                effective_min_y = self._last_normal_pay_y + 30
+                self._log(f"  📌 [22-3] 기록된 일반결제 기준 y={self._last_normal_pay_y} → 최소 Y={effective_min_y}")
+            else:
+                effective_min_y = int(w_h * 0.40)
+                self._log(f"  📌 [22-3] 일반결제 미검출 기본 최소 Y={effective_min_y}")
+
             clicked = False
+
+            # 1순위: XPath 드롭다운 탐색 (반드시 일반결제 하단만 허용)
             for xp in xpaths:
                 try:
                     els = self.driver.find_elements(By.XPATH, xp)
@@ -5683,22 +5908,32 @@ class NaverOrderWorker:
                     if not bb:
                         continue
                     cy = (bb[1] + bb[3]) // 2
-                    if not (min_y <= cy <= max_y):
+                    if not (effective_min_y <= cy <= max_y):
+                        self._log(f"  ⚠ [22-3] XPath '{xp}' y={cy} 가 일반결제(y={normal_pay_y}) 하단({effective_min_y}~{max_y}) 밖 → 무시")
                         continue
                     cx = (bb[0] + bb[2]) // 2
-                    self._log(f"  🎯 [22-3] XPath 드롭다운 탭 ({cx}, {cy})")
+                    self._log(f"  🎯 [22-3] XPath 드롭다운 탭 ({cx}, {cy}) (일반결제 y={normal_pay_y} 밑 확인)")
                     self._soft_tap(cx, cy)
                     clicked = True
                     break
                 if clicked:
                     break
 
+            # 2순위: 이미지 드롭다운 탐색 (IMG_HYUNDAI_CARDS, 임계값 0.68, 반드시 일반결제 하단)
             if not clicked:
-                if self._click_any_image_with_scroll(
-                    IMG_HYUNDAI_CARDS, threshold=0.53, max_scroll_attempts=3,
-                    min_y=min_y, max_y=max_y,
-                ):
-                    clicked = True
+                for img_path, name in IMG_HYUNDAI_CARDS:
+                    if not os.path.exists(img_path):
+                        continue
+                    coords = self._find_image_coords(
+                        img_path, threshold=0.68,
+                        min_y=effective_min_y, max_y=max_y,
+                        cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr
+                    )
+                    if coords:
+                        self._log(f"  🎯 [22-3] '{name}' 발견! 화면 좌표 ({coords[0]}, {coords[1]}) (일반결제 y={normal_pay_y} 밑 확인) -> 탭 클릭")
+                        self._soft_tap(coords[0], coords[1])
+                        clicked = True
+                        break
 
             if clicked:
                 time.sleep(1.8)
@@ -5716,6 +5951,8 @@ class NaverOrderWorker:
             else:
                 self._log(f"  ⬇ [22-3] 드롭다운 미발견 → 스크롤 ({attempt}/6)")
                 self._scroll_down_safe(distance_ratio=0.10)
+                if getattr(self, "_last_normal_pay_y", None):
+                    self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (w_h * 0.10)))
                 time.sleep(0.6)
 
         self._log("❌ [22-3] 카드 선택 드롭다운을 열지 못함")
@@ -5760,7 +5997,8 @@ class NaverOrderWorker:
             w_h, w_w = sz["height"], sz["width"]
         except Exception:
             pass
-        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+        min_y = max(int(w_h * 0.38), getattr(self, "_last_normal_pay_y", 0))
+        max_y = int(w_h * 0.95)
 
         xpaths = [
             '//*[contains(@text,"KB국민")]',
@@ -5805,7 +6043,7 @@ class NaverOrderWorker:
             if not os.path.exists(img_path):
                 continue
             coords = self._find_image_coords(
-                img_path, threshold=0.70, min_y=min_y, max_y=max_y
+                img_path, threshold=0.78, min_y=min_y, max_y=max_y
             )
             if coords:
                 self._log(f"  🎯 KB목록 이미지 '{name}' @ {coords}")
@@ -5859,7 +6097,7 @@ class NaverOrderWorker:
 
     def _find_hyundai_list_target(self):
         """카드 목록에서 클릭할 현대 항목 (x,y) 또는 없으면 None.
-        상단 헤더(y<22%) 오탐을 제외한다.
+        상단 배너('최대 3원 받기' 등 y<38%) 오탐 및 상단 헤더 오탐을 제외한다.
         """
         w_h, w_w = 2400, 1080
         try:
@@ -5867,7 +6105,8 @@ class NaverOrderWorker:
             w_h, w_w = sz["height"], sz["width"]
         except Exception:
             pass
-        min_y, max_y = int(w_h * 0.22), int(w_h * 0.88)
+        min_y = max(int(w_h * 0.38), getattr(self, "_last_normal_pay_y", 0))
+        max_y = int(w_h * 0.95)
 
         xpaths = [
             '//*[contains(@text,"현대카드")]',
@@ -5910,7 +6149,7 @@ class NaverOrderWorker:
             if not os.path.exists(img_path):
                 continue
             coords = self._find_image_coords(
-                img_path, threshold=0.70, min_y=min_y, max_y=max_y
+                img_path, threshold=0.80, min_y=min_y, max_y=max_y
             )
             if coords:
                 self._log(f"  🎯 현대목록 이미지 '{name}' @ {coords}")
@@ -5944,8 +6183,12 @@ class NaverOrderWorker:
                     self._log("  🔄 [22-4] 드롭다운 다시 열기")
                     self._open_card_select_dropdown(brand="hyundai")
             else:
-                self._log(f"  ⬇ [22-4] 목록에서 현대 미발견 → 스크롤 ({attempt}/8)")
-                self._scroll_down_safe(distance_ratio=0.10)
+                if attempt <= 2:
+                    self._log(f"  ⬆ [22-4] 현대는 콤보박스 상단에 위치 → 스크롤 업 ({attempt}/8)")
+                    self._scroll_up(distance_ratio=0.10)
+                else:
+                    self._log(f"  ⬇ [22-4] 목록에서 현대 미발견 → 스크롤 다운 ({attempt}/8)")
+                    self._scroll_down_safe(distance_ratio=0.10)
                 time.sleep(0.6)
                 if attempt == 3 and self._card_placeholder_visible():
                     self._log("  🔄 [22-4] 목록 미검출 → 드롭다운 다시 열기")
@@ -6649,9 +6892,26 @@ class NaverOrderWorker:
         time.sleep(1.0)
         for round_i in range(1, 3):
             self._log(f"  🔁 [22-11] 진입 라운드 {round_i}/2")
+            # 팝업이 아직 닫히지 않고 남아있는지 확인
+            safe_popup = self._hyundai_safe_detect_visible(threshold=0.55)
+            if safe_popup:
+                self._log(f"  ⚠ [22-11] 안전인증 팝업 잔존 감지 ('{safe_popup}') → 확인 클릭")
+                self._click_hyundai_safe_confirm(attempts=3, threshold=0.55, force_tap=True)
+                time.sleep(1.5)
+
             # 라운드 시작 전 본인인증 화면 여부 확인
             self._check_birthday_auth(attempts=1)
+
+            # 이미 2차페이지(본인인증/카드비번 4자리) 화면에 진입해 있는지 먼저 확인
+            if self._has_hyundai_2nd_page_markers():
+                self._log("  ✅ [22-11] 이미 2차페이지(본인인증) 진입 상태 감지 → 바로 포커스")
+                if self._wait_hyundai_2nd_page_and_focus():
+                    return True
+
             if not self._click_hyundai_card_pw_entry():
+                # 현대카드비번 이미지 미발견 시에도 이미 2차페이지인지 확인
+                if self._has_hyundai_2nd_page_markers() or self._wait_hyundai_2nd_page_and_focus():
+                    return True
                 # 비번 이미지 실패 원인이 본인인증 화면일 수 있음
                 self._check_birthday_auth(attempts=2)
                 continue
@@ -6659,6 +6919,12 @@ class NaverOrderWorker:
             if self._wait_hyundai_2nd_page_and_focus():
                 return True
             self._log("  ⚠ [22-11] 클릭 후 2차페이지 미진입 → 본인인증 재확인 후 재클릭")
+            # 미진입 원인이 안전인증 팝업인지 확인
+            safe_popup = self._hyundai_safe_detect_visible(threshold=0.55)
+            if safe_popup:
+                self._log(f"  ⚠ [22-11] 2차페이지 미진입 원인: 안전인증 팝업 ('{safe_popup}') → 확인 클릭")
+                self._click_hyundai_safe_confirm(attempts=3, threshold=0.55, force_tap=True)
+                time.sleep(1.5)
             self._check_birthday_auth(attempts=2)
         # 최종 실패 직전 한 번 더
         self._check_birthday_auth(attempts=2)
@@ -6917,7 +7183,7 @@ class NaverOrderWorker:
         # 2) 안전확인1~3.png 이미지 탐색
         for img_p, name in IMG_HYUNDAI_SAFE_CONFIRM:
             if os.path.exists(img_p):
-                c = self._find_image_coords(img_p, threshold=0.55)
+                c = self._find_image_coords(img_p, threshold=0.65)
                 if c:
                     self._log(f"  🎯 [추가인증확인] '{name}' 발견 @ ({c[0]}, {c[1]}) -> 클릭")
                     ah.tap_by_coords(self.driver, c[0], c[1], self._log)
@@ -6949,10 +7215,14 @@ class NaverOrderWorker:
 
         # 4) 앵커(추가인증.png) 위치 기준 상대 탭 (y ≈ +225px)
         if anchor_coords:
-            tap_x = anchor_coords[0]
+            tap_x = w // 2  # 확인 버튼은 화면 가로 중앙
             tap_y = int(anchor_coords[1] + int(225 * scale_y))
             self._log(f"  🎯 [추가인증확인] 앵커 상대 좌표 탭 ({tap_x}, {tap_y})")
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
+            try:
+                self._soft_tap(tap_x, tap_y, duration_ms=120)
+            except Exception:
+                pass
             time.sleep(2.0)
             return True
 
@@ -6960,6 +7230,10 @@ class NaverOrderWorker:
         fallback_x, fallback_y = w // 2, int(h * 0.525)
         self._log(f"  ⚠ [추가인증확인] 기본 예상 좌표 탭 ({fallback_x}, {fallback_y})")
         ah.tap_by_coords(self.driver, fallback_x, fallback_y, self._log)
+        try:
+            self._soft_tap(fallback_x, fallback_y, duration_ms=120)
+        except Exception:
+            pass
         time.sleep(2.0)
         return True
 
@@ -7084,7 +7358,7 @@ class NaverOrderWorker:
         self._log("  🔍 [추가인증] '추가인증.png' 탐색 중...")
         for attempt in range(1, 4):
             if os.path.exists(extra_auth_tmpl):
-                coords = self._find_image_coords(extra_auth_tmpl, threshold=0.55)
+                coords = self._find_image_coords(extra_auth_tmpl, threshold=0.70)
                 if coords:
                     self._log(f"  🎯 [추가인증] '추가인증.png' 발견! 좌표 ({coords[0]}, {coords[1]})")
                     extra_auth_found = True
@@ -7811,7 +8085,8 @@ class NaverOrderWorker:
                            max_y: Optional[int] = None,
                            cached_screen_gray: Optional[Any] = None,
                            cached_screen_bgr: Optional[Any] = None,
-                           silent: bool = False) -> Optional[tuple]:
+                           silent: bool = False,
+                           verify: bool = True) -> Optional[tuple]:
         """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색 (캐시된 화면 이미지 지원으로 대량 매칭 초고속화)"""
         try:
             import cv2
@@ -7862,6 +8137,8 @@ class NaverOrderWorker:
             best_loc   = None
             best_tw    = t_w
             best_th    = t_h
+            best_src   = "gray"  # 최고 점수가 나온 화면 소스 (gray / enh)
+            enhanced_gray = None
 
             # 표준 Grayscale 매칭 (CLAHE 왜곡 없이 템플릿 원본 정밀 비교)
             # 다양한 모바일 해상도(DPI) 대응을 위한 Coarse-to-Fine 멀티스케일 (0.48 ~ 2.25x)
@@ -7935,10 +8212,52 @@ class NaverOrderWorker:
                             best_loc   = max_loc
                             best_tw    = new_w
                             best_th    = new_h
+                            best_src   = "enh"
                     except Exception:
                         pass
                 if best_score >= threshold and not silent:
                     self._log(f"  ✨ [이미지 매칭 보정] 명암/대비 조절로 인식 성공! (최종 점수: {best_score:.4f})")
+
+            # ── 2차 구조 검증: 구분선/빈 여백 등 오인식 차단 + 차순위 후보 재검사 ──
+            if (verify and best_score >= threshold and best_loc is not None
+                    and best_score < MATCH_VERIFY_SKIP_SCORE):
+                try:
+                    interp = cv2.INTER_AREA if best_tw < t_w else cv2.INTER_LINEAR
+                    templ_bgr_rs = cv2.resize(template_bgr, (best_tw, best_th), interpolation=interp)
+                    templ_gray_rs = cv2.cvtColor(templ_bgr_rs, cv2.COLOR_BGR2GRAY)
+                    src_img = enhanced_gray if (best_src == "enh" and enhanced_gray is not None) else screen_gray
+                    r_map = cv2.matchTemplate(src_img, templ_gray_rs, cv2.TM_CCOEFF_NORMED)
+
+                    verified = False
+                    reject_logs = []
+                    for _cand in range(8):  # 상위 후보 최대 8개 검사
+                        _, mv, _, ml = cv2.minMaxLoc(r_map)
+                        if mv < threshold:
+                            break
+                        x1, y1 = ml
+                        crop = screen_bgr[y1:y1 + best_th, x1:x1 + best_tw]
+                        ok, reason = _verify_match_region(crop, templ_bgr_rs)
+                        if ok:
+                            if reject_logs and not silent:
+                                self._log(f"  🔁 [이미지 매칭 검증] 차순위 후보 채택 (점수 {mv:.4f})")
+                            best_score, best_loc = mv, ml
+                            verified = True
+                            break
+                        reject_logs.append(f"({x1},{y1}) {mv:.3f} {reason}")
+                        # 해당 후보 주변 억제 후 다음 후보
+                        sx1 = max(0, x1 - best_tw // 2)
+                        sy1 = max(0, y1 - best_th // 2)
+                        r_map[sy1:y1 + best_th // 2 + 1, sx1:x1 + best_tw // 2 + 1] = -1.0
+
+                    if not verified:
+                        if not silent:
+                            name = os.path.basename(template_path)
+                            detail = " | ".join(reject_logs[:3]) if reject_logs else "후보 없음"
+                            self._log(f"  🚫 [이미지 매칭 검증] '{name}' 오인식 차단 → {detail}")
+                        return None
+                except Exception as ve:
+                    if not silent:
+                        self._log(f"  ⚠ [이미지 매칭 검증] 검증 오류(검증 생략): {ve}")
 
             if best_score >= threshold and best_loc is not None:
                 raw_cx = best_loc[0] + best_tw // 2

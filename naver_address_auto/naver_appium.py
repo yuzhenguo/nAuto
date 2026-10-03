@@ -582,7 +582,9 @@ def tap_by_coords(driver, x: int, y: int, log_callback=None) -> bool:
         actions = ActionChains(driver)
         actions.w3c_actions = ActionBuilder(driver, mouse=touch)
         actions.w3c_actions.pointer_action.move_to_location(x, y)
-        actions.w3c_actions.pointer_action.click()
+        actions.w3c_actions.pointer_action.pointer_down(0)
+        actions.w3c_actions.pointer_action.pause(0.1)
+        actions.w3c_actions.pointer_action.pointer_up(0)
         actions.perform()
         return True
     except Exception as e:
