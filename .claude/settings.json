@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "PowerShell(python $s auto_review/�����ۼ�.xml)",
+      "PowerShell(python $s auto_review/�����ۼ�.xml 10)",
+      "PowerShell(python $s auto_review/���侲��.xml)",
+      "PowerShell(python -c \"import openpyxl,selenium,appium; print\\('ok', openpyxl.__version__\\)\")"
+    ]
+  }
+}
