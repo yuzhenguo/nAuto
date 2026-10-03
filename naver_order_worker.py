@@ -519,6 +519,31 @@ def _verify_match_region(crop_bgr, templ_bgr):
     if color_diff > 85:
         return False, f"색상 불일치(diff={color_diff:.0f})"
 
+    # 5) 어두운 픽셀 비율 / 단일 덩어리 검사
+    #    (흰 배경 + 글자 템플릿이 검은 바·알약·구분막대에 매칭되는 오인식 차단 — 예: 미신청4 ↔ 검은 바)
+    t_dark = t_gray < 110
+    c_dark = c_gray < 110
+    t_dark_r = float(t_dark.mean())
+    c_dark_r = float(c_dark.mean())
+    if t_dark_r < 0.35:  # 템플릿이 '밝은 배경 + 어두운 글자' 형태일 때만 적용
+        if c_dark_r > max(t_dark_r * 2.5, t_dark_r + 0.12):
+            return False, f"어두운 영역 과다(dark={c_dark_r:.2f} vs 템플릿 {t_dark_r:.2f})"
+
+        def _largest_blob_ratio(mask):
+            total = int(mask.sum())
+            if total == 0:
+                return 0.0
+            n, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+            if n <= 1:
+                return 0.0
+            return float(stats[1:, cv2.CC_STAT_AREA].max()) / total
+
+        t_blob = _largest_blob_ratio(t_dark)
+        c_blob = _largest_blob_ratio(c_dark)
+        # 템플릿은 여러 글자(작은 덩어리 여러 개)인데 후보는 한 덩어리(막대)로 뭉쳐 있으면 거부
+        if t_blob < 0.6 and c_blob > 0.85 and c_dark_r > t_dark_r * 1.3:
+            return False, f"단일 덩어리(막대) 형태(blob={c_blob:.2f} vs 템플릿 {t_blob:.2f})"
+
     return True, "ok"
 
 
@@ -6645,6 +6670,37 @@ class NaverOrderWorker:
                 continue
         return False
 
+    def _is_hyundai_card_pw_visible(self) -> bool:
+        """[22-10 폴백] 현대카드비번1~7 이미지(또는 '카드 비밀번호 4자리' 텍스트)가 화면에 보이는지 확인만 (클릭 안 함)."""
+        try:
+            w, h = self._get_window_size()
+            min_y, max_y = int(h * 0.12), int(h * 0.58)
+            hit = self._match_best_among_images(
+                IMG_HYUNDAI_CARD_PW, threshold=0.65, min_y=min_y, max_y=max_y
+            )
+            if hit:
+                (cx, cy), name, score = hit
+                self._log(f"  🎯 [22-10 폴백] 현대카드비번 인식: '{name}' score={score:.4f} @ ({cx},{cy})")
+                return True
+        except Exception as e:
+            self._log(f"  ⚠ [22-10 폴백] 현대카드비번 이미지 검사 오류: {e}")
+
+        for xp in [
+            '//*[contains(@text,"카드 비밀번호 4자리")]',
+            '//*[contains(@text,"카드비밀번호4자리")]',
+            '//*[contains(@text,"비밀번호 4자리")]',
+            '//*[contains(@text,"비밀번호4자리")]',
+        ]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=0.8):
+                    self._log(f"  🎯 [22-10 폴백] 현대카드비번 텍스트 인식: {xp}")
+                    return True
+            except Exception:
+                continue
+
+        self._log("  ℹ [22-10 폴백] 현대카드비번 미인식")
+        return False
+
     def _click_hyundai_card_pw_entry(self) -> bool:
         """[22-11a] 현대카드비번1~7 중 최고점만 클릭 (0.53 오탐 금지)."""
         self._set_status("현대카드비번 클릭")
@@ -7538,15 +7594,25 @@ class NaverOrderWorker:
             self._log("  ℹ [22-9.5] 카드번호 미지정 -> 카드변경 생략하고 결제하기 진행")
 
         # 22-10 현대결제하기1~4.png
+        # 결제하기 버튼이 없고 현대카드비번 화면이 인식되면 → 22-11(카드비번 클릭·입력)로 바로 진행
+        skip_to_card_pw = False
         if not self._click_any_image_basic(IMG_HYUNDAI_PAY_NOW, threshold=0.70, attempts=6, wait_after=2.0):
-            if not self._click_any_image_with_scroll(IMG_HYUNDAI_PAY_NOW, threshold=0.70, max_scroll_attempts=6):
-                self._log("❌ [22-10] 현대결제하기 이미지 미발견")
-                return False
+            if self._is_hyundai_card_pw_visible():
+                skip_to_card_pw = True
+            elif not self._click_any_image_with_scroll(IMG_HYUNDAI_PAY_NOW, threshold=0.70, max_scroll_attempts=6):
+                if self._is_hyundai_card_pw_visible():
+                    skip_to_card_pw = True
+                else:
+                    self._log("❌ [22-10] 현대결제하기 이미지 미발견")
+                    return False
 
-        # 22-10.5 안전한/추가인증 팝업 → 확인 클릭 → (직후 본인인증 화면 검사 포함)
-        if not self._handle_hyundai_safe_auth_popup():
-            self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
-            return False
+        if skip_to_card_pw:
+            self._log("  ⏭ [22-10] 현대결제하기 버튼 없음 + 현대카드비번 인식 → 결제하기/안전인증 생략, 카드비번 클릭·입력 단계로 진행")
+        else:
+            # 22-10.5 안전한/추가인증 팝업 → 확인 클릭 → (직후 본인인증 화면 검사 포함)
+            if not self._handle_hyundai_safe_auth_popup():
+                self._log("❌ [22-10.5] 안전인증 확인 클릭 실패")
+                return False
 
         # 22-11a 현대카드비번1~7 클릭 → 22-11b 2차페이지1~3 인식 → 입력란 포커스
         # (안전인증 직후 본인인증은 _handle_hyundai_safe_auth_popup 안에서 이미 검사)
