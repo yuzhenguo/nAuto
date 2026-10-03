@@ -525,7 +525,7 @@ def _verify_match_region(crop_bgr, templ_bgr):
     c_dark = c_gray < 110
     t_dark_r = float(t_dark.mean())
     c_dark_r = float(c_dark.mean())
-    if t_dark_r < 0.35:  # 템플릿이 '밝은 배경 + 어두운 글자' 형태일 때만 적용
+    if 0.02 <= t_dark_r < 0.35:  # 템플릿이 '밝은 배경 + 어두운 글자' 형태일 때만 적용 (어두운 픽셀 거의 없는 템플릿은 제외)
         if c_dark_r > max(t_dark_r * 2.5, t_dark_r + 0.12):
             return False, f"어두운 영역 과다(dark={c_dark_r:.2f} vs 템플릿 {t_dark_r:.2f})"
 
@@ -6173,8 +6173,9 @@ class NaverOrderWorker:
         for img_path, name in IMG_HYUNDAI_BRAND:
             if not os.path.exists(img_path):
                 continue
+            # 0.80 → 0.75 완화 (실측 0.79대로 아깝게 실패하는 사례 대응, 오인식은 2차 구조 검증으로 차단)
             coords = self._find_image_coords(
-                img_path, threshold=0.80, min_y=min_y, max_y=max_y
+                img_path, threshold=0.75, min_y=min_y, max_y=max_y
             )
             if coords:
                 self._log(f"  🎯 현대목록 이미지 '{name}' @ {coords}")
@@ -7350,7 +7351,9 @@ class NaverOrderWorker:
         max_scrolls = 5
         for attempt in range(max_scrolls + 1):
             self._log(f"  🔍 [카드선택] {card_name} 탐색 중 (시도 {attempt + 1}/{max_scrolls + 1})...")
-            coords = self._find_image_coords(card_tmpl, threshold=0.70)
+            # 카드 템플릿은 축소 스크린샷(≈470px 폭)에서 잘라낸 경우가 많아 실제 단말(1080px)에선 ≈2.3~2.4배 확대 필요
+            # → 기본 상한(2.25배)으로는 진짜 카드를 못 찾으므로 3.2배까지 확장 탐색
+            coords = self._find_image_coords(card_tmpl, threshold=0.70, scale_max=3.2)
             if coords:
                 self._log(f"  🎯 [카드선택] {card_name} 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
                 ah.tap_by_coords(self.driver, coords[0], coords[1], self._log)
@@ -8152,7 +8155,8 @@ class NaverOrderWorker:
                            cached_screen_gray: Optional[Any] = None,
                            cached_screen_bgr: Optional[Any] = None,
                            silent: bool = False,
-                           verify: bool = True) -> Optional[tuple]:
+                           verify: bool = True,
+                           scale_max: float = 2.25) -> Optional[tuple]:
         """멀티스케일 OpenCV 템플릿 매칭으로 이미지 위치 탐색 (캐시된 화면 이미지 지원으로 대량 매칭 초고속화)"""
         try:
             import cv2
@@ -8208,7 +8212,7 @@ class NaverOrderWorker:
 
             # 표준 Grayscale 매칭 (CLAHE 왜곡 없이 템플릿 원본 정밀 비교)
             # 다양한 모바일 해상도(DPI) 대응을 위한 Coarse-to-Fine 멀티스케일 (0.48 ~ 2.25x)
-            coarse_scales = np.arange(0.48, 2.25, 0.07)
+            coarse_scales = np.arange(0.48, scale_max, 0.07)
             best_scale = 1.0
             for scale in coarse_scales:
                 new_w = int(t_w * scale)
@@ -8236,7 +8240,7 @@ class NaverOrderWorker:
 
             # 최고 후보 주변 미세 스케일 정밀 탐색 (Fine search)
             if best_score > 0.35:
-                fine_scales = np.arange(max(0.45, best_scale - 0.06), min(2.30, best_scale + 0.061), 0.015)
+                fine_scales = np.arange(max(0.45, best_scale - 0.06), min(scale_max + 0.05, best_scale + 0.061), 0.015)
                 for scale in fine_scales:
                     new_w = int(t_w * scale)
                     new_h = int(t_h * scale)
@@ -8262,7 +8266,7 @@ class NaverOrderWorker:
             # 명암/대비 조절 2차 시도 (아깝게 실패한 경우)
             if best_loc is not None and 0.40 <= best_score < threshold:
                 enhanced_gray = cv2.convertScaleAbs(screen_gray, alpha=1.2, beta=-15)
-                enh_scales = np.arange(max(0.45, best_scale - 0.05), min(2.30, best_scale + 0.051), 0.015)
+                enh_scales = np.arange(max(0.45, best_scale - 0.05), min(scale_max + 0.05, best_scale + 0.051), 0.015)
                 for scale in enh_scales:
                     new_w = int(t_w * scale)
                     new_h = int(t_h * scale)

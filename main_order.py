@@ -609,6 +609,11 @@ class MainApp(tk.Tk):
                 # 기존 기기 → connected만 갱신, selected/remark는 건드리지 않음
                 self.devices_data[did]["connected"] = True
 
+        # 미연결 기기는 선택 불가 → 선택 자동 해제
+        for did, info in self.devices_data.items():
+            if not info.get("connected", False):
+                info["selected"] = False
+
         self._save_devices_config()
 
         if newly_added:
@@ -624,23 +629,31 @@ class MainApp(tk.Tk):
                 text=f"📱 기기 선택  ({connected_count}대 연결 / {selected_count}대 선택)"
             )
         if hasattr(self, "select_all_var"):
+            connected_infos = [i for i in self.devices_data.values() if i.get("connected", False)]
             all_selected = (
-                all(info.get("selected", False) for info in self.devices_data.values())
-                if self.devices_data else False
+                all(info.get("selected", False) for info in connected_infos)
+                if connected_infos else False
             )
             self.select_all_var.set(all_selected)
 
     def _on_select_all_toggled(self):
         is_selected = self.select_all_var.get()
-        for did in self.devices_data:
-            self.devices_data[did]["selected"] = is_selected
+        for did, info in self.devices_data.items():
+            # 미연결 기기는 항상 선택 해제
+            sel = is_selected and info.get("connected", False)
+            info["selected"] = sel
             if hasattr(self, "device_check_vars") and did in self.device_check_vars:
-                self.device_check_vars[did].set(is_selected)
+                self.device_check_vars[did].set(sel)
         self._save_devices_config()
         self._update_selected_count_label()
 
     def _on_device_select_toggled(self, device_id: str, is_selected: bool):
         if device_id in self.devices_data:
+            if is_selected and not self.devices_data[device_id].get("connected", False):
+                # 미연결 기기 선택 차단
+                is_selected = False
+                if hasattr(self, "device_check_vars") and device_id in self.device_check_vars:
+                    self.device_check_vars[device_id].set(False)
             self.devices_data[device_id]["selected"] = is_selected
         self._save_devices_config()
         self._update_selected_count_label()
@@ -711,9 +724,10 @@ class MainApp(tk.Tk):
         is_running = self.running
 
         if hasattr(self, "select_all_var"):
+            _conn_infos = [i for i in self.devices_data.values() if i.get("connected", False)]
             all_selected = (
-                all(info.get("selected", False) for info in self.devices_data.values())
-                if self.devices_data else False
+                all(info.get("selected", False) for info in _conn_infos)
+                if _conn_infos else False
             )
             self.select_all_var.set(all_selected)
         if hasattr(self, "select_all_chk"):
@@ -727,13 +741,16 @@ class MainApp(tk.Tk):
             row_frame = tk.Frame(self.scroll_frame.scrollable_frame, bg=row_bg, pady=5)
             row_frame.pack(fill=tk.X)
 
-            # 체크박스
+            # 체크박스 (미연결 기기는 선택 불가 → 비활성화)
+            if not is_connected and is_selected:
+                info["selected"] = False
+                is_selected = False
             var = tk.BooleanVar(value=is_selected)
             self.device_check_vars[did] = var
             chk = tk.Checkbutton(
                 row_frame, variable=var, bg=row_bg, activebackground=row_bg,
                 selectcolor="#ffffff",
-                state=tk.DISABLED if is_running else tk.NORMAL,
+                state=tk.DISABLED if (is_running or not is_connected) else tk.NORMAL,
                 command=lambda d=did, v=var: self._on_device_select_toggled(d, v.get())
             )
             chk.pack(side=tk.LEFT, anchor="center", padx=(8, 10))
@@ -2094,9 +2111,10 @@ class MainApp(tk.Tk):
                 for did in self.devices_data:
                     c = dev_counts.get(did.strip().upper(), {"total": 0, "pending": 0})
                     p = c.get("pending", 0)
-                    self.devices_data[did]["selected"] = (p > 0)
+                    sel = (p > 0) and self.devices_data[did].get("connected", False)
+                    self.devices_data[did]["selected"] = sel
                     if hasattr(self, "device_check_vars") and did in self.device_check_vars:
-                        self.device_check_vars[did].set(p > 0)
+                        self.device_check_vars[did].set(sel)
                 self._save_devices_config()
                 self._update_selected_count_label()
                 self._initial_auto_select_done = True
