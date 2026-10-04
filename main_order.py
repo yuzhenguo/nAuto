@@ -66,13 +66,15 @@ class DevicePanel(tk.Frame):
     """기기 1대 실시간 로그 패널 (+ 개별 시작/정지)"""
 
     def __init__(self, parent, device_id: str, port: int, remark: str = "",
-                 on_start=None, on_stop=None, **kwargs):
+                 on_start=None, on_stop=None, on_complete=None, **kwargs):
         super().__init__(parent, bg=CLR_SURFACE, **kwargs)
         self.device_id = device_id  # 실제 ADB ID
         self.port = port
         self.remark = remark or ""
         self.on_start = on_start
         self.on_stop = on_stop
+        self.on_complete = on_complete
+        self.pending_complete_row = None
         self._running = False
         self._build_ui()
 
@@ -108,7 +110,7 @@ class DevicePanel(tk.Frame):
         )
         self.payment_label.pack(side=tk.LEFT, padx=(4, 0))
 
-        # 개별 시작 / 정지 (우측)
+        # 개별 시작 / 완료 / 정지 (우측)
         btn_wrap = tk.Frame(hdr, bg=CLR_SURFACE2)
         btn_wrap.pack(side=tk.RIGHT, padx=(4, 0))
 
@@ -119,6 +121,14 @@ class DevicePanel(tk.Frame):
             state=tk.DISABLED, activebackground="#da3633",
         )
         self.stop_btn.pack(side=tk.RIGHT, padx=2)
+
+        self.complete_btn = tk.Button(
+            btn_wrap, text="✔ 완료", command=self._click_complete,
+            bg="#334155", fg="#94a3b8", font=("Segoe UI", 8, "bold"),
+            relief=tk.FLAT, cursor="hand2", padx=6, pady=2,
+            state=tk.DISABLED, activebackground="#0284c7",
+        )
+        self.complete_btn.pack(side=tk.RIGHT, padx=2)
 
         self.start_btn = tk.Button(
             btn_wrap, text="▶ 시작", command=self._click_start,
@@ -156,6 +166,10 @@ class DevicePanel(tk.Frame):
     def _click_stop(self):
         if self.on_stop and self._running:
             self.on_stop(self.device_id)
+
+    def _click_complete(self):
+        if self.on_complete:
+            self.on_complete(self.device_id)
 
     def set_running(self, running: bool):
         """개별 시작/정지 버튼 상태 갱신"""
@@ -250,11 +264,43 @@ class DevicePanel(tk.Frame):
         else:
             self.payment_label.config(text="결재: -", fg=CLR_TEXT_MUTE, bg=CLR_SURFACE)
 
+    def set_pending_complete_row(self, row):
+        """반자동 모드 주소지 변경 완료 후 '완료' 버튼 활성화/비활성화"""
+        self.pending_complete_row = row
+        try:
+            if row is not None:
+                self.complete_btn.config(state=tk.NORMAL, bg="#0ea5e9", fg="#ffffff")
+                self.set_status("주소지 변경 완료 (완료 대기)")
+                self.status_dot.config(fg="#38bdf8")
+            else:
+                self.complete_btn.config(state=tk.DISABLED, bg="#334155", fg="#94a3b8")
+        except Exception:
+            pass
+
     def set_idle(self):
+        if self.pending_complete_row is not None:
+            self.status_dot.config(fg="#38bdf8")
+            self.status_label.config(text="주소지 변경 완료 (완료 대기)", fg="#38bdf8")
+            self.set_payment_method("-")
+            self.set_running(False)
+            try:
+                self.complete_btn.config(state=tk.NORMAL, bg="#0ea5e9", fg="#ffffff")
+                self.start_btn.config(state=tk.NORMAL)
+                self.stop_btn.config(state=tk.DISABLED)
+            except Exception:
+                pass
+            return
+
         self.status_dot.config(fg=CLR_TEXT_MUTE)
         self.status_label.config(text="대기 중", fg=CLR_TEXT_MUTE)
         self.set_payment_method("-")
         self.set_running(False)
+        try:
+            self.complete_btn.config(state=tk.DISABLED, bg="#334155", fg="#94a3b8")
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
 
 class PrioritySlotManager:
@@ -887,9 +933,9 @@ class MainApp(tk.Tk):
             fg=CLR_TEXT_MUTE, bg=CLR_SURFACE, font=("Segoe UI", 9)
         ).pack(side=tk.LEFT, padx=(2, 0))
 
-        self.test_mode_var = tk.BooleanVar(value=False)
+        self.test_mode_var = tk.BooleanVar(value=True)
         self.test_mode_chk = tk.Checkbutton(
-            right_ctrl, text="테스트 모드", variable=self.test_mode_var,
+            right_ctrl, text="반자동 모드", variable=self.test_mode_var,
             bg=CLR_SURFACE, fg="#38bdf8", selectcolor="#ffffff",
             activebackground=CLR_SURFACE, activeforeground="#38bdf8",
             font=("Segoe UI", 10, "bold")
@@ -1116,6 +1162,7 @@ class MainApp(tk.Tk):
                 remark=remark,
                 on_start=self._start_device,
                 on_stop=self._stop_device,
+                on_complete=self._complete_device,
                 relief=tk.FLAT,
                 highlightbackground=CLR_BORDER,
                 highlightthickness=1
@@ -1216,12 +1263,83 @@ class MainApp(tk.Tk):
         except Exception:
             pass
 
+    def _complete_device(self, device_id: str):
+        """해당 기기에서 반자동으로 대기 중인 주문을 'Y'로 완료 처리"""
+        panel = self.device_panels.get(device_id)
+        target_row = getattr(panel, "pending_complete_row", None) if panel else None
+
+        if not target_row and self.order_manager:
+            # pending_complete_row가 패널에 없을 경우:
+            # order_manager에서 해당 기기의 작업중('W')인 행을 찾아 대체 처리
+            with self.order_manager._lock:
+                for r in self.order_manager._memory_rows:
+                    if str(r.status).strip().upper() == "W":
+                        if not r.device_id or _device_ids_match(r.device_id, device_id):
+                            target_row = r
+                            break
+
+        if not target_row:
+            if panel:
+                panel.append_log("⚠ 완료 처리할 대기 작업(행)이 없습니다.")
+            messagebox.showinfo("알림", f"[{device_id}]\n완료 처리할 대기 작업(행)이 없습니다.")
+            return
+
+        row_idx = target_row.row_index
+        kw = target_row.search_keyword
+
+        # 상태를 Y로 기록하고 엑셀 파일 저장
+        if self.order_manager:
+            self.order_manager.mark_success(row_idx)
+
+        if panel:
+            panel.set_pending_complete_row(None)
+            panel.set_status("주문 완료(Y)")
+            panel.append_log(f"✅ [완료] 행 {row_idx} '{kw}' → 상태 Y 기록 완료 (다음 시작 가능)")
+
+        self._refresh_summary()
+        self._draw_device_list()
+        self._log_status(f"✅ {device_id} 행 {row_idx} 완료(Y) 처리 완료")
+
+    def _on_semi_auto_completed(self, device_id: str, row):
+        """워커 스레드에서 반자동 주소지 변경 완료 시 호출 → UI 스레드로 디스패치"""
+        self.after(0, lambda: self._handle_semi_auto_completed(device_id, row))
+
+    def _handle_semi_auto_completed(self, device_id: str, row):
+        panel = self.device_panels.get(device_id)
+        if panel:
+            panel.set_pending_complete_row(row)
+            panel.append_log(f"🖐 [반자동] 행 {row.row_index} '{row.search_keyword}' 주소지 변경 완료 → '완료' 버튼을 누르면 Y로 기록됩니다.")
+            panel.set_status("주소지 변경 완료 (완료 대기)")
+        self._log_status(f"🖐 {device_id}: 주소지 변경 완료 (완료 버튼 대기)")
+        self._refresh_summary()
+
     def _start_manual(self):
         """수동시작: 배송지 선택(결제창 복귀)까지 진행 → 엑셀 Y 기록 후 종료"""
         self._start_all(manual_mode=True)
 
     def _start_device(self, device_id: str, manual_mode: bool = False):
         """개별 기기 시작"""
+        panel = self.device_panels.get(device_id)
+        if panel and getattr(panel, "pending_complete_row", None) is not None:
+            prev_row = panel.pending_complete_row
+            res = messagebox.askyesnocancel(
+                "완료(Y) 미처리 확인",
+                f"[{device_id}]\n이전 작업(행 {prev_row.row_index}: '{prev_row.search_keyword}')이 아직 완료(Y) 처리되지 않았습니다.\n\n"
+                f"[예]: 완료(Y)로 기록하고 다음 작업 시작\n"
+                f"[아니오]: Y 기록하지 않고 다음 작업 시작\n"
+                f"[취소]: 시작 취소"
+            )
+            if res is True:
+                if self.order_manager:
+                    self.order_manager.mark_success(prev_row.row_index)
+                panel.append_log(f"✅ [완료] 행 {prev_row.row_index} '{prev_row.search_keyword}' → 상태 Y 기록 완료")
+                panel.set_pending_complete_row(None)
+                self._refresh_summary()
+            elif res is None:
+                return
+            else:
+                panel.set_pending_complete_row(None)
+
         old_t = self.worker_threads.get(device_id)
         old_w = self.workers.get(device_id)
         if old_t and old_t.is_alive():
@@ -1274,6 +1392,7 @@ class MainApp(tk.Tk):
             acquire_slot_callback=self._on_slot_acquire,
             release_slot_callback=self._on_slot_release,
             hyundai_auth_retry=self.hyundai_auth_retry_var.get(),
+            semi_auto_callback=self._on_semi_auto_completed,
         )
         worker._ui_gen = gen
         self.workers[device_id] = worker
@@ -1453,6 +1572,7 @@ class MainApp(tk.Tk):
                 acquire_slot_callback=self._on_slot_acquire,
                 release_slot_callback=self._on_slot_release,
                 hyundai_auth_retry=self.hyundai_auth_retry_var.get(),
+                semi_auto_callback=self._on_semi_auto_completed,
             )
             worker._ui_gen = gen
             self.workers[did] = worker

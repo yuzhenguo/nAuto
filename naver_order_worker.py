@@ -629,7 +629,8 @@ class NaverOrderWorker:
                  manual_mode: bool = False,
                  acquire_slot_callback: Optional[Callable] = None,
                  release_slot_callback: Optional[Callable] = None,
-                 hyundai_auth_retry: bool = False):
+                 hyundai_auth_retry: bool = False,
+                 semi_auto_callback: Optional[Callable] = None):
         self.device_id      = device_id
         self.appium_port    = appium_port
         self.order_manager  = order_manager
@@ -638,7 +639,8 @@ class NaverOrderWorker:
         self._acquire_slot_cb = acquire_slot_callback
         self._release_slot_cb = release_slot_callback
         self.machine_num    = machine_num
-        self.test_mode      = test_mode
+        self.test_mode      = test_mode  # 반자동 모드
+        self._semi_auto_cb   = semi_auto_callback
         # 수동시작: 배송지 선택까지 진행 + 엑셀 Y 기록 후 종료
         self.manual_mode    = manual_mode
         self.hyundai_auth_retry = hyundai_auth_retry
@@ -659,7 +661,7 @@ class NaverOrderWorker:
         self._uia2_proxy_wait_sec = 120  # 2분
 
     def _skip_final_order_click(self) -> bool:
-        """테스트/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
+        """반자동/수동시작 모드에서는 주문하기·결제하기 최종 클릭을 생략"""
         return bool(self.test_mode or self.manual_mode)
 
     def _sleep_interruptible(self, seconds: float, slice_sec: float = 0.4) -> bool:
@@ -868,6 +870,8 @@ class NaverOrderWorker:
 
         if self.manual_mode:
             self._log("🖐 수동시작 워커 시작 (배송지 선택까지 → Y 기록 후 종료)")
+        elif self.test_mode:
+            self._log("🖐 반자동 모드 워커 시작 (주소지 변경 완료까지 → 완료 버튼 대기)")
         else:
             self._log("🚀 자동 주문 워커 시작")
 
@@ -4269,7 +4273,7 @@ class NaverOrderWorker:
         self._set_status("결제하기 클릭")
 
         if self._skip_final_order_click():
-            mode = "수동시작" if self.manual_mode else "테스트 모드"
+            mode = "수동시작" if self.manual_mode else "반자동 모드"
             self._log(f"🖐 [{mode}] 결제하기 버튼 클릭 생략 (성공 처리)")
             return True
 
@@ -4467,7 +4471,7 @@ class NaverOrderWorker:
         self._set_status("비밀번호 입력")
 
         if self._skip_final_order_click():
-            mode = "수동시작" if self.manual_mode else "테스트 모드"
+            mode = "수동시작" if self.manual_mode else "반자동 모드"
             self._log(f"🖐 [{mode}] 비밀번호 입력 생략 (강제 성공)")
             return True
 
@@ -5770,7 +5774,7 @@ class NaverOrderWorker:
                 coords = self._find_image_coords(IMG_DO_ORDER, threshold=0.70)
                 if coords:
                     if self._skip_final_order_click():
-                        mode = "수동시작" if self.manual_mode else "테스트 모드"
+                        mode = "수동시작" if self.manual_mode else "반자동 모드"
                         self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🖐 [{mode}] 클릭 생략")
                     else:
                         self._log(f"✅ '주문하기' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
@@ -5793,7 +5797,7 @@ class NaverOrderWorker:
                         coords = self._find_image_coords(pay_img, threshold=0.70)
                         if coords:
                             if self._skip_final_order_click():
-                                mode = "수동시작" if self.manual_mode else "테스트 모드"
+                                mode = "수동시작" if self.manual_mode else "반자동 모드"
                                 self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 🖐 [{mode}] 클릭 생략")
                             else:
                                 self._log(f"✅ '{pay_name}' 이미지 발견! 좌표 ({coords[0]}, {coords[1]}) -> 탭 클릭")
@@ -7484,10 +7488,10 @@ class NaverOrderWorker:
             self._log("❌ [국민카드] 카드가 아직 '카드를 선택해주세요' → 결재하기 클릭 안 함")
             return False
 
-        # [테스트 모드 / 수동시작 모드] 카드 선택 완료 후 최종 결재하기 클릭 생략
+        # [반자동 모드 / 수동시작 모드] 카드 선택 완료 후 최종 결재하기 클릭 생략
         if self._skip_final_order_click():
-            mode = "수동시작" if self.manual_mode else "테스트 모드"
-            self._log(f"🖐 [{mode}] 국민카드 선택 완료 확인됨 → 결재하기 최종 단계 생략 (테스트 정상 종료)")
+            mode = "수동시작" if self.manual_mode else "반자동 모드"
+            self._log(f"🖐 [{mode}] 국민카드 선택 완료 확인됨 → 결재하기 최종 단계 생략 (반자동 정상 종료)")
             return True
 
         # 5) 결재하기 (위로 스크롤 금지, 아래로만 탐색)
@@ -7804,10 +7808,10 @@ class NaverOrderWorker:
             self._log("❌ [22-4] 카드가 아직 '카드를 선택해주세요' → 결제하기 클릭 안 함")
             return False
 
-        # [테스트 모드 / 수동시작 모드] 현대카드 선택 완료 후 최종 결재하기 및 비번 입력 생략
+        # [반자동 모드 / 수동시작 모드] 현대카드 선택 완료 후 최종 결재하기 및 비번 입력 생략
         if self._skip_final_order_click():
-            mode = "수동시작" if self.manual_mode else "테스트 모드"
-            self._log(f"🖐 [{mode}] 현대카드 선택 완료 확인됨 → 결재하기 및 비밀번호 입력 생략 (테스트 정상 종료)")
+            mode = "수동시작" if self.manual_mode else "반자동 모드"
+            self._log(f"🖐 [{mode}] 현대카드 선택 완료 확인됨 → 결재하기 및 비밀번호 입력 생략 (반자동 정상 종료)")
             return True
 
         # 22-5 결재하기.png ~ 결재하기4.png (위로 스크롤 금지, 아래로만 탐색)
@@ -8131,11 +8135,31 @@ class NaverOrderWorker:
 
                 if success:
                     self.current_row = None
+                    if self.test_mode:
+                        # [반자동 모드] 상태를 Y로 바꾸지 않고, 완료 대기 알림 후 워커 종료
+                        self._log(f"🖐 [반자동 모드] 주소지 변경 완료: {row.search_keyword} → 상태 'Y'로 변경하지 않음 (완료 버튼 대기)")
+                        self._set_status("주소지 변경 완료 (완료 대기)")
+                        if getattr(self, "_semi_auto_cb", None):
+                            try:
+                                self._semi_auto_cb(self.device_id, row)
+                            except Exception as cb_err:
+                                self._log(f"⚠ 반자동 완료 콜백 오류: {cb_err}")
+
+                        # 슬롯 즉시 반환
+                        if self._release_slot_cb and slot_held:
+                            self._release_slot_cb(self.device_id)
+                            slot_held = False
+
+                        # 워커 루프 종료 (사용자가 핸드폰에서 확인/결제 후 UI의 '완료' 버튼 누르고 '시작' 누를 때까지 대기)
+                        import gc
+                        gc.collect()
+                        break
+
                     if self._is_bank_transfer_payment(row.payment_method):
                         # 무통장: 주문번호 확인되어야 최종 성공 처리
                         try:
                             if self._skip_final_order_click():
-                                mode = "수동시작" if self.manual_mode else "테스트 모드"
+                                mode = "수동시작" if self.manual_mode else "반자동 모드"
                                 self._log(f"🖐 [{mode}] 주문번호 캡처/확인 생략 → 엑셀 Y 기록")
                                 order_confirmed = True
                             else:
@@ -8367,6 +8391,11 @@ class NaverOrderWorker:
         # 수동시작: 배송지 선택(결제창 복귀)까지 완료하면 결제 단계 생략 → Y 기록
         if self.manual_mode:
             self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
+            return True
+
+        # 반자동 모드: 주소지 변경 완료까지만 하고 결제 단계 생략 (상태 Y로 변경하지 않고 완료 대기)
+        if self.test_mode:
+            self._log("🖐 [반자동 모드] 주소지 변경 완료 → 결제 단계 생략 (완료 버튼 대기)")
             return True
 
         # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)

@@ -389,6 +389,10 @@ class OrderManager:
         """현대카드 본인인증(이름/생년월일) 요구 → 상태 B"""
         self._update_status(row_index, "B")
 
+    def mark_pending(self, row_index: int):
+        """주문 상태를 대기(공백)으로 되돌림"""
+        self._update_status(row_index, "")
+
     def _update_status(self, row_index: int, status: str):
         with self._lock:
             for row in self._memory_rows:
