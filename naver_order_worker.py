@@ -99,6 +99,13 @@ IMG_MEMO_NO_SELECT = os.path.join(_IMG_DIR, "선택안함.png")  # 배송메모 
 IMG_MEMO_NO_SELECT2 = os.path.join(_IMG_DIR, "선택안함2.png")  # 배송메모 '선택안함' 옵션 (변형)
 IMG_ORDER_PAY     = os.path.join(_IMG_DIR, "주문결재.png")   # 주문결재 확인용 (단계 13 폴백)
 IMG_FULL_USE      = os.path.join(_IMG_DIR, "전액사용.png")   # 전액사용 버튼 (단계 17)
+IMG_FULL_USE2     = os.path.join(_IMG_DIR, "전액사용2.png")
+IMG_FULL_USE3     = os.path.join(_IMG_DIR, "전액사용3.png")
+IMG_FULL_USE_LIST = [
+    (IMG_FULL_USE, "전액사용"),
+    (IMG_FULL_USE2, "전액사용2"),
+    (IMG_FULL_USE3, "전액사용3"),
+]
 
 # 추가된 결제방식 이미지
 IMG_OTHER_PAY     = os.path.join(_IMG_DIR, "다른결재.png")
@@ -145,8 +152,15 @@ IMG_BUY_BTN3      = os.path.join(_IMG_DIR, "구매하기3.png")
 IMG_BUY_BTN4      = os.path.join(_IMG_DIR, "구매하기4.png")
 IMG_BUY_BTN5      = os.path.join(_IMG_DIR, "구매하기5.png")
 IMG_MONEY_PAY     = os.path.join(_IMG_DIR, "머니.png")
+IMG_MONEY_PAY1    = os.path.join(_IMG_DIR, "머니1.png")
+IMG_MONEY_PAY2    = os.path.join(_IMG_DIR, "머니2.png")
 IMG_PAY_MONEY_KR  = os.path.join(_IMG_DIR, "pay머니.png")
 IMG_PAYL_MONEY    = os.path.join(_IMG_DIR, "payl머니.png")
+IMG_MONEY_LIST    = [
+    (IMG_MONEY_PAY, "머니"),
+    (IMG_MONEY_PAY1, "머니1"),
+    (IMG_MONEY_PAY2, "머니2"),
+]
 IMG_PAY_BENEFIT   = os.path.join(_IMG_DIR, "결제혜택.png")  # 결제혜택 팝업 감지용
 IMG_CLOSE_POPUP   = os.path.join(_IMG_DIR, "닫기.png")      # 팝업 닫기 버튼
 IMG_BIRTHDAY1     = os.path.join(_IMG_DIR, "생년월일1.png") # (레거시, 본인인증 판정에는 미사용)
@@ -512,37 +526,73 @@ def _verify_match_region(crop_bgr, templ_bgr):
         if col_corr < 0.12:
             return False, f"가로 분포 불일치(col_corr={col_corr:.2f})"
 
-    # 4) 평균 색상 차이
+    # 4) 평균 색상 차이 및 핵심 유채색(초록/컬러 라디오버튼 등) 일치 검사
+    #    (예: 일반결재체크 템플릿의 초록색 라디오 버튼이 미체크 회색 빈 원에 매칭되는 오인식 차단)
     c_mean = crop_bgr.reshape(-1, 3).mean(axis=0)
     t_mean = templ_bgr.reshape(-1, 3).mean(axis=0)
     color_diff = float(np.abs(c_mean - t_mean).max())
     if color_diff > 85:
         return False, f"색상 불일치(diff={color_diff:.0f})"
 
-    # 5) 어두운 픽셀 비율 / 단일 덩어리 검사
-    #    (흰 배경 + 글자 템플릿이 검은 바·알약·구분막대에 매칭되는 오인식 차단 — 예: 미신청4 ↔ 검은 바)
-    t_dark = t_gray < 110
-    c_dark = c_gray < 110
-    t_dark_r = float(t_dark.mean())
-    c_dark_r = float(c_dark.mean())
-    if 0.02 <= t_dark_r < 0.35:  # 템플릿이 '밝은 배경 + 어두운 글자' 형태일 때만 적용 (어두운 픽셀 거의 없는 템플릿은 제외)
-        if c_dark_r > max(t_dark_r * 2.5, t_dark_r + 0.12):
-            return False, f"어두운 영역 과다(dark={c_dark_r:.2f} vs 템플릿 {t_dark_r:.2f})"
+    t_hsv = cv2.cvtColor(templ_bgr, cv2.COLOR_BGR2HSV)
+    c_hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    t_sat_mask = (t_hsv[:, :, 1] > 60) & (t_hsv[:, :, 2] > 40)
+    c_sat_mask = (c_hsv[:, :, 1] > 60) & (c_hsv[:, :, 2] > 40)
+    t_sat_r = float(t_sat_mask.mean())
+    c_sat_r = float(c_sat_mask.mean())
 
-        def _largest_blob_ratio(mask):
-            total = int(mask.sum())
-            if total == 0:
-                return 0.0
-            n, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
-            if n <= 1:
-                return 0.0
-            return float(stats[1:, cv2.CC_STAT_AREA].max()) / total
+    # 템플릿에 유채색(초록색 등)이 4% 이상 있는 경우 (라디오버튼, 컬러아이콘 등)
+    if t_sat_r >= 0.04:
+        # 후보 영역에 유채색이 결여된 경우 (회색/무채색 미체크 오매칭 차단)
+        if c_sat_r < t_sat_r * 0.35:
+            return False, f"유채색(초록 등) 누락(c_sat={c_sat_r:.2f} vs t_sat={t_sat_r:.2f})"
+        if t_sat_mask.sum() >= 15:
+            t_col = templ_bgr[t_sat_mask].astype(float).mean(axis=0)
+            c_col = crop_bgr[t_sat_mask].astype(float).mean(axis=0)
+            sat_diff = float(np.abs(t_col - c_col).max())
+            if sat_diff > 50:
+                return False, f"핵심 유채색 불일치(diff={sat_diff:.0f})"
 
-        t_blob = _largest_blob_ratio(t_dark)
-        c_blob = _largest_blob_ratio(c_dark)
-        # 템플릿은 여러 글자(작은 덩어리 여러 개)인데 후보는 한 덩어리(막대)로 뭉쳐 있으면 거부
-        if t_blob < 0.6 and c_blob > 0.85 and c_dark_r > t_dark_r * 1.3:
-            return False, f"단일 덩어리(막대) 형태(blob={c_blob:.2f} vs 템플릿 {t_blob:.2f})"
+    # 5) 상대 임계값 기반 어두운 영역 / 단일 덩어리(막대) / 수평 막대 검사
+    #    (흰 배경 + 글자 템플릿이 검은 바·알약·구분막대·제스처바에 매칭되는 오인식 원천 차단)
+    t_min, t_max = float(t_gray.min()), float(t_gray.max())
+    c_min, c_max = float(c_gray.min()), float(c_gray.max())
+
+    if t_max - t_min > 30 and c_max - c_min > 30:
+        t_th = t_min + (t_max - t_min) * 0.45
+        c_th = c_min + (c_max - c_min) * 0.45
+        t_dark = t_gray < t_th
+        c_dark = c_gray < c_th
+        t_dark_r = float(t_dark.mean())
+        c_dark_r = float(c_dark.mean())
+
+        # 템플릿이 밝은 배경 + 어두운 글자 형태 (글자 영역이 5% ~ 50% 미만)
+        if 0.05 <= t_dark_r < 0.50:
+            def _blob_info(mask):
+                tot = int(mask.sum())
+                if tot == 0:
+                    return 0.0, 0
+                n, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+                if n <= 1:
+                    return 0.0, 0
+                return float(stats[1:, cv2.CC_STAT_AREA].max()) / tot, n - 1
+
+            t_blob, t_num = _blob_info(t_dark)
+            c_blob, c_num = _blob_info(c_dark)
+
+            # 템플릿은 여러 글자(작은 덩어리 분산)인데 후보는 통짜 단일 덩어리(막대)인 경우
+            if t_blob < 0.60 and c_blob > 0.85:
+                return False, f"단일 덩어리(막대) 형태(c_blob={c_blob:.2f} vs t_blob={t_blob:.2f})"
+            if t_num >= 3 and c_num <= 1:
+                return False, f"글자 구조 불일치(컴포넌트 c={c_num} vs t={t_num})"
+
+            # 수평 단색 막대기(가로축 연속 평탄 구간) 검사
+            c_col_diff = np.abs(np.diff(c_gray.mean(axis=0)))
+            t_col_diff = np.abs(np.diff(t_gray.mean(axis=0)))
+            c_flat = float((c_col_diff == 0).mean())
+            t_flat = float((t_col_diff == 0).mean())
+            if c_flat > 0.50 and t_flat < 0.25:
+                return False, f"수평 막대 형태(c_flat={c_flat:.2f} vs t_flat={t_flat:.2f})"
 
     return True, "ok"
 
@@ -4064,10 +4114,10 @@ class NaverOrderWorker:
 
     def _click_full_use(self) -> bool:
         """
-        [단계 17] 전액사용.png 인식될 때까지 아래로 부드럽게 미세 스크롤하며 대기 -> 인식 후 클릭 -> 3초 대기
+        [단계 17] 머니(머니/머니1/머니2) 또는 전액사용 인식될 때까지 아래로 부드럽게 미세 스크롤하며 대기 -> 인식 후 클릭 -> 3초 대기
         """
-        self._set_status("전액사용 탐색 중")
-        self._log("🔍 [단계 17] 전액사용 버튼 탐색 시작 (부드러운 미세 스크롤 탐색)")
+        self._set_status("전액사용/머니 탐색 중")
+        self._log("🔍 [단계 17] 전액사용/머니 버튼 탐색 시작 (부드러운 미세 스크롤 탐색)")
 
         w_h = 2400
         try:
@@ -4075,21 +4125,37 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        min_y_full_use = int(w_h * 0.25)  # 상단 헤더/툴바 오탐지 방지 (Y >= 25% 영역)
-        max_y_full_use = int(w_h * 0.65)  # 하단 고정 결제버튼(플로팅 바) 가림 방지 (Y <= 65% 영역)
+        min_y_full_use = int(w_h * 0.15)  # 상단 헤더/툴바 오탐지 방지 (Y >= 15% 영역)
+        max_y_full_use = int(w_h * 0.80)  # 하단 고정 결제버튼 가림 방지 (Y <= 80% 영역)
         max_scroll_attempts = 15
+        money_clicked = False
 
         for attempt in range(1, max_scroll_attempts + 1):
-            # 1. 전액사용.png 이미지 매칭
-            if os.path.exists(IMG_FULL_USE):
-                coords = self._find_image_coords(IMG_FULL_USE, threshold=0.80, min_y=min_y_full_use, max_y=max_y_full_use)
-                if coords:
-                    cx, cy = coords
-                    self._log(f"  🎯 전액사용.png 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
-                    ah.tap_by_coords(self.driver, cx, cy, self._log)
-                    self._log("✅ [단계 17] 전액사용 이미지 인식 클릭 완료 (3초 대기)")
-                    time.sleep(1)
-                    return True
+            # 0. 머니.png / 머니1.png / 머니2.png 인식 시 클릭 (미클릭 상태일 때 우선 클릭)
+            if not money_clicked:
+                for m_path, m_name in IMG_MONEY_LIST:
+                    if os.path.exists(m_path):
+                        m_coords = self._find_image_coords(m_path, threshold=0.75, min_y=min_y_full_use, max_y=max_y_full_use)
+                        if m_coords:
+                            mcx, mcy = m_coords
+                            self._log(f"  🎯 {m_name} 이미지 발견! 좌표 ({mcx}, {mcy}) -> 탭 클릭")
+                            ah.tap_by_coords(self.driver, mcx, mcy, self._log)
+                            self._log(f"✅ {m_name} 이미지 인식 클릭 완료 (1.5초 대기)")
+                            time.sleep(1.5)
+                            money_clicked = True
+                            break
+
+            # 1. 전액사용(전액사용, 전액사용2, 전액사용3) 이미지 매칭
+            for f_path, f_name in IMG_FULL_USE_LIST:
+                if os.path.exists(f_path):
+                    coords = self._find_image_coords(f_path, threshold=0.75, min_y=min_y_full_use, max_y=max_y_full_use)
+                    if coords:
+                        cx, cy = coords
+                        self._log(f"  🎯 {f_name} 이미지 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
+                        ah.tap_by_coords(self.driver, cx, cy, self._log)
+                        self._log(f"✅ [단계 17] {f_name} 이미지 인식 클릭 완료 (3초 대기)")
+                        time.sleep(1)
+                        return True
 
             # 2. XPath 텍스트 매칭 폴백 ("전액사용", "전액 사용", "전액")
             full_use_xpaths = [
@@ -4122,7 +4188,12 @@ class NaverOrderWorker:
             self._scroll_down(distance_ratio=0.18)
             time.sleep(0.8)
 
-        self._log("  ❌ 전액사용 버튼 탐색 실패 (최대 스크롤 초과)")
+        # 전액사용 버튼을 별도로 못 찾았더라도 머니가 이미 클릭되었으면 성공으로 진행
+        if money_clicked:
+            self._log("  ℹ [단계 17] 머니(머니/머니1/머니2) 클릭 완료됨 → 결제하기 단계로 진행")
+            return True
+
+        self._log("  ❌ 전액사용/머니 버튼 탐색 실패 (최대 스크롤 초과)")
         return False
 
 
@@ -5260,7 +5331,7 @@ class NaverOrderWorker:
                     return True
                 
                 # 2. 체크 상태 확인
-                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_normal_pay_checked(threshold=0.70):
                     self._log("✅ '일반결재체크' 확인됨. 계속 진행합니다.")
                     found_action = True
                     break
@@ -5307,7 +5378,7 @@ class NaverOrderWorker:
         # 2. 일반결재 탐색 및 클릭 (이미 체크되어 있으면 스킵)
         is_already_checked = is_bank_transfer_checked
         if not is_already_checked:
-            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+            if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_normal_pay_checked(threshold=0.70):
                 self._log("✅ '일반결재체크' 상태 감지됨. 일반결재 클릭 건너뜀.")
                 is_already_checked = True
             elif os.path.exists(IMG_BANK_TRANSFER_CHECK):
@@ -5324,7 +5395,7 @@ class NaverOrderWorker:
                 (IMG_NORMAL_PAY3, "일반결재3"),
             ]
             if not self._click_any_image_with_scroll(normal_pay_images, threshold=0.75, max_scroll_attempts=8):
-                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70):
+                if os.path.exists(IMG_NORMAL_PAY_CHECK) and self._find_normal_pay_checked(threshold=0.70):
                     self._log("✅ '일반결재체크' 발견! 성공으로 간주하고 진행합니다.")
                 elif os.path.exists(IMG_BANK_TRANSFER_CHECK):
                     c_bank = self._find_image_coords(IMG_BANK_TRANSFER_CHECK, threshold=0.70)
@@ -5507,15 +5578,22 @@ class NaverOrderWorker:
             (IMG_NOT_APPLY4, "미신청4"),
         ]
 
-        # 미신청 라디오 버튼은 화면 우측 25% 이내(x >= 75%) 영역에 위치하므로 min_x 제약을 지정
-        w_w = 1080
+        # 미신청 라디오 버튼은 화면 우측 25% 이내(x >= 75%) 및 중간~하단 영역에 위치 (하단 툴바/제스처바 제외)
+        w_w, w_h = 1080, 2400
         try:
-            w_w = self.driver.get_window_size()['width']
+            ws = self.driver.get_window_size()
+            w_w = ws.get('width', 1080)
+            w_h = ws.get('height', 2400)
         except Exception:
             pass
         min_x_right = int(w_w * 0.75)
+        min_y_safe = int(w_h * 0.25)
+        max_y_safe = int(w_h * 0.88)
 
-        if not self._click_any_image_with_scroll(not_apply_images, threshold=0.65, max_scroll_attempts=10, min_x=min_x_right):
+        if not self._click_any_image_with_scroll(
+            not_apply_images, threshold=0.72, max_scroll_attempts=10,
+            min_x=min_x_right, min_y=min_y_safe, max_y=max_y_safe
+        ):
             self._log("⚠ '미신청' 이미지 미발견 -> XPath 텍스트 탐색 시도")
             for _ in range(3):
                 self._scroll_up(distance_ratio=0.5)
@@ -5651,7 +5729,8 @@ class NaverOrderWorker:
 
     def _process_money_payment(self, password: str) -> bool:
         self._log("💸 [머니 결제] 프로세스 시작")
-        if not self._click_image_with_scroll(IMG_MONEY_PAY, "머니"):
+        if not self._click_any_image_with_scroll(IMG_MONEY_LIST, threshold=0.75, max_scroll_attempts=15):
+            self._log("❌ [머니 결제] 머니 / 머니1 / 머니2 이미지 미발견")
             return False
         if not self._click_pay_button():
             self._log("❌ 결제하기 클릭 실패")
@@ -5702,6 +5781,60 @@ class NaverOrderWorker:
         m = self._normalize_payment_method(method)
         return m == "머니" or "머니" in m
 
+    def _find_normal_pay_checked(self, threshold: float = 0.70, min_y: Optional[int] = None, max_y: Optional[int] = None,
+                                  cached_screen_gray: Optional[Any] = None, cached_screen_bgr: Optional[Any] = None) -> Optional[tuple]:
+        """
+        일반결재체크.png 탐색 및 좌측 라디오 버튼의 초록색(Green) 존재 여부 정밀 검증.
+        미체크(회색 빈 동그라미) 상태의 일반결제가 오인식되는 것을 100% 원천 차단.
+        """
+        if not os.path.exists(IMG_NORMAL_PAY_CHECK):
+            return None
+        coords = self._find_image_coords(
+            IMG_NORMAL_PAY_CHECK, threshold=threshold, min_y=min_y, max_y=max_y,
+            cached_screen_gray=cached_screen_gray, cached_screen_bgr=cached_screen_bgr
+        )
+        if not coords:
+            return None
+
+        # 캡처 화면에서 라디오 버튼 좌측 영역(30%)의 실제 초록색 여부 확인
+        try:
+            import cv2
+            if cached_screen_bgr is not None:
+                screen_bgr = cached_screen_bgr
+            else:
+                screenshot_png = self._get_screenshot()
+                import io
+                from PIL import Image
+                screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+                screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+
+            win_w, win_h = self._get_window_size()
+            screen_h, screen_w = screen_bgr.shape[:2]
+            cx, cy = coords
+            scx = int(cx * screen_w / win_w) if win_w > 0 else cx
+            scy = int(cy * screen_h / win_h) if win_h > 0 else cy
+
+            # 일반결재체크 템플릿 크기(225x57) 기준 좌측 라디오 영역 박스
+            t_w, t_h = 225, 57
+            rx1 = max(0, scx - t_w // 2)
+            rx2 = min(screen_w, scx - t_w // 2 + int(t_w * 0.35))
+            ry1 = max(0, scy - t_h // 2)
+            ry2 = min(screen_h, scy + t_h // 2)
+
+            radio_crop = screen_bgr[ry1:ry2, rx1:rx2]
+            if radio_crop.size > 0:
+                hsv = cv2.cvtColor(radio_crop, cv2.COLOR_BGR2HSV)
+                # 네이버 초록색 마스크: Hue 35~85, Saturation > 50, Value > 50
+                green_mask = cv2.inRange(hsv, np.array([35, 50, 50]), np.array([85, 255, 255]))
+                green_ratio = float((green_mask > 0).mean())
+                if green_ratio < 0.04:
+                    self._log(f"  🚫 [일반결재체크 검증] 라디오버튼 초록색 없음(green={green_ratio:.3f}) → 미체크(회색) 오인식 차단")
+                    return None
+        except Exception as e:
+            self._log(f"  ⚠ [일반결재체크 초록색 검증 예외] {e}")
+
+        return coords
+
     def _ensure_normal_pay_checked(self) -> bool:
         """[22-2] 현대카드/국민카드 결제 시 일반결재 선택 확인 및 클릭.
         - 일반결재4 / 일반결재2 / 일반결재 / 일반결재1 탐색 (인식률 높은 순)
@@ -5722,8 +5855,8 @@ class NaverOrderWorker:
 
         # 0차: 이미 일반결재가 체크되어 있는지 먼저 확인 (불필요한 재클릭 방지)
         if os.path.exists(IMG_NORMAL_PAY_CHECK):
-            chk_coords = self._find_image_coords(
-                IMG_NORMAL_PAY_CHECK, threshold=0.70, min_y=100,
+            chk_coords = self._find_normal_pay_checked(
+                threshold=0.70, min_y=100,
                 cached_screen_gray=screen_gray, cached_screen_bgr=screen_bgr
             )
             if chk_coords:
@@ -5750,7 +5883,7 @@ class NaverOrderWorker:
                     time.sleep(1.0)
                     self._last_normal_pay_y = coords[1]
                     if os.path.exists(IMG_NORMAL_PAY_CHECK):
-                        chk = self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70)
+                        chk = self._find_normal_pay_checked(threshold=0.70)
                         if chk:
                             self._log(f"✅ [22-2] '일반결재체크' 최종 상태 확인됨 (y={chk[1]})")
                             self._last_normal_pay_y = chk[1]
@@ -5767,7 +5900,7 @@ class NaverOrderWorker:
             self._log("✅ [22-2] 일반결재 영역 클릭 완료 (무조건 클릭)")
             time.sleep(1.0)
             if os.path.exists(IMG_NORMAL_PAY_CHECK):
-                chk = self._find_image_coords(IMG_NORMAL_PAY_CHECK, threshold=0.70)
+                chk = self._find_normal_pay_checked(threshold=0.70)
                 if chk:
                     self._log(f"✅ [22-2] '일반결재체크' 최종 상태 확인됨 (y={chk[1]})")
                     self._last_normal_pay_y = chk[1]
@@ -8219,7 +8352,7 @@ class NaverOrderWorker:
                 new_h = int(t_h * scale)
                 if new_w >= screen_w or new_h >= screen_h:
                     continue
-                if new_w < 10 or new_h < 5:
+                if new_w < 18 or new_h < 15:
                     continue
 
                 interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
@@ -8246,7 +8379,7 @@ class NaverOrderWorker:
                     new_h = int(t_h * scale)
                     if new_w >= screen_w or new_h >= screen_h:
                         continue
-                    if new_w < 10 or new_h < 5:
+                    if new_w < 18 or new_h < 15:
                         continue
 
                     interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
@@ -8270,7 +8403,7 @@ class NaverOrderWorker:
                 for scale in enh_scales:
                     new_w = int(t_w * scale)
                     new_h = int(t_h * scale)
-                    if new_w >= screen_w or new_h >= screen_h or new_w < 10 or new_h < 5:
+                    if new_w >= screen_w or new_h >= screen_h or new_w < 18 or new_h < 15:
                         continue
                     interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
                     resized_templ = cv2.resize(template_gray, (new_w, new_h), interpolation=interp)
