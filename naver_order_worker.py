@@ -1700,7 +1700,15 @@ class NaverOrderWorker:
 
         self._clear_search_field()
 
-        # 1) EditText 가 있으면 send_keys / mobile:type 중 하나만
+        # 1) 한글 검색어는 클립보드 붙여넣기가 가장 빠르고 안전 (send_keys 30초 지연 방지)
+        has_hangul = any(ord('가') <= ord(c) <= ord('힣') for c in keyword)
+        if has_hangul:
+            self._log("  ℹ 한글 검색어 클립보드 붙여넣기 입력")
+            if self._paste_text_via_clipboard(keyword):
+                time.sleep(0.5)
+                return True
+
+        # 2) EditText send_keys / mobile:type
         el = None
         for xp in (
             '//android.widget.EditText[@focused="true"]',
@@ -1738,10 +1746,9 @@ class NaverOrderWorker:
                     self._log(f"  ⚠ mobile: type 실패: {e2}")
                     self._clear_search_field()
 
-        # 2) 한글 단일 경로: 클립보드 + PASTE (이전 입력과 겹치지 않도록 위에서 clear)
-        self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 (1회)")
+        # 3) 클립보드 폴백
+        self._log("  ℹ 클립보드 붙여넣기로 검색어 입력 (폴백)")
         if self._paste_text_via_clipboard(keyword):
-            # 붙여넣기 직후 바로 엔터치면 검색어 미반영될 수 있음 → 0.5초 대기
             time.sleep(0.5)
             return True
 
@@ -1852,13 +1859,45 @@ class NaverOrderWorker:
             if self._type_search_keyword(keyword):
                 self._log(f"  ✅ 검색어 입력 완료: '{keyword}'")
                 if send_enter:
-                    # 검색아이콘 오인식 회피 → 붙여넣기 후 0.5초 대기(type경로) 뒤 엔터
+                    # 1) 엔터 키(66) 및 검색 키(84) 전송
                     subprocess.run(
                         ["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"],
                         capture_output=True, timeout=5,
                     )
-                    self._log("  ✅ 입력 후 엔터 키 전송 (검색 실행)")
-                    time.sleep(4)
+                    subprocess.run(
+                        ["adb", "-s", self.device_id, "shell", "input", "keyevent", "84"],
+                        capture_output=True, timeout=5,
+                    )
+                    self._log("  ✅ 입력 후 엔터/검색 키 전송 (검색 실행)")
+
+                    # 2) 검색 결과 로딩 대기 루프 (최대 8초)
+                    w_w, w_h = self._get_window_size()
+                    for wait_i in range(1, 9):
+                        time.sleep(1.0)
+                        # 검색 결과가 떴는지 확인 (스토어명, 상품목록, 추천순 등)
+                        has_results = any(ah.element_exists(self.driver, xp, timeout=0.3) for xp in (
+                            f'//*[contains(@content-desc, "{keyword}")]',
+                            f'//*[contains(@text, "{keyword}")]',
+                            '//android.widget.Button[@text="추천순"]',
+                            '//android.widget.Button[@text="리뷰 많은순"]',
+                            '//android.view.View[@resource-id="composite-card-list"]',
+                            '//*[contains(@text, "상품목록")]',
+                        ))
+                        # "상품이 없습니다"는 이전 화면이거나 아직 결과 미반영
+                        is_empty = ah.element_exists(self.driver, '//*[contains(@text, "상품이 없습니다")]', timeout=0.3)
+
+                        if has_results and not is_empty:
+                            self._log(f"  ✅ 검색 결과 로딩 완료 확인! ({wait_i}초)")
+                            break
+
+                        if wait_i in (2, 4):
+                            self._log(f"  🔄 검색 결과 미전환 감지 ({wait_i}초) → 엔터(66/84) 및 검색창 돋보기 재전송")
+                            subprocess.run(["adb", "-s", self.device_id, "shell", "input", "keyevent", "66"], capture_output=True, timeout=5)
+                            subprocess.run(["adb", "-s", self.device_id, "shell", "input", "keyevent", "84"], capture_output=True, timeout=5)
+                            if tap_coords:
+                                mag_x = min(w_w - 30, int(w_w * 0.94))
+                                mag_y = tap_coords[1]
+                                subprocess.run(["adb", "-s", self.device_id, "shell", "input", "tap", str(mag_x), str(mag_y)], capture_output=True, timeout=5)
                 return True
             raise Exception("검색어 입력 방법 모두 실패 (한글 클립보드/EditText)")
         except Exception as e:
@@ -1912,77 +1951,6 @@ class NaverOrderWorker:
 
         safe_seller = seller_name.replace('"', '').replace("'", '').strip()
 
-        # 1순위: 추천순 버튼 대기 (검색결과 로딩 확인) → 클릭 후 리뷰많은순 선택
-        chk_xpath = '//android.widget.Button[@text="추천순"]'
-        found_chk = False
-        for _ in range(15):
-            if ah.element_exists(self.driver, chk_xpath, timeout=1):
-                found_chk = True
-                break
-            time.sleep(1)
-        if found_chk:
-            self._log("  ✅ '추천순' 버튼 감지 → 클릭하여 정렬 팝업 열기")
-            try:
-                ah.wait_and_click(self.driver, chk_xpath, timeout=3, log_callback=self._log)
-                time.sleep(1.2)
-            except Exception as _e:
-                self._log(f"  ⚠ '추천순' 클릭 실패: {_e}")
-
-            # ── 리뷰 많은순 선택: XPath 1순위 → 이미지 인식 2순위 → 좌표 고정 폴백 ──
-            _clicked_review = False
-
-            # 1순위: XPath 텍스트 매칭 (가장 안정적)
-            _review_xpaths = [
-                '//*[@text="리뷰 많은순"]',
-                '//*[contains(@text, "리뷰 많은순")]',
-                '//*[@text="리뷰많은순"]',
-                '//*[contains(@text, "리뷰많은순")]',
-                '//android.widget.TextView[@text="리뷰 많은순"]',
-                '//android.widget.TextView[contains(@text, "리뷰 많은순")]',
-            ]
-            for _xp in _review_xpaths:
-                try:
-                    if ah.element_exists(self.driver, _xp, timeout=2):
-                        _el = self.driver.find_element(By.XPATH, _xp)
-                        _rect = _el.rect
-                        _cx = _rect['x'] + _rect['width'] // 2
-                        _cy = _rect['y'] + _rect['height'] // 2
-                        self._log(f"  🎯 '리뷰 많은순' XPath 발견! ({_cx}, {_cy}) → 클릭")
-                        ah.tap_by_coords(self.driver, _cx, _cy, self._log)
-                        time.sleep(2.5)
-                        _clicked_review = True
-                        break
-                except Exception:
-                    continue
-
-            # 2순위: 리뷰많은순1.png 이미지 인식
-            if not _clicked_review and os.path.exists(IMG_REVIEW_SORT1):
-                _coords = self._find_image_coords(IMG_REVIEW_SORT1, threshold=0.65)
-                if _coords:
-                    self._log(f"  🎯 '리뷰많은순1' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
-                    time.sleep(2.5)
-                    _clicked_review = True
-
-            # 3순위: 리뷰많은순.png 전체 화면 이미지 인식
-            if not _clicked_review and os.path.exists(IMG_REVIEW_SORT):
-                _coords = self._find_image_coords(IMG_REVIEW_SORT, threshold=0.65)
-                if _coords:
-                    self._log(f"  🎯 '리뷰많은순' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
-                    ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
-                    time.sleep(2.5)
-                    _clicked_review = True
-
-            # 최종 폴백: 고정 좌표 (247, 1545) — 리뷰많은순.png 기준 위치
-            if not _clicked_review:
-                self._log("  ⚠ 리뷰많은순 이미지/XPath 미감지 → 고정 좌표(247, 1545) 탭")
-                ah.tap_by_coords(self.driver, 247, 1545, self._log)
-                time.sleep(3.0)
-            else:
-                time.sleep(3.5)  # 정렬 적용 및 웹뷰 렌더링 안정화 대기
-        else:
-            self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
-
         # ─── 스토어 카드 좌표 및 클릭 헬퍼 ───
         def _get_exact_coords(el):
             """
@@ -1995,7 +1963,6 @@ class NaverOrderWorker:
                 m = _re.search(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", b_str)
                 if m:
                     x1, y1, x2, y2 = map(int, m.groups())
-                    # 텍스트/링크 높이는 통상 30~70px. 120px 초과 시 접근성 태그 왜곡으로 간주하여 y1 + 25 사용
                     if (y2 - y1) > 120:
                         cy = y1 + 25
                     else:
@@ -2024,6 +1991,98 @@ class NaverOrderWorker:
                 except Exception:
                     continue
             return False
+
+        store_xpaths = [
+            # 1순위: 판매자명 TextView (가장 정확한 bounds: [448,777][546,824] 등)
+            f'//android.widget.TextView[@text="{safe_seller}"]',
+            # 2순위: basic_product_card_information 하위 판매자명 TextView
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.widget.TextView[@text="{safe_seller}"]',
+            # 3순위: content-desc View 단독 하위 TextView
+            f'//android.view.View[contains(@content-desc, "{safe_seller}")]//android.widget.TextView[@text="{safe_seller}"]',
+            # 4순위: 스토어 링크 View (clickable 컨테이너)
+            f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]',
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]/android.view.View[contains(@content-desc, "{safe_seller}")]',
+            # 5순위: contains text
+            f'//android.widget.TextView[contains(@text, "{safe_seller}")]',
+        ]
+
+        # 0순위: 화면에 이미 스토어 카드가 바로 보이는지 확인 (정렬 팝업 오작동/화면가림 방지)
+        already_visible = False
+        for xp in store_xpaths[:3]:
+            try:
+                if ah.element_exists(self.driver, xp, timeout=1.5):
+                    already_visible = True
+                    break
+            except Exception:
+                pass
+
+        if already_visible:
+            self._log(f"  ⚡ 검색 결과에 '{safe_seller}' 스토어 카드가 이미 노출됨 → 정렬 팝업 생략하고 즉시 클릭!")
+        else:
+            # 1순위: 화면에 안 보일 때만 추천순 버튼 클릭 후 리뷰많은순 정렬 시도
+            chk_xpath = '//android.widget.Button[@text="추천순"]'
+            found_chk = False
+            for _ in range(8):
+                if ah.element_exists(self.driver, chk_xpath, timeout=1):
+                    found_chk = True
+                    break
+                time.sleep(1)
+            if found_chk:
+                self._log("  ✅ '추천순' 버튼 감지 → 클릭하여 정렬 팝업 열기")
+                try:
+                    ah.wait_and_click(self.driver, chk_xpath, timeout=3, log_callback=self._log)
+                    time.sleep(1.2)
+                except Exception as _e:
+                    self._log(f"  ⚠ '추천순' 클릭 실패: {_e}")
+
+                # ── 리뷰 많은순 선택 ──
+                _clicked_review = False
+                _review_xpaths = [
+                    '//*[@text="리뷰 많은순"]',
+                    '//*[contains(@text, "리뷰 많은순")]',
+                    '//*[@text="리뷰많은순"]',
+                    '//*[contains(@text, "리뷰많은순")]',
+                    '//android.widget.TextView[@text="리뷰 많은순"]',
+                ]
+                for _xp in _review_xpaths:
+                    try:
+                        if ah.element_exists(self.driver, _xp, timeout=2):
+                            _el = self.driver.find_element(By.XPATH, _xp)
+                            _rect = _el.rect
+                            _cx = _rect['x'] + _rect['width'] // 2
+                            _cy = _rect['y'] + _rect['height'] // 2
+                            self._log(f"  🎯 '리뷰 많은순' XPath 발견! ({_cx}, {_cy}) → 클릭")
+                            ah.tap_by_coords(self.driver, _cx, _cy, self._log)
+                            time.sleep(2.5)
+                            _clicked_review = True
+                            break
+                    except Exception:
+                        continue
+
+                if not _clicked_review and os.path.exists(IMG_REVIEW_SORT1):
+                    _coords = self._find_image_coords(IMG_REVIEW_SORT1, threshold=0.65)
+                    if _coords:
+                        self._log(f"  🎯 '리뷰많은순1' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
+                        ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
+                        time.sleep(2.5)
+                        _clicked_review = True
+
+                if not _clicked_review and os.path.exists(IMG_REVIEW_SORT):
+                    _coords = self._find_image_coords(IMG_REVIEW_SORT, threshold=0.65)
+                    if _coords:
+                        self._log(f"  🎯 '리뷰많은순' 이미지 발견! ({_coords[0]}, {_coords[1]}) → 클릭")
+                        ah.tap_by_coords(self.driver, _coords[0], _coords[1], self._log)
+                        time.sleep(2.5)
+                        _clicked_review = True
+
+                if not _clicked_review:
+                    self._log("  ⚠ 리뷰많은순 이미지/XPath 미감지 → 고정 좌표(247, 1545) 탭")
+                    ah.tap_by_coords(self.driver, 247, 1545, self._log)
+                    time.sleep(3.0)
+                else:
+                    time.sleep(3.0)
+            else:
+                self._log("  ℹ 스토어 카드 즉시 탐색 진행")
 
         # 2순위: basic_product_card_information 내 스토어 링크 XPath 탐색 (사용자 제공 규격)
         # 1순위로 판매자명 TextView 자체를 타겟팅 (bounds 왜곡이 가장 적음: [516,893][621,944] 등)
