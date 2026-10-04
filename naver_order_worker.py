@@ -2809,125 +2809,102 @@ class NaverOrderWorker:
         time.sleep(0.5)
 
         w, h = self._get_window_size()
-        left, top, right, bottom = self._visible_bounds()
-        # 구매하기 버튼은 화면 하단 영역에 위치 (화면 45% 이상, 하단 네비게이션 바 위)
-        min_y_buy = int(h * 0.45)
-        max_y_buy = min(int(h * 0.98), bottom)
-        min_x_buy = int(w * 0.10)
-        max_x_buy = min(int(w * 0.99), right)
+
+        # 구매하기 버튼은 화면 우측 하단에 위치 (화면 50% 이상, 우측 40% 이상)
+        # 하단 ROI를 h 전체로 설정하여 해상도별 소프트키/바텀바 잘림 완벽 방지
+        min_y_buy = int(h * 0.50)
+        max_y_buy = h
+        min_x_buy = int(w * 0.40)
+        max_x_buy = w
 
         buy_img_candidates = [
             (IMG_BUY_BTN,  "구매하기"),
             (IMG_BUY_BTN2, "구매하기2"),
-            (IMG_BUY_BTN3, "구매하기3"),
             (IMG_BUY_BTN4, "구매하기4"),
+            (IMG_BUY_BTN3, "구매하기3"),
             (IMG_BUY_BTN5, "구매하기5"),
         ]
 
-        def _try_click_buy() -> bool:
-            # 1순위: 이미지 매칭
+        def _try_click_buy_by_image() -> bool:
+            """이미지 인식 방식으로 구매하기 버튼 클릭 (기존보다 조금 더 밑으로, 이미지 중간쯤 클릭)"""
+            # 사용자 요청: 살짝 버튼 위로 클릭되는 현상 방지 → 조금 밑으로 이미지 중간쯤 터치 (+Y 오프셋)
+            y_offset = max(25, int(h * 0.012))
+
             for img_path, img_name in buy_img_candidates:
                 if not os.path.exists(img_path):
                     continue
                 coords = self._find_image_coords(
-                    img_path, threshold=0.70,
+                    img_path, threshold=0.65,
                     min_x=min_x_buy, max_x=max_x_buy,
-                    min_y=min_y_buy, max_y=max_y_buy
+                    min_y=min_y_buy, max_y=max_y_buy,
+                    verify=False
                 )
                 if not coords:
                     continue
                 cx, cy = coords[0], coords[1]
-                safe_x = max(left + 20, min(right - 20, cx))
-                safe_y = max(min_y_buy, min(max_y_buy, cy))
+                tap_x = max(int(w * 0.50), min(w - 20, cx))
+                tap_y = min(h - 25, cy + y_offset)
                 self._log(
-                    f"  🎯 [{img_name}] 이미지 발견! 좌표 ({cx}, {cy}) "
-                    f"→ 화면 내 안전 좌표 ({safe_x}, {safe_y})"
+                    f"  🎯 [{img_name}] 이미지 인식 성공! 감지좌표 ({cx}, {cy}) "
+                    f"→ 이미지 중간쯤 탭 ({tap_x}, {tap_y}) (+{y_offset}px)"
                 )
-                if not self._soft_tap(safe_x, safe_y, duration_ms=100):
-                    ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
-                self._log(f"✅ [{img_name}] 이미지 인식 클릭 완료")
+                # ADB 직접 탭 + 120ms 소프트 탭 연속 전송 (웹뷰 터치 무시 방지)
+                _run_cmd(
+                    ["adb", "-s", self.device_id, "shell", "input", "tap", str(int(tap_x)), str(int(tap_y))],
+                    capture_output=True, timeout=5,
+                )
+                _run_cmd(
+                    ["adb", "-s", self.device_id, "shell", "input", "swipe",
+                     str(int(tap_x)), str(int(tap_y)), str(int(tap_x)), str(int(tap_y)), "120"],
+                    capture_output=True, timeout=5,
+                )
+                self._log(f"✅ [{img_name}] 이미지 인식 클릭 완료 (좌표: {tap_x}, {tap_y})")
                 time.sleep(3)
                 return True
-
-            # 2순위: Button[@text="구매하기"]
-            exact_button_xpath = '//android.widget.Button[@text="구매하기"]'
-            try:
-                elems = self.driver.find_elements(By.XPATH, exact_button_xpath)
-                for el in elems:
-                    try:
-                        rect = el.rect
-                        cx = rect['x'] + rect['width'] // 2
-                        cy = rect['y'] + rect['height'] // 2
-                        safe_x = max(left + 15, min(right - 15, cx))
-                        safe_y = max(top + 15, min(bottom - 15, cy))
-                        self._log(
-                            f"  🎯 [구매하기 Button XPath] 발견! "
-                            f"좌표 ({cx}, {cy}) → 클릭 시도"
-                        )
-                        clicked = False
-                        try:
-                            el.click()
-                            clicked = True
-                        except Exception:
-                            pass
-                        if not clicked or not self._soft_tap(safe_x, safe_y, duration_ms=100):
-                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
-                        self._log('✅ //android.widget.Button[@text="구매하기"] 클릭 완료')
-                        time.sleep(3)
-                        return True
-                    except Exception as e:
-                        self._log(f"  ⚠ Button 클릭 시도 실패: {e}")
-            except Exception as e:
-                self._log(f"  ⚠ //android.widget.Button[@text='구매하기'] 탐색 중 예외: {e}")
-
-            # 3순위: XPath 폴백
-            buy_btn_xpaths = [
-                '//android.widget.Button[contains(@text, "구매하기")]',
-                '//*[@content-desc="구매하기"]',
-                '//*[contains(@content-desc, "구매하기")]',
-                '//android.view.View[@text="구매하기"]',
-                '//android.widget.TextView[@text="구매하기"]',
-            ]
-            for xpath in buy_btn_xpaths:
-                try:
-                    elems = self.driver.find_elements(By.XPATH, xpath)
-                    for el in elems:
-                        rect = el.rect
-                        cx = rect['x'] + rect['width'] // 2
-                        cy = rect['y'] + rect['height'] // 2
-                        safe_x = max(left + 20, min(right - 20, cx))
-                        safe_y = max(min_y_buy, min(max_y_buy, cy))
-                        self._log(
-                            f"  🎯 [구매하기 XPath] 발견! "
-                            f"({safe_x}, {safe_y}) [xpath={xpath}]"
-                        )
-                        clicked = False
-                        try:
-                            el.click()
-                            clicked = True
-                        except Exception:
-                            pass
-                        if not clicked or not self._soft_tap(safe_x, safe_y, duration_ms=100):
-                            ah.tap_by_coords(self.driver, safe_x, safe_y, self._log)
-                        self._log("✅ 구매하기 XPath 버튼 클릭 완료")
-                        time.sleep(3)
-                        return True
-                except Exception:
-                    continue
             return False
 
-        if _try_click_buy():
-            return True
+        # ── 1순위: 이미지 인식 방식으로 최대 3회 시도 ──
+        for attempt in range(1, 4):
+            self._log(f"  👉 [구매하기] 이미지 인식 탐색 시도 ({attempt}/3)...")
+            if _try_click_buy_by_image():
+                return True
+            # 미발견 시 팝업 닫고 재시도
+            self._dismiss_popups(max_count=2)
+            time.sleep(0.8)
 
-        # 미발견 시 팝업 한 번 더 닫고 재시도
-        self._log("  ⚠ 구매하기 미발견 → 팝업 재닫기 후 1회 재시도")
-        self._dismiss_popups(max_count=2)
-        time.sleep(0.8)
-        if _try_click_buy():
-            return True
+        # ── 2순위: 이미지 미인식 시 최후의 XPath 폴백 ──
+        self._log("  ⚠ 이미지 미인식 → XPath 폴백 시도")
+        exact_button_xpath = '//android.widget.Button[@text="구매하기"]'
+        try:
+            elems = self.driver.find_elements(By.XPATH, exact_button_xpath)
+            for el in elems:
+                try:
+                    bounds = el.get_attribute("bounds") or ""
+                    import re as _re
+                    m = _re.search(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                    if m:
+                        x1, y1, x2, y2 = map(int, m.groups())
+                        cx = x1 + int((x2 - x1) * 0.45)
+                        cy = y1 + int((y2 - y1) * 0.65)
+                    else:
+                        rect = el.rect
+                        cx = rect['x'] + int(rect['width'] * 0.45)
+                        cy = rect['y'] + int(rect['height'] * 0.65)
+                    safe_x = max(int(w * 0.50), min(w - 20, cx))
+                    safe_y = min(h - 25, cy)
+                    self._log(f"  🎯 [구매하기 Button XPath] 발견! 좌표 ({cx}, {cy}) → 클릭 시도 ({safe_x}, {safe_y})")
+                    _run_cmd(["adb", "-s", self.device_id, "shell", "input", "tap", str(int(safe_x)), str(int(safe_y))], capture_output=True, timeout=5)
+                    _run_cmd(["adb", "-s", self.device_id, "shell", "input", "swipe", str(int(safe_x)), str(int(safe_y)), str(int(safe_x)), str(int(safe_y)), "120"], capture_output=True, timeout=5)
+                    self._log('✅ //android.widget.Button[@text="구매하기"] XPath 클릭 완료')
+                    time.sleep(3)
+                    return True
+                except Exception as e:
+                    self._log(f"  ⚠ Button 클릭 시도 실패: {e}")
+        except Exception as e:
+            self._log(f"  ⚠ XPath 탐색 중 예외: {e}")
 
         self._log("⚠ 구매하기 버튼 미발견 → 계속 진행")
-        return True  # 없어도 계속 진행
+        return True
 
     # ─── 단계 12: 체크박스 이미지 인식 클릭 ──────────────────────────────────
 
@@ -3869,7 +3846,7 @@ class NaverOrderWorker:
         left = 12
         right = max(left + 1, w - 15)
         top = max(48, int(h * 0.05))         # 상태바 아래
-        bottom = min(h - 60, int(h * 0.94))  # 하단 제스처/내비게이션바/홈버튼 위
+        bottom = min(h - 25, int(h * 0.975))  # 하단 제스처/내비게이션바/홈버튼 바로 위 (하단 버튼 잘림 방지)
         return left, top, right, bottom
 
     def _is_visible_coord(self, x, y) -> bool:
