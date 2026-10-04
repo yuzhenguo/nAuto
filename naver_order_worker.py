@@ -221,6 +221,19 @@ IMG_HYUNDAI_DO_PAY = [
     (os.path.join(_IMG_DIR, "결재하기3.png"), "결재하기3"),
     (os.path.join(_IMG_DIR, "결재하기4.png"), "결재하기4"),
 ]
+IMG_DO_PAY_LIST = [
+    (os.path.join(_IMG_DIR, "결재하기1.png"), "결재하기1"),
+    (os.path.join(_IMG_DIR, "결재하기.png"), "결재하기"),
+    (os.path.join(_IMG_DIR, "결재하기3.png"), "결재하기3"),
+    (os.path.join(_IMG_DIR, "결재하기2.png"), "결재하기2"),
+    (os.path.join(_IMG_DIR, "결재하기4.png"), "결재하기4"),
+    (os.path.join(_IMG_DIR, "주문하기.png"), "주문하기"),
+]
+IMG_CREDIT_CARD_LIST = [
+    (os.path.join(_IMG_DIR, "신용카드.png"), "신용카드"),
+    (os.path.join(_IMG_DIR, "신용카드1.png"), "신용카드1"),
+    (os.path.join(_IMG_DIR, "신용카드2.png"), "신용카드2"),
+]
 IMG_HYUNDAI_PIN_BTN = [
     (os.path.join(_IMG_DIR, "현대핀1.png"), "현대핀1"),
     (os.path.join(_IMG_DIR, "현대핀2.png"), "현대핀2"),
@@ -4199,8 +4212,60 @@ class NaverOrderWorker:
 
     # ─── 단계 18: 결제하기 버튼 ──────────────────────────────────────────────
 
+    def _find_green_pay_button(self, screen_bgr=None) -> Optional[tuple]:
+        """
+        네이버페이 주문서 하단에 고정된 녹색 결제하기 버튼 검출.
+        - 화면 높이 55% ~ 86% 구간 탐색 (하단 네비게이션바/툴바 및 상단 결제수단 영역 제외)
+        - HSV 초록색 마스크 + 모폴로지 클로징(버튼 내 텍스트 메움)
+        - 가로 폭이 화면의 35% 이상인 가장 큰 직사각형 버튼 탐색
+        반환: (center_x, center_y) 또는 None
+        """
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+
+            if screen_bgr is None:
+                screenshot_png = self._get_screenshot()
+                if not screenshot_png:
+                    return None
+                screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+                screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+
+            h, w = screen_bgr.shape[:2]
+            min_y = int(h * 0.55)
+            max_y = int(h * 0.86)
+            roi = screen_bgr[min_y:max_y, :]
+
+            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            # 네이버 녹색: H 35~85, S >= 120, V >= 120
+            mask = cv2.inRange(hsv, (35, 120, 120), (85, 255, 255))
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 7))
+            mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+            contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            best_btn = None
+            max_area = 0
+            for c in contours:
+                x, y, bw, bh = cv2.boundingRect(c)
+                # 화면 폭의 35% 이상, 높이 20px 이상
+                if bw > w * 0.35 and bh >= 20 and bh < (max_y - min_y) * 0.8:
+                    area = bw * bh
+                    if area > max_area:
+                        max_area = area
+                        cx = x + bw // 2
+                        cy = min_y + y + bh // 2
+                        best_btn = (cx, cy)
+
+            return best_btn
+        except Exception as e:
+            self._log(f"  [초록색 결제버튼 탐색 오류] {e}")
+            return None
+
     def _click_pay_button(self) -> bool:
-        """[단계 18] 결제하기 버튼 클릭, 5초 대기"""
+        """[단계 18] 결제하기 버튼 클릭 (초록색 버튼 검출 -> 템플릿 매칭 -> XPath -> 안전 폴백 좌표)"""
         self._set_status("결제하기 클릭")
 
         if self._skip_final_order_click():
@@ -4208,21 +4273,68 @@ class NaverOrderWorker:
             self._log(f"🖐 [{mode}] 결제하기 버튼 클릭 생략 (성공 처리)")
             return True
 
-        if ah.element_exists(self.driver, PAY_BTN_XPATH, timeout=5):
-            ah.wait_and_click(self.driver, PAY_BTN_XPATH, timeout=5, log_callback=self._log)
-            self._log("✅ 결제하기 버튼 클릭 완료")
-            time.sleep(2)
-            return True
+        w, h = self._get_window_size()
+        min_safe_y = int(h * 0.55)
+        max_safe_y = int(h * 0.85)  # 0.85 초과는 하단 툴바 및 시스템 네비게이션 바 영역이므로 절대 클릭 금지 (화면 벗어남 방지)
 
-        # 폴백: 좌표
+        # 1. 초록색 결제하기 버튼 검출 (네이버페이 고유 대형 녹색 버튼, 금액 텍스트 변동에도 완벽 대응)
         try:
-            size = self.driver.get_window_size()
-            w, h = size['width'], size['height']
+            green_btn = self._find_green_pay_button()
+            if green_btn:
+                gx, gy = green_btn
+                gy = max(min_safe_y, min(max_safe_y, gy))
+                self._log(f"  🎯 [초록색 결제버튼] 감지 성공! 좌표 ({gx}, {gy}) -> 탭 클릭")
+                ah.tap_by_coords(self.driver, gx, gy, self._log)
+                time.sleep(2.5)
+                return True
+        except Exception as e:
+            self._log(f"  ⚠ [초록색 결제버튼] 탐색 예외: {e}")
+
+        # 2. 템플릿 이미지 매칭 (결재하기1, 결재하기, 결재하기3, 결재하기2, 결재하기4, 주문하기)
+        for img_path, name in IMG_DO_PAY_LIST:
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(img_path, threshold=0.70, min_y=min_safe_y, max_y=max_safe_y)
+                if coords:
+                    cx, cy = coords
+                    cy = max(min_safe_y, min(max_safe_y, cy))
+                    self._log(f"  🎯 [이미지 매칭] {name} 발견! 좌표 ({cx}, {cy}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(2.5)
+                    return True
+
+        # 3. XPath 다각화 탐색
+        pay_xpaths = [
+            PAY_BTN_XPATH,
+            '//android.view.View[contains(@text,"결제하기")]',
+            '//android.widget.TextView[contains(@text,"결제하기")]',
+            '//*[contains(@text,"결제하기") and not(contains(@text,"약관")) and not(contains(@text,"동의"))]',
+            '//android.widget.Button[contains(@text,"주문하기")]',
+            '//android.view.View[contains(@text,"주문하기")]',
+        ]
+        for xpath in pay_xpaths:
+            try:
+                if ah.element_exists(self.driver, xpath, timeout=1):
+                    el = self.driver.find_element("xpath", xpath)
+                    loc = el.location
+                    sz = el.size
+                    ey = loc['y'] + sz['height'] // 2
+                    ex = loc['x'] + sz['width'] // 2
+                    if min_safe_y <= ey <= max_safe_y:
+                        ah.tap_by_coords(self.driver, ex, ey, self._log)
+                        self._log(f"  ✅ 결제하기 XPath ({xpath}) 좌표 탭 ({ex}, {ey})")
+                        time.sleep(2.5)
+                        return True
+            except Exception:
+                pass
+
+        # 4. 안전 폴백 좌표 (실제 결제하기 버튼 높이 비율: h*0.781, 1080x2400 기기 기준 약 1874)
+        try:
             tap_x = int(w * 0.5)
-            tap_y = int(h * 0.92)
+            tap_y = int(h * 0.781)
+            tap_y = max(min_safe_y, min(max_safe_y, tap_y))
             ah.tap_by_coords(self.driver, tap_x, tap_y, self._log)
-            self._log(f"  ✅ 결제하기 좌표 탭 ({tap_x}, {tap_y})")
-            time.sleep(2)
+            self._log(f"  ✅ 결제하기 안전 폴백 좌표 탭 ({tap_x}, {tap_y}) [기준: h*0.781, 허용구간: {min_safe_y}~{max_safe_y}]")
+            time.sleep(2.5)
             return True
         except Exception as e:
             self._log(f"  ❌ 결제하기 클릭 실패: {e}")
@@ -5146,23 +5258,44 @@ class NaverOrderWorker:
         except Exception:
             pass
 
-        # 사용자 요청: 화면 상하 15% 제외한 구역(15% ~ 85%)에 있어야만 클릭
-        mid_top    = int(w_h * 0.15)
-        mid_bottom = int(w_h * 0.85)
+        # 사용자 요청: 다른결제 버튼이 화면 아래부분에 있을 때 조금 더 화면 중간쯤으로 올라오게 한 뒤 클릭
+        target_min_y = int(w_h * 0.25)  # 상단 25% 미만은 너무 위쪽
+        target_max_y = int(w_h * 0.58)  # 58% 초과는 화면 아래부분으로 판정하여 중간으로 유도
+        max_safe_y   = int(w_h * 0.85)  # 화면 최하단 위험 한계선
+
+        adjust_down_counts = {}  # 아래부분 감지 시 중간 이동 스크롤 시도 횟수
 
         def _tap_coords_and_return(cx, cy, label, attempt_idx=1):
-            if cy < mid_top:
-                self._log(f"  📌 [{label}] 상단 15% 영역 (y={cy} < {mid_top}) -> 스크롤 업 (안전구역 15%~85% 진입 유도)")
-                self._scroll_up(distance_ratio=0.20)
-                time.sleep(0.5)
-                return False
-            elif cy > mid_bottom:
-                self._log(f"  📌 [{label}] 하단 15% 초과 (y={cy} > {mid_bottom}) -> 스크롤 다운 (안전구역 15%~85% 진입 유도)")
-                self._scroll_down(distance_ratio=0.25)
-                time.sleep(0.5)
+            cur_ratio = cy / w_h if w_h > 0 else 0.5
+
+            # 1) 화면 너무 위쪽 (25% 미만)
+            if cy < target_min_y:
+                self._log(f"  📌 [{label}] 화면 상단 영역 (y={cy} < {target_min_y}, {cur_ratio*100:.1f}%) -> 스크롤 업 (화면 중간 진입 유도)")
+                self._scroll_up(distance_ratio=0.15)
+                time.sleep(0.6)
                 return False
 
-            self._log(f"  🎯 [{label}] 상하 15% 제외 안전구역(15%~85%) 안착 확인! 좌표 ({cx}, {cy}) -> 캡처 후 1회 탭")
+            # 2) 화면 아래부분 (58% 초과)
+            if cy > target_max_y:
+                cnt = adjust_down_counts.get(label, 0)
+                if cnt < 3 and cy <= max_safe_y:
+                    adjust_down_counts[label] = cnt + 1
+                    # 중간(약 45~50%)으로 이동시키기 위한 스크롤 거리 계산
+                    diff_ratio = (cy - int(w_h * 0.48)) / w_h
+                    dist = max(0.10, min(0.22, diff_ratio))
+                    self._log(f"  ⬇ [{label}] 화면 아래부분 감지 (y={cy}, {cur_ratio*100:.1f}% > 58%) → 화면 중간으로 올리기 위해 안전 스크롤 다운 ({cnt+1}/3, dist={dist:.2f})")
+                    self._scroll_down_safe(distance_ratio=dist)
+                    time.sleep(0.6)
+                    return False
+                elif cy > max_safe_y:
+                    self._log(f"  📌 [{label}] 화면 최하단 위험구역 (y={cy} > {max_safe_y}) → 안전 스크롤 다운")
+                    self._scroll_down_safe(distance_ratio=0.15)
+                    time.sleep(0.6)
+                    return False
+                else:
+                    self._log(f"  ℹ [{label}] 조정 3회 완료 후에도 y={cy} ({cur_ratio*100:.1f}%) 유지 (페이지 하단) → 현재 위치에서 탭 진행")
+
+            self._log(f"  🎯 [{label}] 화면 중간 영역 안착 확인! 좌표 ({cx}, {cy}) [화면의 {cur_ratio*100:.1f}%] -> 캡처 후 1회 탭")
             
             # 사용자 요청: 클릭 직전 화면 캡처
             try:
@@ -5799,6 +5932,7 @@ class NaverOrderWorker:
         # 캡처 화면에서 라디오 버튼 좌측 영역(30%)의 실제 초록색 여부 확인
         try:
             import cv2
+            import numpy as np
             if cached_screen_bgr is not None:
                 screen_bgr = cached_screen_bgr
             else:
@@ -5835,12 +5969,41 @@ class NaverOrderWorker:
 
         return coords
 
+    def _click_credit_card_if_present(self) -> bool:
+        """[현대카드/국민카드 전용] 일반결제 스크롤 후 신용카드.png / 신용카드1.png / 신용카드2.png 인식 및 클릭 (없으면 패스)."""
+        pm = getattr(self, "current_payment_method", "")
+        # 결재방식이 현대카드와 국민카드 일때만 적용
+        if not (self._is_hyundai_card_payment(pm) or self._is_kb_card_payment(pm)):
+            return False
+
+        self._log("🔍 [신용카드 탭] 신용카드 / 신용카드1 / 신용카드2 탐색 시작 (없으면 패스)")
+        min_y = getattr(self, "_last_normal_pay_y", None)
+        if min_y is None or min_y < 100:
+            w, h = self._get_window_size()
+            min_y = int(h * 0.15)
+        else:
+            min_y = max(100, int(min_y - 50))
+
+        for img_path, name in IMG_CREDIT_CARD_LIST:
+            if os.path.exists(img_path):
+                coords = self._find_image_coords(img_path, threshold=0.70, min_y=min_y)
+                if coords:
+                    cx, cy = coords
+                    self._log(f"  🎯 [신용카드 탭] '{name}' 발견! 화면 좌표 ({cx}, {cy}) -> 탭 클릭")
+                    ah.tap_by_coords(self.driver, cx, cy, self._log)
+                    time.sleep(1.0)
+                    return True
+
+        self._log("  ℹ [신용카드 탭] 이미지 미발견 → 패스 (다음 단계로 진행)")
+        return False
+
     def _ensure_normal_pay_checked(self) -> bool:
         """[22-2] 현대카드/국민카드 결제 시 일반결재 선택 확인 및 클릭.
         - 일반결재4 / 일반결재2 / 일반결재 / 일반결재1 탐색 (인식률 높은 순)
         - 현재 화면에서 즉시 발견 시 스크롤 없이 바로 탭 클릭
         - 미발견 시 미세 스크롤과 함께 상단 안전영역(mid_top_ratio=0.15) 탐색
         - 일반결재체크 확인 후 카드를 인식하기 전 스크롤 조금 내림 (사용자 지시)
+        - 스크롤 후 신용카드 / 신용카드1 / 신용카드2 탐색 및 클릭 (없으면 패스)
         """
         self._log("🔍 [22-2] 일반결재 선택 확인 시작")
 
@@ -5868,6 +6031,8 @@ class NaverOrderWorker:
                 time.sleep(0.8)
                 w, h = self._get_window_size()
                 self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
+                # 사용자 지시: 스크롤 후 신용카드 탭/버튼 클릭 (없으면 패스)
+                self._click_credit_card_if_present()
                 return True
 
         # 1차: 현재 화면 즉시 탐색 (스크롤 불필요 시 빠른 클릭)
@@ -5893,6 +6058,8 @@ class NaverOrderWorker:
                     time.sleep(0.8)
                     w, h = self._get_window_size()
                     self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
+                    # 사용자 지시: 스크롤 후 신용카드 탭/버튼 클릭 (없으면 패스)
+                    self._click_credit_card_if_present()
                     return True
 
         # 2차: 현재 화면에 없으면 스크롤 탐색 (상단 15% 이상 허용)
@@ -5911,6 +6078,8 @@ class NaverOrderWorker:
             w, h = self._get_window_size()
             if getattr(self, "_last_normal_pay_y", None):
                 self._last_normal_pay_y = max(100, int(self._last_normal_pay_y - (h * 0.12)))
+            # 사용자 지시: 스크롤 후 신용카드 탭/버튼 클릭 (없으면 패스)
+            self._click_credit_card_if_present()
             return True
         
         self._log("❌ [22-2] 일반결재 미확인 (일반결재4/일반결재2/일반결재/일반결재1 모두 인식 실패)")
