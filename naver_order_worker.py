@@ -1977,43 +1977,137 @@ class NaverOrderWorker:
             if not _clicked_review:
                 self._log("  ⚠ 리뷰많은순 이미지/XPath 미감지 → 고정 좌표(247, 1545) 탭")
                 ah.tap_by_coords(self.driver, 247, 1545, self._log)
-                time.sleep(2.5)
+                time.sleep(3.0)
+            else:
+                time.sleep(3.5)  # 정렬 적용 및 웹뷰 렌더링 안정화 대기
         else:
             self._log("  ⚠ '추천순' 버튼 미감지 → 계속 진행")
 
+        # ─── 스토어 카드 좌표 및 클릭 헬퍼 ───
+        def _get_exact_coords(el):
+            """
+            Appium el.rect 버그(자식 '새 창에서 열림' bounds 비정상 확장으로 Y좌표가 180px 이상 밀리는 현상)를 방지하기 위해
+            bounds 속성을 직접 파싱하고, 비정상 height는 상단부(y1 + 25)로 보정.
+            """
+            try:
+                b_str = el.get_attribute("bounds") or ""
+                import re as _re
+                m = _re.search(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", b_str)
+                if m:
+                    x1, y1, x2, y2 = map(int, m.groups())
+                    # 텍스트/링크 높이는 통상 30~70px. 120px 초과 시 접근성 태그 왜곡으로 간주하여 y1 + 25 사용
+                    if (y2 - y1) > 120:
+                        cy = y1 + 25
+                    else:
+                        cy = (y1 + y2) // 2
+                    cx = (x1 + x2) // 2
+                    return cx, cy
+            except Exception:
+                pass
+            rect = el.rect
+            cx = rect['x'] + rect['width'] // 2
+            h = rect['height']
+            cy = rect['y'] + (25 if h > 120 else h // 2)
+            return cx, cy
+
+        def _is_still_in_search_results():
+            """여전히 네이버 쇼핑 메인 검색 결과 화면에 머물러 있는지 검사"""
+            for xp in (
+                '//android.view.View[@resource-id="composite-card-list"]',
+                f'//android.widget.EditText[@resource-id="input_text" and @text="{safe_seller}"]',
+                '//android.widget.Button[@text="리뷰 많은순"]',
+                '//android.widget.Button[@text="추천순"]',
+            ):
+                try:
+                    if ah.element_exists(self.driver, xp, timeout=0.8):
+                        return True
+                except Exception:
+                    continue
+            return False
+
         # 2순위: basic_product_card_information 내 스토어 링크 XPath 탐색 (사용자 제공 규격)
+        # 1순위로 판매자명 TextView 자체를 타겟팅 (bounds 왜곡이 가장 적음: [516,893][621,944] 등)
         store_xpaths = [
-            # 1순위: [사용자 지정] basic_product_card_information_.../스토어 View/TextView[@text="판매자명"]
+            # 1순위: [사용자 지정 정밀] basic_product_card_information_.../스토어 View/TextView[@text="판매자명"]
             f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
-            # 2순위: contains resource-id 버전
-            f'//android.view.View[contains(@resource-id, "basic_product_card_information")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
-            # 3순위: // 계층 버전
-            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]//android.widget.TextView[@text="{safe_seller}"]',
+            # 2순위: basic_product_card_information 하위 판매자명 TextView
+            f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]//android.widget.TextView[@text="{safe_seller}"]',
+            # 3순위: content-desc View 단독 하위 TextView
+            f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
             # 4순위: 스토어 View (clickable 컨테이너)
             f'//android.view.View[starts-with(@resource-id, "basic_product_card_information_")]/android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]',
-            # 5순위: content-desc View 단독
-            f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]/android.widget.TextView[@text="{safe_seller}"]',
             f'//android.view.View[@content-desc="{safe_seller} 새 창에서 열림"]',
-            # 6순위: 판매자명 TextView 단독
+            # 5순위: 판매자명 TextView 단독
             f'//android.widget.TextView[@text="{safe_seller}"]',
+            # 6순위: contains text
+            f'//android.widget.TextView[contains(@text, "{safe_seller}")]',
         ]
 
-        for xpath in store_xpaths:
-            try:
-                if ah.element_exists(self.driver, xpath, timeout=3):
-                    el = self.driver.find_element(By.XPATH, xpath)
-                    rect = el.rect
-                    cx = rect['x'] + rect['width'] // 2
-                    cy = rect['y'] + rect['height'] // 2
-                    self._log(f"  🎯 스토어 카드 발견! 좌표 ({cx}, {cy}) [xpath={xpath[:60]}] → 클릭")
-                    ah.tap_by_coords(self.driver, cx, cy, self._log)
-                    time.sleep(3.0)
-                    return True
-            except Exception as e:
-                self._log(f"  ⚠ XPath 시도 실패: {e}")
-                continue
+        import subprocess
+        for attempt in range(1, 4):
+            self._log(f"  🔍 스토어 카드 탐색 시도 ({attempt}/3)...")
+            clicked = False
+            target_cx, target_cy = None, None
 
-        self._log(f"  ❌ 스토어 카드 '{safe_seller}' 전체 미발견")
+            for xpath in store_xpaths:
+                try:
+                    if ah.element_exists(self.driver, xpath, timeout=2.5):
+                        el = self.driver.find_element(By.XPATH, xpath)
+                        cx, cy = _get_exact_coords(el)
+                        target_cx, target_cy = cx, cy
+                        self._log(f"  🎯 스토어 카드 발견! 좌표 ({cx}, {cy}) [xpath={xpath[:60]}] → 클릭 시도")
+
+                        # 1) Appium WebElement 직접 click() 시도 (접근성 액션)
+                        try:
+                            el.click()
+                            self._log("    ▶ el.click() 전송 완료")
+                        except Exception as ce:
+                            self._log(f"    ⚠ el.click() 실패 (좌표 탭 진행): {ce}")
+
+                        # 2) ADB 직접 좌표 탭 (오프셋 없이 화면 절대좌표로 탭)
+                        try:
+                            subprocess.run(
+                                ["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)],
+                                capture_output=True, timeout=5,
+                            )
+                            self._log(f"    ▶ ADB 직접 탭 완료 ({cx}, {cy})")
+                        except Exception as ae:
+                            self._log(f"    ⚠ ADB 탭 실패: {ae}")
+                            ah.tap_by_coords(self.driver, cx, cy, self._log)
+
+                        clicked = True
+                        break
+                except Exception as e:
+                    continue
+
+            if clicked:
+                time.sleep(3.0)
+                # 스토어 진입 검증: 검색결과 화면에서 벗어났는가?
+                if not _is_still_in_search_results():
+                    self._log(f"  ✅ 판매자 스토어 '{safe_seller}' 진입 성공 확인!")
+                    return True
+                else:
+                    self._log(f"  ⚠ 스토어 클릭 반응 없음 (여전히 검색 결과 화면). 재시도 중... ({attempt}/3)")
+                    # 직전 좌표가 있다면 약간의 오프셋이나 더블탭 시도
+                    if target_cx and target_cy:
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "tap", str(target_cx), str(target_cy)],
+                            capture_output=True, timeout=5,
+                        )
+                        time.sleep(2.0)
+                        if not _is_still_in_search_results():
+                            self._log(f"  ✅ 재탭 후 스토어 '{safe_seller}' 진입 성공 확인!")
+                            return True
+            else:
+                self._log(f"  ⚠ 스토어 카드 요소 미발견 (시도 {attempt}/3)")
+                time.sleep(1.5)
+
+        # 3회 시도 후 최종 확인
+        if not _is_still_in_search_results():
+            self._log(f"  ✅ 스토어 진입 완료 상태로 판정")
+            return True
+
+        self._log(f"  ❌ 스토어 카드 '{safe_seller}' 클릭 후 스토어 진입 최종 실패")
         return False
 
     def _open_mall_search_box(self) -> bool:
@@ -2032,10 +2126,16 @@ class NaverOrderWorker:
         ]
 
         def _mall_search_edit_ready() -> bool:
+            # 네이버 쇼핑 메인 검색결과 화면(composite-card-list)이면 몰 내부 검색창이 아님!
+            try:
+                if ah.element_exists(self.driver, '//android.view.View[@resource-id="composite-card-list"]', timeout=0.5):
+                    return False
+            except Exception:
+                pass
             for xp in (
-                '//android.widget.EditText[@resource-id="input_text"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요"]',
                 '//android.widget.EditText[@hint="검색어를 입력해주세요."]',
+                '//android.widget.EditText[@resource-id="input_text"]',
                 '//android.widget.EditText[@hint="검색어 입력"]',
                 '//android.widget.EditText[contains(@hint,"검색어")]',
                 '//android.widget.EditText[contains(@hint,"검색")]',
