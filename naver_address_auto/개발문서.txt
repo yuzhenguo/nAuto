@@ -54,12 +54,22 @@
 엑셀 데이타 loop로 돌려서 해당 device에 주소지등록 작업을 10번부터 22번작업을 반복 합니다 
 
 
-25.
-7번으로 안하고 
-naver_worker 자동 주소지 등록 변경합니다 
-//android.view.View[@content-desc="설정"]/android.widget.Image 버튼 대신 
-//android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"] 장바구니 버튼 클릭합니다  3초대기 
-//android.widget.Button[@text="하루 동안 보지 않기"] 버튼 보이면 클릭 2초 대기 
-//android.widget.Button[@text="주문하기 1 개의 상품"] 버튼 존재하면 클릭하고 3초 대기 
-//android.widget.Button[@text="변경"] 버튼 존재하는지 판단해서 클릭 3초 대기 
-그후 9번부터 작업 들어갑니다 
+25. [주소지 등록 방식 2가지 지원]
+ 프로그램 상단 컨트롤 바에서 2가지 등록 방식 중 선택 가능 (기본값: 배송지 관리 방식):
+
+ [방식 1] 장바구니 방식 (cart)
+ 25-1. //android.widget.Button[@text="장바구니 1 개의 상품이 담겨있음"] (또는 장바구니 포함 버튼) 클릭 (3초 대기)
+ 25-2. //android.widget.Button[@text="하루 동안 보지 않기"] 팝업 보이면 클릭 (2초 대기)
+ 25-3. 상품 체크박스 선택 후 //android.widget.Button[@text="주문하기 1 개의 상품"] 버튼 클릭 (3초 대기)
+ 25-4. '계속 주문하기' 팝업 감지 시 클릭
+ 25-5. //android.widget.Button[@text="변경"] 버튼 클릭 (3초 대기)
+ 그후 9번부터 작업 진행합니다.
+
+ [방식 2] 배송지 관리 방식 (delivery_mgmt)
+ 26-1. 아이디 로그인 및 마이쇼핑 클릭 단계 이후 진행
+ 26-2. //android.view.View[@content-desc="설정"]/android.widget.Image 클릭 (2초 대기)
+ 26-3. //android.widget.Button[@text="배송지 관리"] 클릭 (2초 대기)
+ 26-4. 본인인증 화면: //android.widget.EditText[@resource-id="birthday"] 요소 존재 시
+       - 주소록.xlsx 12열(주민번호) 필드 값 찾아서 입력
+       - 1초 대기 후 //android.widget.Button[@text="인증하기"] 클릭 (3초 대기)
+ 그후 9번부터 작업 진행합니다. 

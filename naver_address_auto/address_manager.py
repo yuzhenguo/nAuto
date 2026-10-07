@@ -26,7 +26,7 @@ class AddressRow:
     def __init__(self, row_index: int, name: str, address_search: str,
                  zipcode: str, phone: str, detail_address: str,
                  status: str, device_id: str, delete_existing: bool = False,
-                 naver_id: str = ""):
+                 naver_id: str = "", jumin: str = ""):
         self.row_index = row_index            # 엑셀 실제 행 번호 (1-based)
         self.name = name                      # 1열: 수취인
         self.address_search = address_search  # 2열: 주소 검색어
@@ -37,6 +37,25 @@ class AddressRow:
         self.device_id = str(device_id).strip() if device_id else ""  # 7열: 기기 ID
         self.delete_existing = delete_existing  # 9열: 기존 주소 삭제 여부
         self.naver_id = str(naver_id).strip() if naver_id else "" # 11열: 네이버아이디
+        self.jumin = str(jumin).strip() if jumin else ""         # 12열: 주민번호
+
+    def get_birthday_val(self) -> str:
+        """생년월일(6자리 또는 숫자) 반환.
+        주민번호가 '950101-1234567' 형식이면 '950101', '950101'이면 '950101'
+        """
+        if not self.jumin:
+            return ""
+        s = self.jumin.strip()
+        if "-" in s:
+            parts = s.split("-")
+            digits = ''.join(filter(str.isdigit, parts[0]))
+            if len(digits) >= 6:
+                return digits[:6]
+            return digits
+        digits = ''.join(filter(str.isdigit, s))
+        if len(digits) >= 13:
+            return digits[:6]
+        return digits if digits else s
 
     def get_phone_middle(self) -> str:
         """전화번호 중간 4자리 반환 (앞 3자리 제거)"""
@@ -57,7 +76,7 @@ class AddressRow:
     def __repr__(self):
         return (f"AddressRow(row={self.row_index}, name={self.name}, "
                 f"zipcode={self.zipcode}, device={self.device_id}, status={self.status}, "
-                f"delete_existing={self.delete_existing})")
+                f"delete_existing={self.delete_existing}, jumin={self.jumin})")
 
 
 class AddressManager:
@@ -86,6 +105,19 @@ class AddressManager:
             try:
                 wb = openpyxl.load_workbook(self.xlsx_path, data_only=True)
                 ws = wb.active
+                # 헤더 컬럼 탐색 (기본: 9열=주소초기화, 11열=네이버아이디, 12열=주민번호)
+                delete_col = 9
+                naver_id_col = 11
+                jumin_col = 12
+                for col_idx in range(1, max(ws.max_column + 1, 15)):
+                    h_val = str(ws.cell(1, col_idx).value or "").strip()
+                    if "주민" in h_val or "생년" in h_val:
+                        jumin_col = col_idx
+                    elif "네이버" in h_val or "아이디" in h_val:
+                        naver_id_col = col_idx
+                    elif "주소초기화" in h_val or "초기화" in h_val:
+                        delete_col = col_idx
+
                 for row_idx in range(2, ws.max_row + 1):  # 2행부터 시작
                     name = ws.cell(row_idx, 1).value
                     # 1열(이름)이 비어있으면 데이터 끝
@@ -103,9 +135,11 @@ class AddressManager:
                     detail = ws.cell(row_idx, 5).value
 
                     # 9열 (주소초기화 여부)
-                    delete_val = ws.cell(row_idx, 9).value
+                    delete_val = ws.cell(row_idx, delete_col).value
                     delete_existing = (str(delete_val).strip().upper() == "Y") if delete_val else False
-                    naver_id = ws.cell(row_idx, 11).value
+                    naver_id = ws.cell(row_idx, naver_id_col).value
+                    # 12열 (주민번호)
+                    jumin_val = ws.cell(row_idx, jumin_col).value
 
                     self._memory_rows.append(AddressRow(
                         row_index=row_idx,
@@ -117,7 +151,8 @@ class AddressManager:
                         status=status_str,
                         device_id=dev_str,
                         delete_existing=delete_existing,
-                        naver_id=str(naver_id).strip() if naver_id else ""
+                        naver_id=str(naver_id).strip() if naver_id else "",
+                        jumin=str(jumin_val).strip() if jumin_val else ""
                     ))
                 self._rebuild_counts_locked()
             except Exception as e:

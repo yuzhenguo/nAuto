@@ -37,6 +37,7 @@ from naver_worker import NaverWorker
 # ─── 설정 ─────────────────────────────────────────────────────────────────────
 XLSX_PATH           = os.path.join(os.path.dirname(__file__), "주소록.xlsx")
 DEVICES_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "devices_config.json")
+SETTINGS_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "settings.json")
 # Appium 포트 랜덤 범위 (7723 포트부터 사용)
 APPIUM_PORT_MIN = 7723
 APPIUM_PORT_MAX = 8500
@@ -392,6 +393,9 @@ class MainApp(tk.Tk):
         sys.stdout = SysOutQueueWriter(self._orig_stdout, self._sys_out_queue)
         sys.stderr = SysOutQueueWriter(self._orig_stderr, self._sys_out_queue)
 
+        self.app_settings = self._load_app_settings()
+        self.max_workers = self.app_settings.get("max_workers", 30)
+
         self.devices_data = self._load_devices_config()
         self._sync_devices_with_adb()
 
@@ -399,7 +403,31 @@ class MainApp(tk.Tk):
         self._refresh_summary()
         self._flush_queues()
 
-    # ─── 기기 설정 관리 ──────────────────────────────────────────────────────
+    # ─── 앱 및 기기 설정 관리 ──────────────────────────────────────────────────
+
+    def _load_app_settings(self) -> dict:
+        default = {"registration_mode": "delivery_mgmt", "max_workers": 30}
+        if os.path.exists(SETTINGS_CONFIG_PATH):
+            try:
+                with open(SETTINGS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return {**default, **data}
+            except Exception as e:
+                print(f"[MainApp] 앱 설정 로드 오류: {e}")
+        return default
+
+    def _save_app_settings(self):
+        try:
+            mode = self.reg_mode_var.get() if hasattr(self, "reg_mode_var") else "delivery_mgmt"
+            max_w = self.max_workers_var.get() if hasattr(self, "max_workers_var") else 30
+            data = {
+                "registration_mode": mode,
+                "max_workers": max_w
+            }
+            with open(SETTINGS_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[MainApp] 앱 설정 저장 오류: {e}")
 
     def _load_devices_config(self) -> dict:
         if os.path.exists(DEVICES_CONFIG_PATH):
@@ -651,10 +679,41 @@ class MainApp(tk.Tk):
 
         tk.Label(
             ctrl,
-            text="💡 왼쪽 기기 목록에서 활성화할 기기를 선택하고 시작하세요.",
+            text="💡 기기 선택 후 시작",
             fg=CLR_TEXT_MUTE, bg=CLR_SURFACE,
-            font=("Segoe UI", 10)
-        ).pack(side=tk.LEFT, padx=10)
+            font=("Segoe UI", 9)
+        ).pack(side=tk.LEFT, padx=(5, 10))
+
+        # 주소 등록 방식 선택 UI (장바구니 방식 vs 배송지 관리 방식)
+        mode_frame = tk.Frame(ctrl, bg=CLR_SURFACE)
+        mode_frame.pack(side=tk.LEFT, padx=(5, 15))
+
+        tk.Label(
+            mode_frame, text="📍 등록 방식:",
+            fg=CLR_PRIMARY, bg=CLR_SURFACE,
+            font=("Segoe UI", 9, "bold")
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        saved_mode = self.app_settings.get("registration_mode", "delivery_mgmt") if hasattr(self, "app_settings") else "delivery_mgmt"
+        self.reg_mode_var = tk.StringVar(value=saved_mode)
+
+        self.rb_delivery = tk.Radiobutton(
+            mode_frame, text="⚙️ 배송지 관리 방식", value="delivery_mgmt",
+            variable=self.reg_mode_var, bg=CLR_SURFACE, fg=CLR_TEXT,
+            selectcolor="#000000", activebackground=CLR_SURFACE, activeforeground=CLR_PRIMARY,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._save_app_settings
+        )
+        self.rb_delivery.pack(side=tk.LEFT, padx=3)
+
+        self.rb_cart = tk.Radiobutton(
+            mode_frame, text="🛒 장바구니 방식", value="cart",
+            variable=self.reg_mode_var, bg=CLR_SURFACE, fg=CLR_TEXT,
+            selectcolor="#000000", activebackground=CLR_SURFACE, activeforeground=CLR_PRIMARY,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._save_app_settings
+        )
+        self.rb_cart.pack(side=tk.LEFT, padx=3)
 
         right_ctrl = tk.Frame(ctrl, bg=CLR_SURFACE)
         right_ctrl.pack(side=tk.RIGHT)
@@ -669,14 +728,16 @@ class MainApp(tk.Tk):
             font=("Segoe UI", 9, "bold")
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        self.max_workers_var = tk.IntVar(value=30)
+        saved_max_w = self.app_settings.get("max_workers", 30) if hasattr(self, "app_settings") else 30
+        self.max_workers_var = tk.IntVar(value=saved_max_w)
         self.max_workers_spin = tk.Spinbox(
             max_worker_frame, from_=1, to=50,
             textvariable=self.max_workers_var,
             width=3, font=("Segoe UI", 9, "bold"),
             bg=CLR_SURFACE2, fg=CLR_TEXT,
             buttonbackground=CLR_SURFACE2,
-            relief=tk.FLAT, justify="center"
+            relief=tk.FLAT, justify="center",
+            command=self._save_app_settings
         )
         self.max_workers_spin.pack(side=tk.LEFT)
 
@@ -938,12 +999,17 @@ class MainApp(tk.Tk):
         self.slot_manager.set_limit(self.max_workers)
         if hasattr(self, "max_workers_spin"):
             self.max_workers_spin.config(state=tk.DISABLED)
+        if hasattr(self, "rb_cart"):
+            self.rb_cart.config(state=tk.DISABLED)
+        if hasattr(self, "rb_delivery"):
+            self.rb_delivery.config(state=tk.DISABLED)
 
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self._draw_device_list()
         self._rebuild_device_panels()
-        self._log_status("🚀 자동화 시작")
+        mode_text = "배송지 관리 방식" if (hasattr(self, "reg_mode_var") and self.reg_mode_var.get() == "delivery_mgmt") else "장바구니 방식"
+        self._log_status(f"🚀 자동화 시작 (방식: {mode_text})")
 
         # 기존 Appium 잔류 서버 정리는 백그라운드에서 수행 (시작 대기 제거)
         self._log_status("🧹 이전 Appium 서버 백그라운드 정리 중...")
@@ -973,6 +1039,7 @@ class MainApp(tk.Tk):
 
         # 기기별 제각도 다른 랜덤 포트 할당
         used_ports: set = set()
+        cur_mode = self.reg_mode_var.get() if hasattr(self, "reg_mode_var") else "delivery_mgmt"
         for i, did in enumerate(sorted_devices):
             port = self._pick_random_appium_port(used_ports)
             used_ports.add(port)
@@ -984,6 +1051,7 @@ class MainApp(tk.Tk):
                 status_callback=self._on_worker_status,
                 acquire_slot_callback=self._on_slot_acquire,
                 release_slot_callback=self._on_slot_release,
+                registration_mode=cur_mode,
             )
             self.workers[did] = worker
             t = threading.Thread(target=self._run_worker, args=(worker,), daemon=True)
@@ -992,7 +1060,8 @@ class MainApp(tk.Tk):
 
             if did in self.device_panels:
                 pending = device_counts.get(did.strip().upper(), {}).get("pending", 0)
-                self.device_panels[did].append_log(f"🚀 워커 시작됨 (잔여: {pending}건, 포트: {port}, 우선순위: {i+1}/{len(sorted_devices)})") 
+                m_label = "배송지 관리" if cur_mode == "delivery_mgmt" else "장바구니"
+                self.device_panels[did].append_log(f"🚀 워커 시작됨 (방식: {m_label}, 잔여: {pending}건, 포트: {port}, 우선순위: {i+1}/{len(sorted_devices)})") 
 
         threading.Thread(target=self._monitor_completion, daemon=True).start()
 
@@ -1053,6 +1122,10 @@ class MainApp(tk.Tk):
         self.stop_btn.config(state=tk.DISABLED)
         if hasattr(self, "max_workers_spin"):
             self.max_workers_spin.config(state=tk.NORMAL)
+        if hasattr(self, "rb_cart"):
+            self.rb_cart.config(state=tk.NORMAL)
+        if hasattr(self, "rb_delivery"):
+            self.rb_delivery.config(state=tk.NORMAL)
         self.workers.clear()
         self.worker_threads.clear()
         self._rearrange_device_panels()

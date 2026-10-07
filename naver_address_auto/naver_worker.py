@@ -141,12 +141,17 @@ HIDE_BTN_XPATH     = '//android.widget.Button[@text="하루 동안 보지 않기
 MY_SHOPPING_XPATH  = '//android.view.View[@content-desc="마이쇼핑"]'
 
 # 설정
-
 SETTING_XPATH      = '//android.view.View[@content-desc="설정"]'
+SETTING_ICON_XPATH = '//android.view.View[@content-desc="설정"]/android.widget.Image'
 
 # 배송지 관리
-
 DELIVERY_MGMT_XPATH = '//android.widget.Button[@text="배송지 관리"]'
+
+# 본인인증 (생년월일/주민번호)
+BIRTHDAY_INPUT_XPATH = '//android.widget.EditText[@resource-id="birthday"]'
+
+# 인증하기
+AUTH_CONFIRM_BTN_XPATH = '//android.widget.Button[@text="인증하기"]'
 
 # 배송지 목록 ListView (네이버+ 스토어 WebView 내부)
 
@@ -278,7 +283,8 @@ class NaverWorker:
                  log_callback: Optional[Callable] = None,
                  status_callback: Optional[Callable] = None,
                  acquire_slot_callback: Optional[Callable] = None,
-                 release_slot_callback: Optional[Callable] = None):
+                 release_slot_callback: Optional[Callable] = None,
+                 registration_mode: str = "delivery_mgmt"):
 
         self.device_id       = device_id
         self.appium_port     = appium_port
@@ -287,6 +293,7 @@ class NaverWorker:
         self._status_cb      = status_callback
         self._acquire_slot_cb = acquire_slot_callback
         self._release_slot_cb = release_slot_callback
+        self.registration_mode = str(registration_mode or "delivery_mgmt").strip().lower()
 
         self.driver          = None
 
@@ -1149,7 +1156,220 @@ class NaverWorker:
             if not dismissed:
                 break
 
-    def _navigate_to_delivery_mgmt(self) -> bool:
+    def _navigate_to_delivery_mgmt(self, row: Optional[AddressRow] = None) -> bool:
+        """선택된 등록 방식(장바구니 방식 vs 배송지 관리 방식)에 따라 배송지 목록 화면 진입"""
+        mode = getattr(self, "registration_mode", "delivery_mgmt")
+        if mode in ("delivery_mgmt", "setting", "management"):
+            return self._navigate_to_delivery_mgmt_via_setting(row=row)
+        else:
+            return self._navigate_to_delivery_mgmt_via_cart()
+
+    def _navigate_to_delivery_mgmt_via_setting(self, row: Optional[AddressRow] = None) -> bool:
+        """[배송지 관리 방식] 마이쇼핑 → 설정 → 배송지 관리 → 본인인증(주민번호/생년월일) 처리 후 진입
+
+        1. 아이디 로그인 후 마이쇼핑 클릭 단계 이후 진행
+        2. //android.view.View[@content-desc="설정"]/android.widget.Image 클릭 (2~3초 대기)
+        3. //android.widget.Button[@text="배송지 관리"] 클릭 (2~3초 대기)
+        4. //android.widget.EditText[@resource-id="birthday"] 요소 존재 시:
+           - 주소록 해당 행 주민번호 필드 값 찾아서 입력
+           - //android.widget.Button[@text="인증하기"] 클릭
+        5. 배송지 목록 화면 진입 완료
+        """
+        self._log("⚙ [배송지 목록 진입] 마이쇼핑 → 설정 → 배송지 관리 경로 탐색 시작")
+
+        # 사전 "7일간 보지 않기" / "하루 동안 보지 않기" / 7일간.png 팝업 감지 및 클릭
+        self._dismiss_hide_popup(max_count=2)
+
+        # [단계 1] 설정 버튼 클릭
+        self._set_status("설정 클릭")
+        self._log("🔍 설정 버튼 탐색 중...")
+        setting_xpaths = [
+            SETTING_ICON_XPATH,
+            '//android.view.View[@content-desc="설정"]',
+            '//*[@content-desc="설정"]',
+            '//android.widget.ImageView[@content-desc="설정"]',
+            '//android.view.ViewGroup[@content-desc="설정"]',
+            '//android.view.View[contains(@content-desc, "설정")]',
+            '//*[contains(@content-desc, "설정")]',
+            '//android.widget.Button[@text="설정"]',
+            '//android.view.View[@text="설정"]',
+        ]
+        setting_clicked = False
+
+        for attempt in range(1, 4):
+            self._dismiss_hide_popup(max_count=1)
+
+            for xpath in setting_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=3):
+                    self._log(f"📌 설정 버튼 발견 ({xpath[:45]}) → 클릭 (시도 {attempt}/3)")
+                    if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
+                        setting_clicked = True
+                        time.sleep(2.5)
+                        break
+
+            if setting_clicked:
+                break
+
+            self._log(f"  ⚠ 설정 버튼 미발견 ({attempt}/3) -> 팝업 재감지 후 재시도...")
+            time.sleep(1.5)
+
+        if not setting_clicked:
+            self._log("  🔄 설정 버튼 미발견 → 메인 복구 후 스토어/마이쇼핑 재진입 시도...")
+            ah.go_to_main_page(self.driver, self._log)
+            time.sleep(3)
+            self._dismiss_hide_popup(max_count=2)
+
+            if ah.element_exists(self.driver, STORE_TAB_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, STORE_TAB_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+
+            self._dismiss_hide_popup(max_count=2)
+            if ah.element_exists(self.driver, MY_SHOPPING_XPATH, timeout=5):
+                ah.wait_and_click(self.driver, MY_SHOPPING_XPATH, timeout=5, log_callback=self._log)
+                time.sleep(4)
+
+            self._dismiss_hide_popup(max_count=2)
+            for xpath in setting_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
+                        setting_clicked = True
+                        time.sleep(2.5)
+                        break
+
+        if not setting_clicked:
+            self._log("❌ 설정 버튼을 최종적으로 찾지 못했습니다.")
+            return False
+
+        # [단계 2] 배송지 관리 버튼 클릭
+        self._dismiss_hide_popup(max_count=2)
+        self._set_status("배송지 관리 클릭")
+        self._log("🔍 배송지 관리 버튼 탐색 중...")
+        delivery_mgmt_xpaths = [
+            DELIVERY_MGMT_XPATH,
+            '//android.widget.Button[contains(@text, "배송지 관리")]',
+            '//*[contains(@text, "배송지 관리")]',
+            '//*[contains(@content-desc, "배송지 관리")]',
+        ]
+        mgmt_clicked = False
+        for attempt in range(1, 4):
+            self._dismiss_hide_popup(max_count=1)
+            for xpath in delivery_mgmt_xpaths:
+                if ah.element_exists(self.driver, xpath, timeout=4):
+                    self._log(f"📌 배송지 관리 버튼 발견 ({xpath[:45]}) → 클릭 (시도 {attempt}/3)")
+                    if ah.wait_and_click(self.driver, xpath, timeout=4, log_callback=self._log):
+                        mgmt_clicked = True
+                        time.sleep(2.5)
+                        break
+            if mgmt_clicked:
+                break
+            # 화면 아래에 있을 수 있으므로 스크롤 다운
+            self._log(f"  ⚠ 배송지 관리 버튼 미발견 ({attempt}/3) -> 화면 스크롤 후 재탐색")
+            self._scroll_down()
+            time.sleep(1.5)
+
+        if not mgmt_clicked:
+            self._log("❌ 배송지 관리 버튼을 찾지 못했습니다.")
+            return False
+
+        # [단계 3] 본인인증(birthday) 화면 감지 시 주소록 주민번호 입력 후 '인증하기' 클릭
+        self._dismiss_hide_popup(max_count=1)
+        self._check_and_process_birthday_auth(row=row)
+
+        time.sleep(2)
+        self._dismiss_hide_popup(max_count=1)
+        self._log("✅ 배송지 목록 화면 진입 (설정 → 배송지 관리 경로)")
+        return True
+
+    def _check_and_process_birthday_auth(self, row: Optional[AddressRow] = None) -> bool:
+        """//android.widget.EditText[@resource-id="birthday"] 요소 존재 시 주소록 해당 행 주민번호 입력 후 '인증하기' 클릭"""
+        birthday_xpaths = [
+            BIRTHDAY_INPUT_XPATH,
+            '//android.widget.EditText[contains(@resource-id, "birthday")]',
+            '//*[@resource-id="birthday"]',
+            '//android.widget.EditText[@hint="생년월일 6자리" or @hint="생년월일"]',
+            '//*[contains(@text, "생년월일") and contains(@class, "EditText")]',
+        ]
+
+        matched_xpath = None
+        for bx in birthday_xpaths:
+            if ah.element_exists(self.driver, bx, timeout=2):
+                matched_xpath = bx
+                break
+
+        if not matched_xpath:
+            self._log("ℹ 본인인증(생년월일) 요구 화면 없음 → 계속 진행")
+            return False
+
+        self._set_status("본인인증 (주민번호/생년월일 입력)")
+        self._log("📌 [본인인증 감지] //android.widget.EditText[@resource-id=\"birthday\"] 발견 → 생년월일 입력 진행")
+
+        target_row = row or self.current_row
+        birthday_val = ""
+        if target_row:
+            if hasattr(target_row, "get_birthday_val"):
+                birthday_val = target_row.get_birthday_val()
+            elif hasattr(target_row, "jumin"):
+                birthday_val = getattr(target_row, "jumin", "")
+
+        if not birthday_val:
+            self._log(f"⚠️ [주의] 주소록에 주민번호(생년월일) 값이 비어있습니다! (row={getattr(target_row, 'row_index', '미지정')})")
+        else:
+            self._log(f"  ⌨ 주소록 해당 행 주민번호 필드 값 입력: {birthday_val}")
+
+        # 생년월일 필드에 입력
+        input_ok = False
+        if birthday_val:
+            if ah.wait_and_input(self.driver, matched_xpath, birthday_val, timeout=5, log_callback=self._log):
+                input_ok = True
+            else:
+                try:
+                    el = self.driver.find_element(By.XPATH, matched_xpath)
+                    self._click_element_center_coordinates(el)
+                    time.sleep(0.4)
+                    self.driver.execute_script("mobile: type", {"text": birthday_val})
+                    input_ok = True
+                    self._log(f"  ✅ 생년월일 입력 완료 (mobile: type): {birthday_val}")
+                except Exception as e:
+                    self._log(f"  ⚠ 생년월일 입력 실패: {e}")
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["adb", "-s", self.device_id, "shell", "input", "text", birthday_val],
+                            capture_output=True, timeout=5
+                        )
+                        input_ok = True
+                        self._log(f"  ✅ 생년월일 입력 완료 (adb shell input text): {birthday_val}")
+                    except Exception as adb_err:
+                        self._log(f"  ❌ adb 입력도 실패: {adb_err}")
+
+        time.sleep(1.5)
+
+        # 인증하기 버튼 클릭
+        self._set_status("인증하기 클릭")
+        auth_btn_xpaths = [
+            AUTH_CONFIRM_BTN_XPATH,
+            '//android.widget.Button[contains(@text, "인증하기")]',
+            '//*[@text="인증하기"]',
+            '//android.view.View[@text="인증하기"]',
+        ]
+        auth_clicked = False
+        for ax in auth_btn_xpaths:
+            if ah.element_exists(self.driver, ax, timeout=3):
+                self._log(f"📌 인증하기 버튼 발견 ({ax}) → 클릭")
+                if ah.wait_and_click(self.driver, ax, timeout=4, log_callback=self._log):
+                    auth_clicked = True
+                    time.sleep(3)
+                    break
+
+        if not auth_clicked:
+            self._log("  ⚠ 인증하기 버튼 미발견 또는 클릭 실패")
+            return False
+
+        self._log("✅ 본인인증(생년월일) 처리 완료")
+        time.sleep(2)
+        return True
+
+    def _navigate_to_delivery_mgmt_via_cart(self) -> bool:
         """[문서 25번 변경] 장바구니 → 상품 체크 → 주문하기 → 계속주문하기 → 변경 버튼으로 배송지 목록 진입
 
         기존 [단계 7~8] '설정 → 배송지 관리' 경로 대신:
@@ -1413,7 +1633,7 @@ class NaverWorker:
     def _delete_existing_addresses(self):
         """
         [단계 9.1~9.3] 기본배송지 제외 기존 배송지 모두 삭제
-        삭제1.png 와 삭제2.png 중 인식율(점수) 높은 이미지로 삭제 버튼 탐색, 스크롤 반복 (최대 15회)
+        삭제1.png ~ 삭제4.png, 삭제.png 중 인식된 비기본 배송지 삭제 버튼 탐색, 스크롤 반복 (최대 15회)
         """
         self._set_status("기존 배송지 삭제 중")
         self._log("🗑 기존 배송지 삭제 시작")
@@ -1421,40 +1641,76 @@ class NaverWorker:
         # 배송지 관리 화면 로드 대기 (최대 10초)
         ah.wait_for_element(self.driver, NEW_ADDRESS_BTN_XPATH, timeout=10, log_callback=self._log)
 
-        del1_path = os.path.join(os.path.dirname(__file__), "삭제1.png")
-        del2_path = os.path.join(os.path.dirname(__file__), "삭제2.png")
+        del_template_names = ["삭제1.png", "삭제2.png", "삭제3.png", "삭제4.png", "삭제.png"]
 
         def _find_best_delete_button(ss_png=None):
-            """삭제1.png vs 삭제2.png 인식율(점수) 비교 후 최고 점수 이미지 채택"""
+            """삭제1.png~삭제4.png, 삭제.png 중 비기본배송지 삭제 버튼 탐색 (상단 우선)"""
             if ss_png is None:
                 ss_png = self._get_screenshot()
 
-            candidates = []
-            for img_path, img_name in [(del1_path, "삭제1.png"), (del2_path, "삭제2.png")]:
-                if os.path.exists(img_path):
-                    res_coords, score = self._find_image_coords(img_path, threshold=0.65, screenshot_png=ss_png, return_score=True)
-                    candidates.append({"name": img_name, "path": img_path, "score": score, "coords": res_coords})
-                else:
-                    self._log(f"  ⚠ {img_name} 파일 없음: {img_path}")
+            valid_matches = []
 
-            if not candidates:
+            for img_name in del_template_names:
+                img_path = os.path.join(os.path.dirname(__file__), img_name)
+                if not os.path.exists(img_path):
+                    continue
+
+                # 1) 단일 최고 매칭
+                res_coords, score = self._find_image_coords(
+                    img_path, threshold=0.65, screenshot_png=ss_png, return_score=True
+                )
+                if res_coords and score >= 0.65:
+                    if not self._is_default_delete_coords(res_coords):
+                        valid_matches.append({
+                            "name": img_name,
+                            "coords": res_coords,
+                            "score": score,
+                            "y": res_coords[1]
+                        })
+                    else:
+                        self._log(f"  ⛔ [{img_name}] 단일 좌표 {res_coords}는 기본배송지 소속 -> 제외")
+
+                # 2) 다중 매칭 (화면에 삭제 버튼이 여러 개일 때)
+                all_matches = self._find_image_matches_all(
+                    img_path, threshold=0.65, screenshot_png=ss_png, max_matches=10
+                )
+                for item in all_matches:
+                    if isinstance(item, dict):
+                        mx, my = item["coords"]
+                        mscore = item.get("score", 0.0)
+                    elif isinstance(item, (tuple, list)) and len(item) == 3:
+                        mx, my, mscore = item
+                    elif isinstance(item, (tuple, list)) and len(item) == 2:
+                        mx, my = item
+                        mscore = 0.7
+                    else:
+                        continue
+                    mcoords = (int(mx), int(my))
+                    if self._is_default_delete_coords(mcoords):
+                        continue
+                    # 중복 근접 좌표 방지
+                    already = False
+                    for vm in valid_matches:
+                        vx, vy = vm["coords"]
+                        if abs(vx - mx) < 25 and abs(vy - my) < 25:
+                            already = True
+                            break
+                    if not already:
+                        valid_matches.append({
+                            "name": img_name,
+                            "coords": mcoords,
+                            "score": mscore,
+                            "y": my
+                        })
+
+            if not valid_matches:
                 return None, ss_png
 
-            # 인식율 내림차순 정렬 (높은 것 우선)
-            candidates.sort(key=lambda c: c["score"], reverse=True)
-            score_cmp_msg = " vs ".join([f"{c['name']}: {c['score']:.4f}" for c in candidates])
-            self._log(f"  📊 [삭제 이미지 인식율 비교] {score_cmp_msg}")
-
-            for cand in candidates:
-                coords = cand["coords"]
-                if coords:
-                    if self._is_default_delete_coords(coords):
-                        self._log(f"  ⛔ [{cand['name']}] 좌표 {coords}는 기본배송지의 삭제 버튼 -> 제외")
-                        continue
-                    self._log(f"  🎯 [{cand['name']}] 인식율 {cand['score']:.4f} (최고) 채택! 좌표: {coords}")
-                    return coords, ss_png
-
-            return None, ss_png
+            # 화면 위쪽(y 작은 것) 우선 채택
+            valid_matches.sort(key=lambda item: (item["y"], -item["score"]))
+            best = valid_matches[0]
+            self._log(f"  🎯 [{best['name']}] 삭제 버튼 채택! 점수: {best['score']:.4f}, 좌표: {best['coords']} (발견된 일반 배송지 버튼: {len(valid_matches)}개)")
+            return best["coords"], ss_png
 
         MAX_LOOPS = 15
         deleted_count = 0
@@ -1466,7 +1722,7 @@ class NaverWorker:
             time.sleep(1)
             tap_x, tap_y = None, None
 
-            # ─── 1순위: 삭제1.png vs 삭제2.png 인식율 높은 것으로 삭제 버튼 좌표 탐색 ───
+            # ─── 1순위: 삭제 이미지 인식으로 삭제 버튼 좌표 탐색 ───
             coords, last_ss = _find_best_delete_button()
             if coords:
                 tap_x, tap_y = coords
@@ -1529,45 +1785,75 @@ class NaverWorker:
 
             time.sleep(1)
 
-            # [9.2] 삭제 확인 창: 삭제하기.png / 삭제하기2.png / 삭제하기3.png 이미지 인식 클릭 (클릭 후 2초 대기)
+            # [9.2] 삭제 확인 창: 시스템/네이티브 Alert 다이얼로그 (android:id/button1 "확인") 최우선 클릭
             confirm_clicked = False
-            for img_name in ("삭제하기.png", "삭제하기2.png", "삭제하기3.png"):
-                confirm_img = os.path.join(os.path.dirname(__file__), img_name)
-                if not os.path.exists(confirm_img):
-                    continue
-                coords = self._find_image_coords(confirm_img, threshold=0.70)
-                if coords:
+            native_confirm_xpaths = [
+                '//android.widget.Button[@resource-id="android:id/button1"]',
+                '//android.widget.Button[@text="확인" and @resource-id="android:id/button1"]',
+                '//*[contains(@text, "삭제하시겠습니까")]/ancestor::*//android.widget.Button[@resource-id="android:id/button1"]',
+                DELETE_CONFIRM_XPATH,
+                '//android.widget.Button[@text="삭제하기"]',
+                '//android.widget.Button[@text="확인"]',
+            ]
+            for c_xpath in native_confirm_xpaths:
+                if ah.element_exists(self.driver, c_xpath, timeout=2):
+                    self._log(f"  📌 [삭제 확인] Alert 다이얼로그 확인 버튼 감지: {c_xpath}")
+                    # 1) Appium click 시도
+                    clicked = False
                     try:
-                        import subprocess
-                        subprocess.run(
-                            ["adb", "-s", self.device_id, "shell", "input", "tap",
-                             str(coords[0]), str(coords[1])],
-                            capture_output=True, timeout=5
-                        )
-                        self._log(f"  ✅ [삭제 확인] {img_name} 인식 클릭 완료 (좌표: {coords[0]},{coords[1]}) → 2초 대기")
+                        el = self.driver.find_element(By.XPATH, c_xpath)
+                        el.click()
+                        clicked = True
+                        self._log("  ✅ [삭제 확인] Alert '확인' 버튼 click 완료")
+                    except Exception:
+                        pass
+
+                    # 2) 실패 시 좌표 tap
+                    if not clicked:
+                        try:
+                            el = self.driver.find_element(By.XPATH, c_xpath)
+                            r = el.rect
+                            cx = int(r['x'] + r['width'] // 2)
+                            cy = int(r['y'] + r['height'] // 2)
+                            import subprocess
+                            subprocess.run(
+                                ["adb", "-s", self.device_id, "shell", "input", "tap", str(cx), str(cy)],
+                                capture_output=True, timeout=5
+                            )
+                            clicked = True
+                            self._log(f"  ✅ [삭제 확인] Alert '확인' 버튼 좌표 탭 완료 ({cx}, {cy})")
+                        except Exception as e:
+                            self._log(f"  ⚠ [삭제 확인] Alert 확인 버튼 클릭 실패: {e}")
+
+                    if clicked:
                         confirm_clicked = True
                         time.sleep(2)
-                    except Exception as e:
-                        self._log(f"  ⚠ [삭제 확인] {img_name} 클릭 실패: {e}")
-                    break
+                        break
 
-            # 이미지 미인식 시 기존 XPath 확인 버튼 폴백
+            # 네이티브 다이얼로그 미감지 시: 웹뷰 내 삭제하기 이미지 템플릿 탐색 (신규 레이아웃 등)
             if not confirm_clicked:
-                self._log("  ℹ [삭제 확인] 삭제하기 이미지 미인식 → XPath 확인 버튼 폴백")
-                if ah.element_exists(self.driver, '//android.widget.Button[@text="삭제하기"]', timeout=2):
-                    ah.wait_and_click(self.driver, '//android.widget.Button[@text="삭제하기"]',
-                                      timeout=2, log_callback=self._log)
-                    self._log("  삭제 확인 '삭제하기' 버튼 클릭 완료")
-                    time.sleep(2)
-                elif ah.element_exists(self.driver, DELETE_CONFIRM_XPATH, timeout=4):
-                    ah.wait_and_click(self.driver, DELETE_CONFIRM_XPATH, timeout=4, log_callback=self._log)
-                    self._log("  삭제 확인 OK 클릭 완료")
-                else:
-                    if ah.element_exists(self.driver, '//android.widget.Button[@text="확인"]', timeout=2):
-                        ah.wait_and_click(self.driver, '//android.widget.Button[@text="확인"]',
-                                          timeout=2, log_callback=self._log)
+                for img_name in ("삭제하기.png", "삭제하기2.png", "삭제하기3.png", "삭제하기1.png"):
+                    confirm_img = os.path.join(os.path.dirname(__file__), img_name)
+                    if not os.path.exists(confirm_img):
+                        continue
+                    coords = self._find_image_coords(confirm_img, threshold=0.75)
+                    if coords:
+                        try:
+                            import subprocess
+                            subprocess.run(
+                                ["adb", "-s", self.device_id, "shell", "input", "tap",
+                                 str(coords[0]), str(coords[1])],
+                                capture_output=True, timeout=5
+                            )
+                            self._log(f"  ✅ [삭제 확인] {img_name} 인식 클릭 완료 (좌표: {coords[0]},{coords[1]}) → 2초 대기")
+                            confirm_clicked = True
+                            time.sleep(2)
+                        except Exception as e:
+                            self._log(f"  ⚠ [삭제 확인] {img_name} 클릭 실패: {e}")
+                        break
 
             deleted_count += 1
+            time.sleep(2)
 
             # 삭제 완료 후 WebView 재로딩 대기
             self._wait_webview_ready(label="삭제 후", timeout=10)
@@ -1581,18 +1867,33 @@ class NaverWorker:
 
 
     def _get_default_delete_rect(self):
-
         """기본배송지 항목에 속한 '삭제' 버튼의 rect 반환 (미노출 시 None)
 
-        배송지목록2.xml 신규 레이아웃 기준:
-          - 기본배송지에도 삭제 버튼이 존재함
-          - 주소 헤더 View(text에 '기본배송지' 포함)와 수정/삭제 버튼이
-            형제 구조로 나열되므로, '기본배송지' 라벨 바로 아래에 있는
-            첫 번째 '삭제' 버튼을 기본배송지 소속으로 판단
+        1순위 (XPath 카드 컨테이너):
+          '기본배송지' 텍스트를 포함하는 노드의 부모/조상 카드 내부의 '삭제' 버튼 직접 탐색
+          (신규 레이아웃에서는 기본배송지 카드 내에 삭제 버튼이 있고, 구 레이아웃에는 없음)
 
+        2순위 (좌표 거리 판정):
+          '기본배송지' 라벨 아래 첫 번째 삭제 버튼과의 거리(diff_y)가 350px 이내인 경우만
+          기본배송지 소속으로 판단 (초과 시 구 레이아웃의 일반 배송지 버튼이므로 None 반환)
         """
-
         try:
+            # 1순위: 기본배송지 카드 컨테이너 내부의 삭제 버튼 직접 탐색
+            card_del_xpaths = [
+                '//*[contains(@text, "기본배송지")]/ancestor::*[parent::android.widget.ListView]//android.widget.Button[@text="삭제"]',
+                '//*[contains(@text, "기본배송지")]/ancestor::*[contains(@class, "View")][position()<=4]//android.widget.Button[@text="삭제"]',
+            ]
+            for c_xpath in card_del_xpaths:
+                try:
+                    btns = self.driver.find_elements(By.XPATH, c_xpath)
+                    if btns:
+                        r = btns[0].rect
+                        if r and r.get('width', 0) > 0:
+                            return r
+                except WebDriverException:
+                    pass
+
+            # 2순위: 좌표 기반 탐색 (거리 상한선 350px 적용)
             label_bottom = None
             narrow_label_bottom = None
             for lb in self.driver.find_elements(By.XPATH, '//*[contains(@text, "기본배송지")]'):
@@ -1612,15 +1913,17 @@ class NaverWorker:
             if label_bottom is None:
                 return None
 
-            # 라벨 아래에서 가장 가까운 삭제 버튼 = 기본배송지 소속
+            # 라벨 아래에서 350px 이내에 위치한 첫 번째 삭제 버튼 = 기본배송지 소속
             best = None
             for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
                 try:
                     r = btn.rect
                 except WebDriverException:
                     continue
-                if r['y'] >= label_bottom - 20 and (best is None or r['y'] < best['y']):
-                    best = r
+                diff_y = r['y'] - label_bottom
+                if -20 <= diff_y <= 350:
+                    if best is None or r['y'] < best['y']:
+                        best = r
             return best
         except WebDriverException:
             return None
@@ -1628,23 +1931,19 @@ class NaverWorker:
 
 
     def _is_default_delete_coords(self, coords) -> bool:
-
         """이미지 매칭으로 찾은 좌표가 기본배송지의 삭제 버튼 영역인지 판정"""
-
         rect = self._get_default_delete_rect()
         if not rect:
             return False
         cx, cy = coords
-        margin = 25
+        margin = 30
         return (rect['x'] - margin <= cx <= rect['x'] + rect['width'] + margin
                 and rect['y'] - margin <= cy <= rect['y'] + rect['height'] + margin)
 
 
 
     def _find_non_default_delete_button(self):
-
         """
-
         '기본배송지' 항목을 제외한 삭제 버튼 반환
 
         신규 레이아웃(배송지목록2.xml)에서는 기본배송지에도 삭제 버튼이 있으므로,
@@ -1652,11 +1951,8 @@ class NaverWorker:
         제외하고 가장 위의 버튼을 반환합니다.
         구 레이아웃(기본배송지에 삭제 버튼 없음)에서는 기본배송지 라벨이
         미검출되어 첫 번째 삭제 버튼 반환과 동일하게 동작합니다.
-
         """
-
         try:
-
             candidates = []
             for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
                 try:
@@ -1679,12 +1975,8 @@ class NaverWorker:
                 return btn
 
             self._log("  [디버그] 기본배송지 외 삭제 가능한 버튼 없음")
-
         except (NoSuchElementException, WebDriverException) as e:
-
             self._log(f"  [디버그] 삭제 버튼 탐색 오류: {e}")
-
-
 
         return None
 
@@ -1900,7 +2192,7 @@ class NaverWorker:
             if not self._go_main_and_enter_store(login_id=row.naver_id):
                 self._log("❌ 메인 이동 및 계정 전환 실패")
                 return False
-            if not self._navigate_to_delivery_mgmt():
+            if not self._navigate_to_delivery_mgmt(row=row):
                 self._log("❌ 배송지 관리 화면 진입 실패")
                 return False
             self.current_naver_id = row.naver_id
@@ -1957,6 +2249,7 @@ class NaverWorker:
         # 신규 레이아웃(배송지입력3.xml): '배송지 신규입력' 클릭 시 수취인 입력 없이
         # 곧바로 주소 검색 화면(EditText[hint=주소] + '검색' 버튼)이 표시됨
         new_addr_layout = False
+        receiver_name_entered = False
 
         self._set_status(f"수취인 입력: {row.name}")
 
@@ -1968,6 +2261,8 @@ class NaverWorker:
                 self._log("❌ 수취인 입력 실패")
 
                 return False
+
+            receiver_name_entered = True
 
             # [단계 12] 주소검색 버튼 클릭
 
@@ -2122,11 +2417,29 @@ class NaverWorker:
         time.sleep(1.5)
 
         # 신규 레이아웃: 주소 선택 후 '이름을 입력해주세요' 화면에서 수취인 입력
-        # XPath: //android.widget.EditText[@resource-id="receiver"]
-        if new_addr_layout or self._find_receiver_xpath(timeout=3):
+        # (구 레이아웃에서 이미 수취인명을 입력한 경우 중복 입력 방지)
+        need_receiver_input = False
+        rx_xpath = self._find_receiver_xpath(timeout=3)
+        if not receiver_name_entered:
+            need_receiver_input = bool(new_addr_layout or rx_xpath)
+        elif rx_xpath:
+            # 이미 입력했으나 혹시 입력창이 비어있는 경우에만 재입력
+            try:
+                el = self.driver.find_element(By.XPATH, rx_xpath)
+                current_text = (el.text or el.get_attribute("text") or "").strip()
+                if not current_text or row.name not in current_text:
+                    self._log(f"  ℹ 수취인 입력란 미확인(현재값: '{current_text}') → 수취인 입력 진행")
+                    need_receiver_input = True
+                else:
+                    self._log(f"  ✅ 수취인 이미 입력되어 있음 확인: '{current_text}' (중복 입력 방지)")
+            except Exception:
+                pass
+
+        if need_receiver_input:
             self._set_status(f"수취인 입력: {row.name}")
             if self._input_receiver_name(row.name):
-                self._log(f"  ✅ [신규 레이아웃] 수취인 입력 완료: '{row.name}'")
+                self._log(f"  ✅ [수취인 입력 완료]: '{row.name}'")
+                receiver_name_entered = True
                 time.sleep(0.5)
             else:
                 self._log("❌ 수취인 입력창(receiver / receiver_name) 미발견 → 즉시 F 종료")
@@ -3498,7 +3811,7 @@ class NaverWorker:
 
             self._go_main_and_enter_store()
 
-            if self._navigate_to_delivery_mgmt():
+            if self._navigate_to_delivery_mgmt(row=self.current_row):
 
                 return ah.element_exists(self.driver, NEW_ADDRESS_BTN_XPATH, timeout=5)
 
@@ -3731,7 +4044,88 @@ class NaverWorker:
                 return None, 0.0
             return None
 
+    def _find_image_matches_all(self, template_path: str, threshold: float = 0.65, screenshot_png: Optional[bytes] = None, max_matches: int = 10):
+        """지정한 템플릿 이미지를 멀티스케일 매칭하여 threshold 이상인 모든 후보 중심좌표 목록 반환 (score 내림차순)"""
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+            import os
+        except ImportError:
+            return []
 
+        if not os.path.exists(template_path):
+            return []
+
+        try:
+            if screenshot_png is None:
+                screenshot_png = self._get_screenshot()
+
+            screenshot_pil = Image.open(io.BytesIO(screenshot_png))
+            screen_bgr = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+            screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+            screen_h, screen_w = screen_gray.shape
+
+            template_bgr = cv2.imdecode(np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if template_bgr is None:
+                return []
+
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            t_h, t_w = template_gray.shape
+
+            best_score = -1
+            best_tw = t_w
+            best_th = t_h
+            best_res = None
+
+            scales = np.linspace(0.55, 2.2, 18)
+            for scale in scales:
+                new_w = int(t_w * scale)
+                new_h = int(t_h * scale)
+                if new_w >= screen_w or new_h >= screen_h or new_w < 10 or new_h < 5:
+                    continue
+
+                resized = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                result = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(result)
+
+                if max_val > best_score:
+                    best_score = max_val
+                    best_tw = new_w
+                    best_th = new_h
+                    best_res = result
+
+                    if best_score >= 0.90:
+                        break
+
+            if best_score < threshold or best_res is None:
+                return []
+
+            matches = []
+            res_copy = best_res.copy()
+            suppress_h = max(15, best_th // 2)
+            suppress_w = max(20, best_tw // 2)
+
+            while len(matches) < max_matches:
+                _, max_val, _, max_loc = cv2.minMaxLoc(res_copy)
+                if max_val < threshold:
+                    break
+                cx = int(max_loc[0] + best_tw // 2)
+                cy = int(max_loc[1] + best_th // 2)
+                matches.append((cx, cy, float(max_val)))
+
+                # 피크 주변 억제
+                y_min = max(0, max_loc[1] - suppress_h)
+                y_max = min(res_copy.shape[0], max_loc[1] + suppress_h + 1)
+                x_min = max(0, max_loc[0] - suppress_w)
+                x_max = min(res_copy.shape[1], max_loc[0] + suppress_w + 1)
+                res_copy[y_min:y_max, x_min:x_max] = -1.0
+
+            return matches
+        except Exception as e:
+            self._log(f"  ⚠ _find_image_matches_all 예외: {e}")
+            return []
 
     def _tap_coordinates(self, x: int, y: int) -> bool:
 
