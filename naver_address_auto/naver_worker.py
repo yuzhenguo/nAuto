@@ -1869,62 +1869,61 @@ class NaverWorker:
     def _get_default_delete_rect(self):
         """기본배송지 항목에 속한 '삭제' 버튼의 rect 반환 (미노출 시 None)
 
-        1순위 (XPath 카드 컨테이너):
-          '기본배송지' 텍스트를 포함하는 노드의 부모/조상 카드 내부의 '삭제' 버튼 직접 탐색
-          (신규 레이아웃에서는 기본배송지 카드 내에 삭제 버튼이 있고, 구 레이아웃에는 없음)
-
-        2순위 (좌표 거리 판정):
-          '기본배송지' 라벨 아래 첫 번째 삭제 버튼과의 거리(diff_y)가 350px 이내인 경우만
-          기본배송지 소속으로 판단 (초과 시 구 레이아웃의 일반 배송지 버튼이므로 None 반환)
+        구 레이아웃: 기본배송지 카드에 수정 버튼만 있고 삭제 버튼 없음 -> None 반환
+        신규 레이아웃: 기본배송지 카드 내부에 삭제 버튼 존재 -> 해당 버튼 rect 반환
         """
         try:
-            # 1순위: 기본배송지 카드 컨테이너 내부의 삭제 버튼 직접 탐색
-            card_del_xpaths = [
-                '//*[contains(@text, "기본배송지")]/ancestor::*[parent::android.widget.ListView]//android.widget.Button[@text="삭제"]',
-                '//*[contains(@text, "기본배송지")]/ancestor::*[contains(@class, "View")][position()<=4]//android.widget.Button[@text="삭제"]',
-            ]
-            for c_xpath in card_del_xpaths:
+            # 1. '기본배송지' 라벨 탐색
+            labels = self.driver.find_elements(By.XPATH, '//*[contains(@text, "기본배송지")]')
+            if not labels:
+                return None
+
+            # 2. '기본배송지' 라벨이 속한 카드 컨테이너(ListView의 직계자식) 특정
+            card_el = None
+            for lb in labels:
                 try:
-                    btns = self.driver.find_elements(By.XPATH, c_xpath)
-                    if btns:
-                        r = btns[0].rect
-                        if r and r.get('width', 0) > 0:
-                            return r
+                    ancestors = lb.find_elements(By.XPATH, 'ancestor::*[parent::android.widget.ListView][1]')
+                    if ancestors:
+                        card_el = ancestors[0]
+                        break
+                    ancestors = lb.find_elements(By.XPATH, 'ancestor::*[@is-collection-item="true"][1]')
+                    if ancestors:
+                        card_el = ancestors[0]
+                        break
                 except WebDriverException:
                     pass
 
-            # 2순위: 좌표 기반 탐색 (거리 상한선 350px 적용)
-            label_bottom = None
-            narrow_label_bottom = None
-            for lb in self.driver.find_elements(By.XPATH, '//*[contains(@text, "기본배송지")]'):
+            # 3. 기본배송지 카드 컨테이너 내부(.// 로 한정)에서만 '삭제' 버튼 탐색
+            if card_el is not None:
                 try:
-                    r = lb.rect
+                    btns = card_el.find_elements(By.XPATH, './/android.widget.Button[@text="삭제"]')
+                    if btns:
+                        r = btns[0].rect
+                        if r and r.get('width', 0) > 0:
+                            self._log(f"  [기본배송지 판정] 기본배송지 카드 내부 삭제 버튼 감지 (y={r['y']})")
+                            return r
+                    # 기본배송지 카드 내에 삭제 버튼이 없으면 None 확정 (일반 배송지 버튼을 오탐하지 않음)
+                    return None
+                except WebDriverException:
+                    pass
+
+            # 4. 카드 컨테이너를 못 찾았을 때 좌표 거리 fallback (라벨 아래 250px 이내만 인정)
+            for lb in labels:
+                try:
+                    lr = lb.rect
+                    if lr.get('height', 0) <= 0:
+                        continue
+                    label_bottom = lr['y'] + lr['height']
+                    for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
+                        br = btn.rect
+                        diff_y = br['y'] - label_bottom
+                        # 신규 레이아웃은 250px 이내, 구 레이아웃은 다음 카드 삭제 버튼이 700px 이상 떨어짐
+                        if 0 <= diff_y <= 250:
+                            return br
                 except WebDriverException:
                     continue
-                # 폭이 넓은 요소 = 주소 카드 헤더 (신규 레이아웃) 우선
-                if r['width'] > 300:
-                    label_bottom = r['y'] + r['height']
-                    break
-                if narrow_label_bottom is None:
-                    narrow_label_bottom = r['y'] + r['height']
 
-            if label_bottom is None:
-                label_bottom = narrow_label_bottom
-            if label_bottom is None:
-                return None
-
-            # 라벨 아래에서 350px 이내에 위치한 첫 번째 삭제 버튼 = 기본배송지 소속
-            best = None
-            for btn in self.driver.find_elements(By.XPATH, DELETE_BTN_XPATH):
-                try:
-                    r = btn.rect
-                except WebDriverException:
-                    continue
-                diff_y = r['y'] - label_bottom
-                if -20 <= diff_y <= 350:
-                    if best is None or r['y'] < best['y']:
-                        best = r
-            return best
+            return None
         except WebDriverException:
             return None
 
