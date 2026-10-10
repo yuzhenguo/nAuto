@@ -42,6 +42,8 @@
 
 20.  2초 대기 후 //android.webkit.WebView[@text="네이버+ 스토어"]/android.view.View/android.view.View[2]/android.view.View/android.view.View[2]/android.view.View[2]/android.widget.EditText[2] 에 마지막 4자리 넣습니다
 
+20-1. [배송지 관리방식] 전화번호 다 입력 후 //android.widget.TextView[@text="기본배송지로 선택"] 클릭하여 기본배송지 체크
+
 21. 2초 대기 후 //android.widget.Button[@text="등록"] 클릭 합니다 
 
 22. 클릭 다한후 엑셀에서 주소록.xlsx 6열 값을 읽은 해당행 Y로 수정 해줍니다  

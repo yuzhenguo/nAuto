@@ -258,6 +258,10 @@ PHONE_LAST_XPATH   = (
 REGISTER_BTN_XPATH = '//android.widget.Button[@text="등록"]'
 SAVE_BTN_XPATH     = '//android.widget.Button[@text="저장하기"]'
 
+# 기본배송지 체크
+DEFAULT_DELIVERY_TEXT_XPATH     = '//android.widget.TextView[@text="기본배송지로 선택"]'
+DEFAULT_DELIVERY_CHECKBOX_XPATH = '//android.widget.CheckBox[@resource-id="default_place" or @text="기본배송지로 선택"]'
+
 
 
 
@@ -2533,11 +2537,16 @@ class NaverWorker:
                 if not last_success:
                     self._log("  ❌ 전화번호 마지막 4자리 입력 최종 실패")
 
+        # [단계 20.5] 배송지 관리방식: 전화번호 다 입력 후 기본배송지 체크
+        reg_mode = getattr(self, "registration_mode", "delivery_mgmt")
+        if reg_mode in ("delivery_mgmt", "setting", "management"):
+            self._check_default_delivery_address()
+
         # [단계 21] 저장하기 버튼 클릭 (연락처입력.xml 하단)
         time.sleep(1.5)
         self._set_status("저장하기 클릭")
-        if not ah.element_exists(self.driver, SAVE_BTN_XPATH, timeout=3):
-            self._log("  ⬇ 저장하기 버튼 미노출 → 스크롤 다운")
+        if not ah.element_exists(self.driver, SAVE_BTN_XPATH, timeout=2) and not ah.element_exists(self.driver, REGISTER_BTN_XPATH, timeout=2):
+            self._log("  ⬇ 저장하기/등록 버튼 미노출 → 스크롤 다운")
             self._scroll_down()
             time.sleep(0.8)
 
@@ -3176,6 +3185,107 @@ class NaverWorker:
             return True
         except Exception as e:
             self._log(f"  ❌ 연락처 입력 실패: {e}")
+            return False
+
+    def _check_default_delivery_address(self) -> bool:
+        """
+        [배송지 관리 방식] 배송지 등록 시 '기본배송지로 선택' 체크
+        //android.widget.TextView[@text="기본배송지로 선택"] 클릭
+        """
+        self._set_status("기본배송지 체크")
+        self._log("  🔘 [기본배송지 설정] '기본배송지로 선택' 확인 중...")
+
+        try:
+            # 1. 키보드가 올라와 있다면 닫아서 요소 가림 방지
+            try:
+                self.driver.hide_keyboard()
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+            # 2. 이미 체크되어 있는지 확인 (체크박스 checked 속성 검사)
+            cb_list = self.driver.find_elements(By.XPATH, DEFAULT_DELIVERY_CHECKBOX_XPATH)
+            if cb_list:
+                try:
+                    checked_val = cb_list[0].get_attribute("checked")
+                    if str(checked_val).lower() == "true":
+                        self._log("  ✅ [기본배송지] 이미 '기본배송지로 선택' 체크되어 있음 (중복 클릭 방지)")
+                        return True
+                except Exception:
+                    pass
+
+            # 3. 사용자 지정 TextView XPath 탐색
+            target_xpath = DEFAULT_DELIVERY_TEXT_XPATH
+            tv_elements = self.driver.find_elements(By.XPATH, target_xpath)
+
+            # 화면에 미노출 시 살짝 스크롤 후 재탐색
+            if not tv_elements and not cb_list:
+                self._log("  ⬇ '기본배송지로 선택' 미노출 -> 스크롤 다운 후 재탐색")
+                self._scroll_down()
+                time.sleep(0.5)
+                tv_elements = self.driver.find_elements(By.XPATH, target_xpath)
+                cb_list = self.driver.find_elements(By.XPATH, DEFAULT_DELIVERY_CHECKBOX_XPATH)
+
+            clicked = False
+            if tv_elements:
+                tv_el = tv_elements[0]
+                self._log(f"  📌 '기본배송지로 선택' 텍스트뷰 발견 ({target_xpath}) -> 좌표 클릭")
+                # TextView가 clickable='false'일 수 있으므로 엘리먼트 중앙 좌표 탭 우선 시도
+                if self._click_element_center_coordinates(tv_el):
+                    clicked = True
+                else:
+                    try:
+                        tv_el.click()
+                        clicked = True
+                    except Exception as e_click:
+                        self._log(f"  ⚠ 텍스트뷰 click() 실패: {e_click}")
+
+            # 4. TextView 클릭 실패 시 Fallback (체크박스 또는 텍스트 포함 요소)
+            if not clicked:
+                if cb_list:
+                    self._log("  📌 fallback: 체크박스 요소 좌표 클릭")
+                    if self._click_element_center_coordinates(cb_list[0]):
+                        clicked = True
+                    else:
+                        try:
+                            cb_list[0].click()
+                            clicked = True
+                        except Exception:
+                            pass
+                else:
+                    alt_elements = self.driver.find_elements(By.XPATH, '//*[contains(@text, "기본배송지로 선택")]')
+                    for el in alt_elements:
+                        if self._click_element_center_coordinates(el):
+                            clicked = True
+                            break
+
+            time.sleep(0.5)
+
+            # 5. 클릭 후 체크 상태 검증
+            cb_list_after = self.driver.find_elements(By.XPATH, DEFAULT_DELIVERY_CHECKBOX_XPATH)
+            if cb_list_after:
+                try:
+                    checked_after = cb_list_after[0].get_attribute("checked")
+                    if str(checked_after).lower() == "true":
+                        self._log("  ✅ [기본배송지] 체크 완료 (checked=true 확인)")
+                        return True
+                    else:
+                        self._log("  ⚠ [기본배송지] 클릭 후 checked=false -> 체크박스 좌표 직접 탭 재시도")
+                        self._click_element_center_coordinates(cb_list_after[0])
+                        time.sleep(0.3)
+                        return True
+                except Exception:
+                    pass
+
+            if clicked:
+                self._log("  ✅ [기본배송지] '기본배송지로 선택' 클릭 완료")
+                return True
+            else:
+                self._log("  ⚠ [기본배송지] '기본배송지로 선택' 요소를 찾지 못했습니다.")
+                return False
+
+        except Exception as e:
+            self._log(f"  ⚠ [기본배송지 체크] 처리 중 예외 발생: {e}")
             return False
 
     def _input_address_search(self, address_text: str) -> bool:
