@@ -842,43 +842,44 @@ class NaverReviewWorker(NaverOrderWorker):
             pass
         return None
 
+    # 키 이벤트로 키보드를 숨기면 창이 닫히는 폰(device_id) 목록 (자동 학습)
+    _NO_KEY_HIDE_DEVICES = set()
+
+    def _left_form_after_key(self, how: str) -> bool:
+        """키 이벤트 후 리뷰 작성 화면이 사라졌으면 해당 폰을 학습하고 True"""
+        try:
+            ok = self._wait_review_form(timeout=2)
+        except Exception:
+            ok = True
+        if ok:
+            return False
+        NaverReviewWorker._NO_KEY_HIDE_DEVICES.add(self.device_id)
+        self._log(f"  ⚠ {how} 후 리뷰 작성 화면 이탈 감지 → 이 폰은 키보드 숨김 키 이벤트 금지로 학습")
+        return True
+
     def _hide_keyboard(self) -> bool:
         """
-        댓글 입력 후 키보드 숨김 (ESC 키 우선).
-        BACK 키는 키보드가 실제로 떠 있을 때만 사용 (키보드 없이 BACK 하면 리뷰 화면이 닫힘).
+        댓글 입력 후 키보드 숨김.
+        일부 폰은 ESC/hide_keyboard/BACK 키 이벤트 시 리뷰 작성 창이 닫히므로
+        키 이벤트는 사용하지 않고, 화면 맨 위 중앙(헤더 영역)을 탭하여 입력 포커스를 해제한다.
         """
         if self._keyboard_shown() is False:
             return True
-
-        # 1) ESC 키
-        _run_cmd(["adb", "-s", self.device_id, "shell", "input", "keyevent", "111"],  # ESCAPE
-                 capture_output=True, timeout=5)
-        time.sleep(0.8)
-        shown = self._keyboard_shown()
-        if shown is False:
-            self._log("  ⌨ 키보드 숨김 (ESC)")
-            return True
-
-        # 2) Appium hide_keyboard
         try:
-            self.driver.hide_keyboard()
+            size = self.driver.get_window_size()
+            x = int(size['width'] * 0.5)
+            y = int(size['height'] * 0.07)
+            self._log(f"  ⌨ 키보드 숨김: 화면 맨 위 중앙 탭 ({x},{y})")
+            self._tap(x, y)
             time.sleep(0.8)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"  ⚠ 상단 탭 실패: {str(e).splitlines()[0][:100]}")
+            return False
         shown = self._keyboard_shown()
         if shown is False:
-            self._log("  ⌨ 키보드 숨김 (hide_keyboard)")
+            self._log("  ⌨ 키보드 숨김 완료 (상단 탭)")
             return True
-
-        # 3) BACK 키 — 키보드가 떠 있는 것이 확인된 경우에만
-        if shown is True:
-            _run_cmd(["adb", "-s", self.device_id, "shell", "input", "keyevent", "4"],
-                     capture_output=True, timeout=5)
-            time.sleep(0.8)
-            if self._keyboard_shown() is False:
-                self._log("  ⌨ 키보드 숨김 (BACK)")
-                return True
-        self._log("  ⚠ 키보드 숨김 확인 실패 → 그대로 진행")
+        self._log("  ⚠ 키보드 숨김 확인 불가/미해제 → 그대로 진행")
         return False
 
     def _page_state(self) -> str:
