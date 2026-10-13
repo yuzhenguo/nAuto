@@ -871,7 +871,7 @@ class NaverOrderWorker:
         if self.manual_mode:
             self._log("🖐 수동시작 워커 시작 (배송지 선택까지 → Y 기록 후 종료)")
         elif self.test_mode:
-            self._log("🖐 반자동 모드 워커 시작 (주소지 변경 완료까지 → 완료 버튼 대기)")
+            self._log("🖐 반자동 모드 워커 시작 (결제페이지 진입 후 완료 버튼 대기)")
         else:
             self._log("🚀 자동 주문 워커 시작")
 
@@ -8273,8 +8273,8 @@ class NaverOrderWorker:
                     self.current_row = None
                     if self.test_mode:
                         # [반자동 모드] 상태를 Y로 바꾸지 않고, 완료 대기 알림 후 워커 종료
-                        self._log(f"🖐 [반자동 모드] 주소지 변경 완료: {row.search_keyword} → 상태 'Y'로 변경하지 않음 (완료 버튼 대기)")
-                        self._set_status("주소지 변경 완료 (완료 대기)")
+                        self._log(f"🖐 [반자동 모드] 결제페이지 진입 완료: {row.search_keyword} → 주소변경 생략, 상태 'Y'로 변경하지 않음 (완료 버튼 대기)")
+                        self._set_status("결제페이지 진입 완료 (완료 대기)")
                         if getattr(self, "_semi_auto_cb", None):
                             try:
                                 self._semi_auto_cb(self.device_id, row)
@@ -8509,6 +8509,11 @@ class NaverOrderWorker:
             self._log("❌ 바로구매 클릭 실패")
             return False
 
+        # [반자동 모드] 결제페이지 진입 완료 시 주소변경도 하지 않고 즉시 멈춤 (완료 버튼 대기)
+        if self.test_mode:
+            self._log("🖐 [반자동 모드] 결제페이지 진입 완료 → 주소변경 생략, 멈춤 (완료 버튼 대기)")
+            return True
+
         # [단계 14 & 16] 배송지 확인 및 선택
         if self._check_current_delivery_address(row.recipient_name, row.phone):
             self._log(f"✅ 목표 배송지 '{row.recipient_name}'가 이미 선택되어 있습니다 (변경 불필요)")
@@ -8527,11 +8532,6 @@ class NaverOrderWorker:
         # 수동시작: 배송지 선택(결제창 복귀)까지 완료하면 결제 단계 생략 → Y 기록
         if self.manual_mode:
             self._log("🖐 [수동시작] 배송지 선택 완료 → 결제 단계 생략, Y 기록 후 종료")
-            return True
-
-        # 반자동 모드: 주소지 변경 완료까지만 하고 결제 단계 생략 (상태 Y로 변경하지 않고 완료 대기)
-        if self.test_mode:
-            self._log("🖐 [반자동 모드] 주소지 변경 완료 → 결제 단계 생략 (완료 버튼 대기)")
             return True
 
         # [단계 16.5] 배송메모 처리 (배송메모.png 인식 시 '선택안함' 1회 클릭)

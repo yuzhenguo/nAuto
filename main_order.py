@@ -270,7 +270,7 @@ class DevicePanel(tk.Frame):
         try:
             if row is not None:
                 self.complete_btn.config(state=tk.NORMAL, bg="#0ea5e9", fg="#ffffff")
-                self.set_status("주소지 변경 완료 (완료 대기)")
+                self.set_status("결제페이지 진입 완료 (완료 대기)")
                 self.status_dot.config(fg="#38bdf8")
             else:
                 self.complete_btn.config(state=tk.DISABLED, bg="#334155", fg="#94a3b8")
@@ -280,7 +280,7 @@ class DevicePanel(tk.Frame):
     def set_idle(self):
         if self.pending_complete_row is not None:
             self.status_dot.config(fg="#38bdf8")
-            self.status_label.config(text="주소지 변경 완료 (완료 대기)", fg="#38bdf8")
+            self.status_label.config(text="결제페이지 진입 완료 (완료 대기)", fg="#38bdf8")
             self.set_payment_method("-")
             self.set_running(False)
             try:
@@ -1308,9 +1308,9 @@ class MainApp(tk.Tk):
         panel = self.device_panels.get(device_id)
         if panel:
             panel.set_pending_complete_row(row)
-            panel.append_log(f"🖐 [반자동] 행 {row.row_index} '{row.search_keyword}' 주소지 변경 완료 → '완료' 버튼을 누르면 Y로 기록됩니다.")
-            panel.set_status("주소지 변경 완료 (완료 대기)")
-        self._log_status(f"🖐 {device_id}: 주소지 변경 완료 (완료 버튼 대기)")
+            panel.append_log(f"🖐 [반자동] 행 {row.row_index} '{row.search_keyword}' 결제페이지 진입 완료 → '완료' 버튼을 누르면 Y로 기록됩니다.")
+            panel.set_status("결제페이지 진입 완료 (완료 대기)")
+        self._log_status(f"🖐 {device_id}: 결제페이지 진입 완료 (완료 대기)")
         self._refresh_summary()
 
     def _start_manual(self):
