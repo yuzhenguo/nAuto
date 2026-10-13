@@ -62,25 +62,39 @@ def is_blank_status(val) -> bool:
     return _cell_str(val) == ""
 
 
+def _mnorm(text) -> str:
+    """매칭 전용 정규화: 공백/특수문자/이모지 제거, 소문자 ('🔸', '+', '[국내출고]' 등 영향 제거)"""
+    return re.sub(r"[^0-9a-z가-힣]", "", str(text or "").lower())
+
+
 def keyword_matches(keyword: str, texts: List[str]) -> bool:
     """
-    댓글목록 검색어가 리뷰 카드의 상품명과 매칭되는지 판정.
-    1) 공백 제거 후 검색어가 상품명에 포함
+    댓글목록 검색어가 리뷰 카드의 상품명과 매칭되는지 판정 (특수문자/공백 무시).
+    1) 검색어가 상품명에 포함
     2) 상품명이 검색어에 포함 (상품명 6자 이상일 때만)
     3) 검색어의 모든 단어가 카드 텍스트에 포함 (단어 순서가 다른 경우)
+    4) 유사도 0.9 이상 (오타/한두 글자 차이)
     """
-    k = _norm(keyword)
+    k = _mnorm(keyword)
     if not k:
         return False
     for t in texts:
-        n = _norm(t)
+        n = _mnorm(t)
         if not n:
             continue
         if k in n or (len(n) >= 6 and n in k):
             return True
-    tokens = [_norm(x) for x in str(keyword).split() if _norm(x)]
-    joined = _norm(" ".join(texts))
-    return len(tokens) >= 2 and all(tok in joined for tok in tokens)
+    tokens = [_mnorm(x) for x in str(keyword).split() if _mnorm(x)]
+    joined = _mnorm(" ".join(texts))
+    if len(tokens) >= 2 and all(tok in joined for tok in tokens):
+        return True
+    if len(k) >= 8:
+        import difflib
+        for t in texts:
+            n = _mnorm(t)
+            if len(n) >= 8 and difflib.SequenceMatcher(None, k, n).ratio() >= 0.9:
+                return True
+    return False
 
 
 class CommentRow:

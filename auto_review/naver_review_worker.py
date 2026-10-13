@@ -97,10 +97,12 @@ HIDE_POPUP_XPATHS = [
 
 MAX_REVIEWS_PER_ACCOUNT = 100   # 아이디당 최대 반복 (단계 3~7)
 MAX_CONSECUTIVE_FAILS = 3       # 연속 실패 시 해당 아이디 중단
-MAX_LIST_SCROLLS = 8            # 리뷰 목록 아래 방향 탐색 스크롤 횟수
+MAX_LIST_SCROLLS = 40           # 리뷰 목록 아래 방향 탐색 스크롤 횟수 (스크롤마다 엑셀 전체 미작업 행 재검색)
 MAX_RATING_ROUNDS = 16          # 별점/만족도 탐색 반복(스크롤) 횟수
 
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+# '[스마트스토어] 제이엘커스텀', '[브랜드스토어] ...' 등 스토어명 (상품명 앞 '[국내출고]' 와 구분)
+_STORE_NAME_RE = re.compile(r"^\[[^\]]*스토어[^\]]*\]")
 
 
 class StopRequested(Exception):
@@ -150,8 +152,8 @@ def _subtree_texts(node) -> List[str]:
             val = (el.get(key) or "").strip()
             if not val or val in out:
                 continue
-            if val.startswith("[") or val.startswith("작성기한"):
-                continue  # 스토어명 / 작성기한
+            if _STORE_NAME_RE.match(val) or val.startswith("작성기한"):
+                continue  # 스토어명 / 작성기한 ('[국내출고]상품명' 같은 상품명은 유지)
             out.append(val)
     return out
 
@@ -539,6 +541,11 @@ class NaverReviewWorker(NaverOrderWorker):
             return None
         idx, row = self.review_manager.claim_comment([b.texts for b in cands])
         if row is None:
+            key = tuple(b.product_key for b in cands)
+            if key != getattr(self, "_last_nomatch_key", None):
+                self._last_nomatch_key = key
+                self._log("  🔎 화면의 리뷰 버튼 상품과 매칭되는 미작업 댓글 없음 → 스크롤 계속: "
+                          + " / ".join(b.product[:25] for b in cands))
             return None
         return _Target(cands[idx], row)
 
@@ -558,7 +565,7 @@ class NaverReviewWorker(NaverOrderWorker):
 
         # 맨 위로
         sig = self._signature(buttons)
-        for _ in range(5):
+        for _ in range(12):
             self._check_stop()
             self._swipe("up", 0.5)
             buttons = self._scan()
