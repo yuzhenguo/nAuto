@@ -715,6 +715,15 @@ class MainApp(tk.Tk):
         )
         self.rb_cart.pack(side=tk.LEFT, padx=3)
 
+        self.rb_pay = tk.Radiobutton(
+            mode_frame, text="💳 Pay 방식", value="pay",
+            variable=self.reg_mode_var, bg=CLR_SURFACE, fg=CLR_TEXT,
+            selectcolor="#000000", activebackground=CLR_SURFACE, activeforeground=CLR_PRIMARY,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            command=self._save_app_settings
+        )
+        self.rb_pay.pack(side=tk.LEFT, padx=3)
+
         right_ctrl = tk.Frame(ctrl, bg=CLR_SURFACE)
         right_ctrl.pack(side=tk.RIGHT)
 
@@ -1003,12 +1012,15 @@ class MainApp(tk.Tk):
             self.rb_cart.config(state=tk.DISABLED)
         if hasattr(self, "rb_delivery"):
             self.rb_delivery.config(state=tk.DISABLED)
+        if hasattr(self, "rb_pay"):
+            self.rb_pay.config(state=tk.DISABLED)
 
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self._draw_device_list()
         self._rebuild_device_panels()
-        mode_text = "배송지 관리 방식" if (hasattr(self, "reg_mode_var") and self.reg_mode_var.get() == "delivery_mgmt") else "장바구니 방식"
+        _mode_names = {"delivery_mgmt": "배송지 관리 방식", "cart": "장바구니 방식", "pay": "Pay 방식"}
+        mode_text = _mode_names.get(self.reg_mode_var.get() if hasattr(self, "reg_mode_var") else "delivery_mgmt", "배송지 관리 방식")
         self._log_status(f"🚀 자동화 시작 (방식: {mode_text})")
 
         # 기존 Appium 잔류 서버 정리는 백그라운드에서 수행 (시작 대기 제거)
@@ -1060,7 +1072,7 @@ class MainApp(tk.Tk):
 
             if did in self.device_panels:
                 pending = device_counts.get(did.strip().upper(), {}).get("pending", 0)
-                m_label = "배송지 관리" if cur_mode == "delivery_mgmt" else "장바구니"
+                m_label = {"delivery_mgmt": "배송지 관리", "cart": "장바구니", "pay": "Pay"}.get(cur_mode, cur_mode)
                 self.device_panels[did].append_log(f"🚀 워커 시작됨 (방식: {m_label}, 잔여: {pending}건, 포트: {port}, 우선순위: {i+1}/{len(sorted_devices)})") 
 
         threading.Thread(target=self._monitor_completion, daemon=True).start()
@@ -1126,6 +1138,8 @@ class MainApp(tk.Tk):
             self.rb_cart.config(state=tk.NORMAL)
         if hasattr(self, "rb_delivery"):
             self.rb_delivery.config(state=tk.NORMAL)
+        if hasattr(self, "rb_pay"):
+            self.rb_pay.config(state=tk.NORMAL)
         self.workers.clear()
         self.worker_threads.clear()
         self._rearrange_device_panels()

@@ -106,6 +106,8 @@ except ImportError:
 
 from address_manager import AddressManager, AddressRow
 
+from naver_pay_flow import PayAddressMixin
+
 
 
 # ─── 타임아웃 설정 ────────────────────────────────────────────────────────────
@@ -298,7 +300,7 @@ DEFAULT_DELIVERY_CHECKBOX_XPATH = DEFAULT_DELIVERY_CHECKBOX_XPATHS[0]
 
 
 
-class NaverWorker:
+class NaverWorker(PayAddressMixin):
 
     """
 
@@ -1195,6 +1197,8 @@ class NaverWorker:
     def _navigate_to_delivery_mgmt(self, row: Optional[AddressRow] = None) -> bool:
         """선택된 등록 방식(장바구니 방식 vs 배송지 관리 방식)에 따라 배송지 목록 화면 진입"""
         mode = getattr(self, "registration_mode", "delivery_mgmt")
+        if self._is_pay_mode():
+            return self._navigate_to_pay_delivery_mgmt(row=row)
         if mode in ("delivery_mgmt", "setting", "management"):
             return self._navigate_to_delivery_mgmt_via_setting(row=row)
         else:
@@ -2248,6 +2252,10 @@ class NaverWorker:
         배송지 1건 등록 전체 흐름 (단계 9~22)
 
         """
+
+        # [Pay 방식] 네이버페이 → 설정 → 배송지 관리 경로 (naver_pay_flow.py)
+        if self._is_pay_mode():
+            return self._register_one_address_pay(row)
 
         # 계정 전환 및 화면 진입
         if getattr(self, 'current_naver_id', None) != row.naver_id or not getattr(self, 'is_initialized', False):
@@ -3966,6 +3974,9 @@ class NaverWorker:
     def _ensure_delivery_mgmt_screen(self) -> bool:
 
         """배송지 관리 화면인지 확인, 아니면 재진입"""
+
+        if self._is_pay_mode():
+            return self._ensure_pay_delivery_mgmt_screen()
 
         if ah.element_exists(self.driver, NEW_ADDRESS_BTN_XPATH, timeout=5):
 
