@@ -18,8 +18,10 @@ NaverWorker 가 이 Mixin 을 상속하여 사용합니다.
 """
 
 import os
+import re
 import time
 import subprocess
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from selenium.webdriver.common.by import By
@@ -106,6 +108,21 @@ PAY_DETAIL_ADDR_XPATHS    = [
     '//android.widget.EditText[@resource-id="detailed-address"]',
     '//android.widget.EditText[@hint="상세주소 입력"]',
 ]
+
+# [8-2-1] 상세주소입력창.xml ('상세주소를 알려주세요' 팝업/화면)
+PAY_POPUP_DETAIL_INPUT_XPATHS = [
+    '//android.widget.EditText[@resource-id="address-detail"]',
+    '//android.widget.EditText[contains(@resource-id, "address-detail")]',
+    '//*[contains(@text, "상세주소를 알려주세요")]/ancestor::*//android.widget.EditText',
+    '//android.widget.EditText[@hint="주소" and @resource-id="address-detail"]',
+]
+PAY_POPUP_DETAIL_CONFIRM_XPATHS = [
+    '//*[contains(@text, "상세주소")]/ancestor::*//android.widget.Button[@text="확인"]',
+    '//android.widget.Button[@text="확인"]',
+    '//*[@text="확인" and @clickable="true"]',
+    '//android.view.View/android.widget.Button[@text="확인"]',
+]
+
 PAY_PHONE_FIRST_XPATH     = '//*[@resource-id="first-number{n}"]'
 PAY_PHONE_MID_XPATH       = '//android.widget.EditText[@resource-id="second-number{n}"]'
 PAY_PHONE_LAST_XPATH      = '//android.widget.EditText[@resource-id="last-number{n}"]'
@@ -318,30 +335,150 @@ class PayAddressMixin:
 
     # ─── [5~6] 기본배송지 제외 삭제 ─────────────────────────────────────────
 
-    def _pay_default_label_ranges(self):
-        """'기본배송지' 라벨들의 (y_top, y_bottom) 목록"""
-        ranges = []
+    def _pay_parse_delete_targets_from_xml(self) -> Optional[list]:
+        """
+        driver.page_source XML 트리를 정밀 분석하여
+        기본배송지 카드에 속하지 않는 모든 '삭제' 버튼의 (cx, cy) 좌표 목록 반환.
+        반환값:
+            - [(cx, cy), ...]: 비기본 배송지의 삭제 버튼 좌표 목록 (y 오름차순)
+            - []: 화면에 배송지 카드가 있지만 모두 기본배송지임 (삭제 완료 상태)
+            - None: XML 파싱 불가로 판별 실패 (Selenium 폴백 필요)
+        """
         try:
-            for lb in self.driver.find_elements(By.XPATH, PAY_DEFAULT_LABEL_XPATH):
-                try:
-                    r = lb.rect
-                    if r.get("height", 0) > 0:
-                        ranges.append((r["y"], r["y"] + r["height"]))
-                except Exception:
+            source = self.driver.page_source
+            if not source:
+                return None
+            root = ET.fromstring(source)
+        except Exception as e:
+            self._log(f"  ⚠ [Pay] page_source XML 파싱 예외: {e}")
+            return None
+
+        def parse_bounds(b_str):
+            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", b_str or "")
+            if m:
+                return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+            return None
+
+        # 1. '기본배송지' 텍스트를 가진 모든 요소 및 주변 y 범위 수집
+        default_y_ranges = []
+        for node in root.iter():
+            txt = (node.attrib.get("text") or "") + " " + (node.attrib.get("content-desc") or "")
+            if "기본배송지" in txt or "기본 배송지" in txt:
+                b = parse_bounds(node.attrib.get("bounds"))
+                if b:
+                    # 기본배송지 라벨 기준 위로 250px (삭제버튼은 라벨 위 45~100px), 아래로 350px (주소/연락처)
+                    default_y_ranges.append((b[1] - 250, b[3] + 350))
+
+        # 2. is-collection-item="true" 인 카드 단위 정밀 분석
+        non_default_btns = []
+        cards_found = False
+
+        for node in root.iter():
+            if node.attrib.get("is-collection-item") == "true":
+                del_btns = [
+                    e for e in node.iter()
+                    if (e.attrib.get("text") == "삭제" or e.attrib.get("content-desc") == "삭제")
+                ]
+                if not del_btns:
                     continue
-        except Exception:
-            pass
-        return ranges
+                cards_found = True
+
+                texts = [
+                    (e.attrib.get("text") or "") + " " + (e.attrib.get("content-desc") or "")
+                    for e in node.iter()
+                ]
+                card_text = " ".join(texts)
+                card_bounds = parse_bounds(node.attrib.get("bounds"))
+                c_y1, c_y2 = (card_bounds[1], card_bounds[3]) if card_bounds else (-1, -1)
+
+                # 카드 내에 '기본배송지' 텍스트가 있으면 해당 카드 전체 삭제 버튼 무조건 제외!
+                if "기본배송지" in card_text or "기본 배송지" in card_text:
+                    self._log(f"  🛡 [Pay] 기본배송지 카드 감지 (bounds={node.attrib.get('bounds')}) → 삭제 대상에서 제외")
+                    if c_y1 != -1:
+                        default_y_ranges.append((c_y1 - 10, c_y2 + 10))
+                    continue
+
+                for btn in del_btns:
+                    b = parse_bounds(btn.attrib.get("bounds"))
+                    if not b:
+                        continue
+                    bx1, by1, bx2, by2 = b
+                    cx, cy = (bx1 + bx2) // 2, (by1 + by2) // 2
+                    # 화면 가시 영역 내인지 체크 (헤더 240, 하단 바 1850 제외)
+                    if 250 <= cy <= 1850:
+                        # 추가 2차 방어: 기본배송지 y 범위에 겹치지 않는지 확인
+                        if not any(y1 <= cy <= y2 for y1, y2 in default_y_ranges):
+                            non_default_btns.append((cy, cx))
+                        else:
+                            self._log(f"  🛡 [Pay] y={cy} 삭제 버튼이 기본배송지 범위와 겹침 → 제외")
+
+        if cards_found:
+            non_default_btns.sort()
+            return [(cx, cy) for cy, cx in non_default_btns]
+
+        # 3. is-collection-item 속성이 없는 레이아웃용 폴백
+        all_delete_btns = []
+        for node in root.iter():
+            if node.attrib.get("text") == "삭제" or node.attrib.get("content-desc") == "삭제":
+                b = parse_bounds(node.attrib.get("bounds"))
+                if not b:
+                    continue
+                bx1, by1, bx2, by2 = b
+                cy = (by1 + by2) // 2
+                cx = (bx1 + bx2) // 2
+                if not (250 <= cy <= 1850):
+                    continue
+                if any(y1 <= cy <= y2 for y1, y2 in default_y_ranges):
+                    self._log(f"  🛡 [Pay] y={cy} 삭제 버튼은 기본배송지 범위 소속 → 제외")
+                    continue
+                all_delete_btns.append((cy, cx))
+
+        all_delete_btns.sort()
+        return [(cx, cy) for cy, cx in all_delete_btns]
 
     def _pay_find_non_default_delete_btn(self):
-        """기본배송지 카드에 속하지 않는 첫 번째 '삭제' 버튼의 중앙 좌표 반환"""
+        """기본배송지 카드에 속하지 않는 첫 번째 '삭제' 버튼의 중앙 좌표 (cx, cy) 반환"""
+        # [방식 1] XML 기반 정밀 분석 (가장 정확하고 기본배송지 100% 보호)
+        targets = self._pay_parse_delete_targets_from_xml()
+        if targets is not None:
+            if not targets:
+                self._log("  ✅ [Pay] 기본배송지 외에 더 이상 삭제할 비기본 배송지가 없습니다.")
+                return None
+            cx, cy = targets[0]
+            self._log(f"  🎯 [Pay] 비기본 배송지 삭제 대상 감지: ({cx}, {cy}), 잔여 {len(targets)}건")
+            return cx, cy
+
+        # [방식 2] Selenium find_elements 폴백 (XML 실패 시)
+        self._log("  ℹ [Pay] XML 분석 불가 → Selenium 기반 삭제 대상 탐색")
         try:
             btns = self.driver.find_elements(By.XPATH, PAY_DELETE_BTN_XPATH)
         except Exception:
             return None
         if not btns:
             return None
-        default_ranges = self._pay_default_label_ranges()
+
+        # 기본배송지 라벨 및 카드 범위 수집
+        default_ranges = []
+        try:
+            for lb in self.driver.find_elements(By.XPATH, PAY_DEFAULT_LABEL_XPATH):
+                try:
+                    r = lb.rect
+                    if r.get("height", 0) > 0:
+                        # 라벨 기준 상하 여유 확장 (-250, +350)
+                        default_ranges.append((r["y"] - 250, r["y"] + r["height"] + 350))
+                    try:
+                        cards = lb.find_elements(By.XPATH, "./ancestor::*[@is-collection-item='true']")
+                        for c in cards:
+                            cr = c.rect
+                            if cr.get("height", 0) > 0:
+                                default_ranges.append((cr["y"] - 10, cr["y"] + cr["height"] + 10))
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         cands = []
         for b in btns:
             try:
@@ -350,16 +487,16 @@ class PayAddressMixin:
                     continue
                 cy = r["y"] + r["height"] // 2
                 cx = r["x"] + r["width"] // 2
-                # 222.png 레이아웃: '기본배송지' 라벨과 삭제 버튼이 같은 줄(y 겹침)
-                is_default = any(
-                    (top - 40) <= cy <= (bottom + 40) for top, bottom in default_ranges
-                )
+                if not (250 <= cy <= 1850):
+                    continue
+                is_default = any(top <= cy <= bottom for top, bottom in default_ranges)
                 if is_default:
                     self._log(f"  ⛔ [Pay] y={cy} 삭제 버튼은 기본배송지 소속 → 제외")
                     continue
                 cands.append((cy, cx))
             except Exception:
                 continue
+
         if not cands:
             return None
         cands.sort()
@@ -518,39 +655,61 @@ class PayAddressMixin:
         return ok1 and ok2
 
     def _pay_check_default(self) -> bool:
-        """'기본 배송지로 설정' 체크 (이미 체크되어 있으면 유지)"""
+        """'기본 배송지로 설정' 체크 (단 1회만 클릭하여 토글 해제 방지)"""
         self._pay_hide_keyboard()
-        for attempt in range(2):
-            for xp in PAY_DEFAULT_CHECK_XPATHS:
-                el = ah.wait_for_element(self.driver, xp, timeout=2)
-                if el is None:
-                    continue
-                if self._is_checkbox_checked(el):
-                    self._log("  ✅ [Pay] '기본 배송지로 설정' 이미 체크됨")
-                    return True
-                try:
-                    el.click()
-                except Exception:
-                    if ah.element_exists(self.driver, PAY_DEFAULT_TEXT_XPATH, timeout=1):
-                        ah.wait_and_click(self.driver, PAY_DEFAULT_TEXT_XPATH, timeout=2, log_callback=self._log)
-                time.sleep(0.8)
-                try:
-                    el = self.driver.find_element(By.XPATH, xp)
-                    if not self._is_checkbox_checked(el) and ah.element_exists(self.driver, PAY_DEFAULT_TEXT_XPATH, timeout=1):
-                        self._log("  ⌨ [Pay] 체크박스 미체크 → 라벨 텍스트 클릭")
-                        ah.wait_and_click(self.driver, PAY_DEFAULT_TEXT_XPATH, timeout=2, log_callback=self._log)
-                        time.sleep(0.8)
-                        el = self.driver.find_element(By.XPATH, xp)
+        time.sleep(0.5)
+
+        # 1. 이미 체크되어 있는지 먼저 확인
+        for xp in PAY_DEFAULT_CHECK_XPATHS:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
                     if self._is_checkbox_checked(el):
-                        self._log("  ✅ [Pay] '기본 배송지로 설정' 체크 완료")
+                        self._log("  ✅ [Pay] '기본 배송지로 설정' 이미 체크됨 (중복 클릭 방지)")
                         return True
-                except Exception:
-                    pass
-                self._log("  ℹ [Pay] 체크 상태 확인 불가 → 클릭 완료로 간주")
-                return True
+            except Exception:
+                pass
+
+        # 2. 화면 노출 여부 확인 및 미노출 시 스크롤 다운 (1회)
+        check_candidates = [
+            PAY_DEFAULT_TEXT_XPATH,  # '//android.widget.TextView[@text="기본 배송지로 설정"]'
+            '//android.widget.CheckBox[@resource-id="default-address"]',
+            '//android.widget.CheckBox[@text="기본 배송지로 설정"]',
+            '//*[@text="기본 배송지로 설정"]',
+        ]
+        has_visible = False
+        for xp in check_candidates:
+            if ah.element_exists(self.driver, xp, timeout=1):
+                has_visible = True
+                break
+
+        if not has_visible:
+            self._log("  ⬇ [Pay] '기본 배송지로 설정' 미노출 → 스크롤 다운")
             self._scroll_down()
             time.sleep(0.8)
-        # 기존 로직 폴백
+
+        # 3. 단 1회만 클릭 (텍스트뷰 또는 체크박스 중 1개 클릭 성공 시 즉시 종료)
+        self._set_status("[Pay] 기본배송지 체크")
+        for xp in check_candidates:
+            try:
+                el = ah.wait_for_element(self.driver, xp, timeout=1.5)
+                if el and el.is_displayed():
+                    clicked = False
+                    try:
+                        el.click()
+                        clicked = True
+                    except Exception:
+                        clicked = self._click_element_center_coordinates(el)
+
+                    if clicked:
+                        self._log(f"  ✅ [Pay] '기본 배송지로 설정' 1회 클릭 완료 (중복 클릭 방지, xpath: {xp})")
+                        time.sleep(0.8)
+                        return True
+            except Exception:
+                continue
+
+        # 4. 폴백: 기존 공통 기본배송지 체크 로직 호출
+        self._log("  ℹ [Pay] 전용 체크 요소 미발견 → 공통 기본배송지 체크 로직 시도")
         return self._check_default_delivery_address()
 
     def _pay_open_address_search(self) -> bool:
@@ -561,18 +720,87 @@ class PayAddressMixin:
 
     def _pay_handle_detail_address(self, row) -> bool:
         """주소 선택 이후 상세주소 처리
-        - 등록/수정 폼으로 바로 복귀한 경우: detailed-address 필드에 입력
-        - 주소검색 팝업 내 상세주소 단계가 있는 경우: 포커스 입력 후 선택완료 클릭
+        1. 상세주소입력창.xml ('상세주소를 알려주세요' 팝업/화면):
+           - //android.widget.EditText[@resource-id="address-detail"] 에 상세주소 입력
+           - //android.widget.Button[@text="확인"] 버튼 클릭하여 배송지 등록/수정 화면으로 복귀
+        2. 구형 스토어 팝업:
+           - 상세주소 입력 후 '선택완료' 버튼 클릭
+        3. 배송지 등록/수정 화면 (수정.xml):
+           - //android.widget.EditText[@resource-id="detailed-address"] 값 확인 및 미입력 시 보충 입력
         """
         detail = (row.detail_address or "").strip()
         time.sleep(1.5)
 
-        popup_detail = (
-            ah.element_exists(self.driver, '//*[@text="선택완료" or @content-desc="선택완료"]', timeout=2)
+        # ── 1. 상세주소입력창.xml ('상세주소를 알려주세요') 감지 ──
+        is_popup_addr_detail = False
+        addr_detail_xp = None
+        for xp in PAY_POPUP_DETAIL_INPUT_XPATHS:
+            if ah.element_exists(self.driver, xp, timeout=2):
+                is_popup_addr_detail = True
+                addr_detail_xp = xp
+                break
+
+        if not is_popup_addr_detail and ah.element_exists(self.driver, '//*[contains(@text, "상세주소를 알려주세요")]', timeout=2):
+            is_popup_addr_detail = True
+
+        if is_popup_addr_detail:
+            self._log(f"  📌 [Pay] '상세주소를 알려주세요' 화면 감지 (address-detail) → 상세주소 '{detail}' 입력 진행")
+            if detail:
+                input_ok = False
+                if addr_detail_xp:
+                    input_ok = self._pay_input_field(addr_detail_xp, detail, "상세주소(address-detail)")
+                if not input_ok:
+                    try:
+                        # address-detail 포커스 후 mobile: type
+                        self.driver.execute_script("mobile: type", {"text": detail})
+                        time.sleep(0.5)
+                        input_ok = True
+                        self._log(f"  ✅ [Pay] 상세주소 입력 완료 (mobile: type): '{detail}'")
+                    except Exception as e:
+                        self._log(f"  ⚠ [Pay] 상세주소 mobile: type 입력 예외: {e}")
+
+            self._pay_hide_keyboard()
+            time.sleep(0.5)
+
+            # '확인' 버튼 클릭
+            self._set_status("[Pay] 상세주소 확인 클릭")
+            confirm_clicked = False
+            for c_xp in PAY_POPUP_DETAIL_CONFIRM_XPATHS:
+                if ah.element_exists(self.driver, c_xp, timeout=2):
+                    self._log(f"  👉 [Pay] 상세주소 '확인' 버튼 발견 ({c_xp}) → 클릭")
+                    if ah.wait_and_click(self.driver, c_xp, timeout=3, log_callback=self._log):
+                        confirm_clicked = True
+                        time.sleep(2.5)
+                        break
+                    try:
+                        el = self.driver.find_element(By.XPATH, c_xp)
+                        if self._click_element_center_coordinates(el):
+                            confirm_clicked = True
+                            time.sleep(2.5)
+                            break
+                    except Exception:
+                        pass
+
+            if not confirm_clicked:
+                # 좌표 폴백: 상세주소입력창.xml 기준 bounds="[49,955][1031,1094]" -> (540, 1024)
+                try:
+                    sz = self.driver.get_window_size()
+                    cx = sz.get("width", 1080) // 2
+                    cy = int(sz.get("height", 2094) * 0.49)
+                    self._log(f"  ⚠ [Pay] '확인' 버튼 XPath 실패 → 좌표 탭 시도 ({cx}, {cy})")
+                    self._pay_adb_tap(cx, cy)
+                    time.sleep(2.5)
+                    confirm_clicked = True
+                except Exception as e_tap:
+                    self._log(f"  ⚠ [Pay] 좌표 탭 실패: {e_tap}")
+
+        # ── 2. 구형 주소검색 팝업 ('선택완료') 감지 (폴백 호환성) ──
+        popup_select_done = (
+            ah.element_exists(self.driver, '//*[@text="선택완료" or @content-desc="선택완료"]', timeout=1)
             or ah.element_exists(self.driver, '//*[contains(@text, "상세주소를 입력")]', timeout=1)
         )
-        if popup_detail:
-            self._log("  ℹ [Pay] 주소검색 팝업 내 상세주소 단계 감지 → 포커스 입력 후 선택완료")
+        if popup_select_done:
+            self._log("  ℹ [Pay] 구형 주소검색 팝업('선택완료') 감지 → 상세주소 입력 후 선택완료 클릭")
             if detail:
                 try:
                     self.driver.execute_script("mobile: type", {"text": detail})
@@ -585,9 +813,10 @@ class PayAddressMixin:
                 self._click_confirm_button()
                 time.sleep(2)
 
-        # 등록/수정 폼의 상세주소 필드 확인 및 입력
+        # ── 3. 등록/수정 폼 (수정.xml) 복귀 확인 및 detailed-address 필드 점검 ──
+        time.sleep(1.5)
         for xp in PAY_DETAIL_ADDR_XPATHS:
-            el = ah.wait_for_element(self.driver, xp, timeout=3)
+            el = ah.wait_for_element(self.driver, xp, timeout=2)
             if el is None:
                 continue
             try:
@@ -595,14 +824,19 @@ class PayAddressMixin:
             except Exception:
                 cur = ""
             if detail and detail not in cur:
+                self._log(f"  ℹ [Pay] 등록/수정 화면 detailed-address 확인(현재: '{cur}') → 보충 입력")
                 return self._pay_input_field(xp, detail, "상세주소")
-            self._log(f"  ✅ [Pay] 상세주소 확인: '{cur}'")
+            self._log(f"  ✅ [Pay] 등록/수정 화면 상세주소 확인: '{cur}'")
+            return True
+
+        if is_popup_addr_detail or popup_select_done:
+            self._log("  ✅ [Pay] 상세주소 팝업 단계 처리 완료 (등록/수정 화면으로 복귀)")
             return True
 
         if not detail:
             return True
-        self._log("  ⚠ [Pay] 상세주소 입력창(detailed-address) 미발견")
-        return popup_detail
+        self._log("  ⚠ [Pay] 상세주소 입력창(address-detail / detailed-address) 미발견")
+        return False
 
     def _register_one_address_pay(self, row) -> bool:
         """[Pay 방식] 배송지 1건 등록 (pay주소지 등록.md 5~9 단계)"""

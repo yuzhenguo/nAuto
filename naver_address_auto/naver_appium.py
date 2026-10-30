@@ -20,7 +20,10 @@ NAVER_PACKAGE  = "com.nhn.android.search"
 NAVER_ACTIVITY = "com.nhn.android.search.ui.pages.SearchHomePage"  # adb 확인된 실제 런처 Activity
 
 # 로드 확인용 (쿠팡 appium_helper가 로드되면 이 메시지가 안 나옴)
-print(f"[✅ naver_appium 로드됨] PACKAGE={NAVER_PACKAGE}, FILE={__file__}")
+try:
+    print(f"[naver_appium 로드됨] PACKAGE={NAVER_PACKAGE}, FILE={__file__}")
+except Exception:
+    pass
 
 
 def _kill_port_process(port: int):
