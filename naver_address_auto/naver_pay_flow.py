@@ -220,7 +220,27 @@ class PayAddressMixin:
             return False
 
     def _pay_hide_keyboard(self):
+        """키보드가 실제로 열려 있을 때만 안전하게 닫기
+        (주소선택/상세주소 팝업 화면에서는 hide_keyboard 의 KEYCODE_BACK 이 이전 웹뷰 히스토리로 뒤로가기 되므로 차단)
+        """
         try:
+            try:
+                if not self.driver.is_keyboard_shown():
+                    return
+            except Exception:
+                return
+
+            try:
+                src = self.driver.page_source or ""
+                if (
+                    "상세주소를 알려주세요" in src
+                    or "주소를 선택해주세요" in src
+                    or 'resource-id="address-detail"' in src
+                ):
+                    return
+            except Exception:
+                pass
+
             self.driver.hide_keyboard()
             time.sleep(0.4)
         except Exception:
@@ -718,40 +738,255 @@ class PayAddressMixin:
         self._log("❌ [Pay] 주소검색 버튼 클릭 실패")
         return False
 
+    def _pay_is_on_form_screen(self, src: Optional[str] = None) -> bool:
+        """'배송지 등록/수정' 폼 화면인지 XML 문자열로 빠르게 판별"""
+        if src is None:
+            try:
+                src = self.driver.page_source or ""
+            except Exception:
+                src = ""
+        if not src:
+            return False
+        return (
+            ("배송지 등록/수정" in src)
+            or ('resource-id="detailed-address"' in src)
+            or ('resource-id="second-number1"' in src)
+            or ('hint="우편번호"' in src)
+        )
+
+    def _pay_is_on_detail_popup(self, src: Optional[str] = None) -> bool:
+        """'상세주소를 알려주세요' (상세주소입력창.xml) 화면인지 판별"""
+        if src is None:
+            try:
+                src = self.driver.page_source or ""
+            except Exception:
+                src = ""
+        if not src:
+            return False
+        return ("상세주소를 알려주세요" in src) or ('resource-id="address-detail"' in src)
+
+    def _pay_is_on_address_select_screen(self, src: Optional[str] = None) -> bool:
+        """'주소를 선택해주세요' 검색결과 목록 화면에 아직 머물러 있는지 판별"""
+        if src is None:
+            try:
+                src = self.driver.page_source or ""
+            except Exception:
+                src = ""
+        if not src:
+            return False
+        return (
+            ("주소를 선택해주세요" in src)
+            and not self._pay_is_on_detail_popup(src)
+            and not self._pay_is_on_form_screen(src)
+        )
+
+    def _pay_click_detail_confirm_and_verify(self) -> bool:
+        """'상세주소를 알려주세요' 화면에서 '확인' 버튼을 다중 방식으로 클릭하고 실제 화면 전환 검증"""
+        self._set_status("[Pay] 상세주소 확인 클릭")
+
+        def _find_confirm_el():
+            for c_xp in PAY_POPUP_DETAIL_CONFIRM_XPATHS:
+                try:
+                    els = self.driver.find_elements(By.XPATH, c_xp)
+                    for el in els:
+                        try:
+                            r = el.rect
+                            cy = r["y"] + r["height"] // 2
+                            if cy >= 250:
+                                return el, c_xp, (r["x"] + r["width"] // 2, cy)
+                        except Exception:
+                            return el, c_xp, None
+                except Exception:
+                    continue
+            return None, None, None
+
+        def _transitioned() -> bool:
+            try:
+                post_src = self.driver.page_source or ""
+            except Exception:
+                post_src = ""
+            if self._pay_is_on_form_screen(post_src):
+                return True
+            if post_src and not self._pay_is_on_detail_popup(post_src) and not self._pay_is_on_address_select_screen(post_src):
+                return True
+            return False
+
+        el, matched_xp, center = _find_confirm_el()
+
+        # 1차: XPath element.click()
+        if el is not None:
+            self._log(f"  👉 [Pay] 상세주소 '확인' 버튼 발견 ({matched_xp}, 좌표={center}) → element.click() 시도")
+            try:
+                el.click()
+                time.sleep(1.8)
+                if _transitioned():
+                    self._log("  ✅ [Pay] 상세주소 '확인' element.click() 후 화면 전환 확인 완료")
+                    return True
+            except Exception as e_clk:
+                self._log(f"  ⚠ [Pay] 상세주소 '확인' element.click() 예외: {str(e_clk).splitlines()[0]}")
+
+        # 2차: ADB input tap (xwhale WebView 에서 합성 클릭 무시 시 OS 레벨 터치 주입)
+        el, matched_xp, center = _find_confirm_el()
+        if center is not None:
+            self._log(f"  👉 [Pay] 상세주소 '확인' 버튼 ADB 좌표 탭 시도: {center}")
+            self._pay_adb_tap(center[0], center[1])
+            time.sleep(2.0)
+            if _transitioned():
+                self._log("  ✅ [Pay] 상세주소 '확인' ADB 탭 후 화면 전환 확인 완료")
+                return True
+
+        # 3차: 상단 비대화형 타이틀 탭으로 입력창 onBlur 유도(KEYCODE_BACK 없이) 후 재클릭
+        try:
+            self._pay_adb_tap(540, 272)
+            time.sleep(0.4)
+        except Exception:
+            pass
+
+        el, matched_xp, center = _find_confirm_el()
+        if center is not None:
+            self._log(f"  👉 [Pay] 상세주소 '확인' 포커스 해제 후 재클릭 시도: {center}")
+            try:
+                if el is not None:
+                    el.click()
+                    time.sleep(1.0)
+            except Exception:
+                pass
+            if not _transitioned():
+                self._pay_adb_tap(center[0], center[1])
+                time.sleep(2.0)
+            if _transitioned():
+                self._log("  ✅ [Pay] 상세주소 '확인' 재클릭 후 화면 전환 확인 완료")
+                return True
+
+        # 4차 폴백: XML bounds 직접 파싱 또는 화면 비율 좌표 탭 (상세주소입력창.xml bounds="[49,955][1031,1094]")
+        if self._pay_is_on_detail_popup():
+            xml_coord = None
+            try:
+                src = self.driver.page_source or ""
+                if src:
+                    root = ET.fromstring(src)
+                    for node in root.iter():
+                        t = (node.attrib.get("text") or "").strip()
+                        d = (node.attrib.get("content-desc") or "").strip()
+                        if t == "확인" or d == "확인":
+                            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+                            if m:
+                                x1, y1, x2, y2 = map(int, m.groups())
+                                cy = (y1 + y2) // 2
+                                if cy >= 250:
+                                    xml_coord = ((x1 + x2) // 2, cy)
+                                    break
+            except Exception:
+                pass
+
+            try:
+                if xml_coord:
+                    cx, cy = xml_coord
+                else:
+                    sz = self.driver.get_window_size()
+                    cx = sz.get("width", 1080) // 2
+                    cy = int(sz.get("height", 2094) * 0.49)
+                self._log(f"  ⚠ [Pay] '확인' 버튼 폴백 좌표 탭 시도 ({cx}, {cy})")
+                self._pay_adb_tap(cx, cy)
+                time.sleep(2.0)
+                if _transitioned():
+                    self._log("  ✅ [Pay] 상세주소 '확인' 폴백 좌표 탭 후 화면 전환 확인 완료")
+                    return True
+            except Exception as e_tap:
+                self._log(f"  ⚠ [Pay] 좌표 탭 실패: {e_tap}")
+
+        return _transitioned()
+
     def _pay_handle_detail_address(self, row) -> bool:
         """주소 선택 이후 상세주소 처리
         1. 상세주소입력창.xml ('상세주소를 알려주세요' 팝업/화면):
            - //android.widget.EditText[@resource-id="address-detail"] 에 상세주소 입력
-           - //android.widget.Button[@text="확인"] 버튼 클릭하여 배송지 등록/수정 화면으로 복귀
+           - ※ hide_keyboard()(KEYCODE_BACK) 호출 시 '주소를 선택해주세요'로 뒤로가기 되므로 절대 호출 금지
+           - //android.widget.Button[@text="확인"] 버튼 클릭 및 배송지 등록/수정 화면 복귀 검증
         2. 구형 스토어 팝업:
            - 상세주소 입력 후 '선택완료' 버튼 클릭
         3. 배송지 등록/수정 화면 (수정.xml):
            - //android.widget.EditText[@resource-id="detailed-address"] 값 확인 및 미입력 시 보충 입력
         """
         detail = (row.detail_address or "").strip()
-        time.sleep(1.5)
+        time.sleep(1.2)
+
+        try:
+            init_src = self.driver.page_source or ""
+        except Exception:
+            init_src = ""
+
+        # ── 0. 아직 '주소를 선택해주세요' 화면에 머물러 있으면 선택 버튼 재클릭 복구 ──
+        if self._pay_is_on_address_select_screen(init_src):
+            self._log("  ⚠ [Pay] 아직 '주소를 선택해주세요' 화면 유지 감지 → 선택 버튼 재클릭 시도")
+            if not self._select_address_by_zipcode(row.zipcode):
+                self._log("  ❌ [Pay] '주소를 선택해주세요' 화면에서 주소 선택 재시도 실패")
+                return False
+            time.sleep(1.2)
+            try:
+                init_src = self.driver.page_source or ""
+            except Exception:
+                init_src = ""
+            if self._pay_is_on_address_select_screen(init_src):
+                self._log("  ❌ [Pay] 재시도 후에도 '주소를 선택해주세요' 화면에서 벗어나지 못함")
+                return False
 
         # ── 1. 상세주소입력창.xml ('상세주소를 알려주세요') 감지 ──
-        is_popup_addr_detail = False
+        is_popup_addr_detail = self._pay_is_on_detail_popup(init_src)
         addr_detail_xp = None
-        for xp in PAY_POPUP_DETAIL_INPUT_XPATHS:
-            if ah.element_exists(self.driver, xp, timeout=2):
-                is_popup_addr_detail = True
-                addr_detail_xp = xp
-                break
-
-        if not is_popup_addr_detail and ah.element_exists(self.driver, '//*[contains(@text, "상세주소를 알려주세요")]', timeout=2):
-            is_popup_addr_detail = True
+        if is_popup_addr_detail:
+            for xp in PAY_POPUP_DETAIL_INPUT_XPATHS:
+                if ah.element_exists(self.driver, xp, timeout=1):
+                    addr_detail_xp = xp
+                    break
+        else:
+            # 전환 지연 대비 최대 3초 추가 확인 (이미 등록/수정 화면이면 생략)
+            if not self._pay_is_on_form_screen(init_src):
+                if ah.element_exists(self.driver, PAY_POPUP_DETAIL_INPUT_XPATHS[0], timeout=2.5):
+                    is_popup_addr_detail = True
+                    addr_detail_xp = PAY_POPUP_DETAIL_INPUT_XPATHS[0]
+                elif ah.element_exists(self.driver, '//*[contains(@text, "상세주소를 알려주세요")]', timeout=1.5):
+                    is_popup_addr_detail = True
+                    for xp in PAY_POPUP_DETAIL_INPUT_XPATHS:
+                        if ah.element_exists(self.driver, xp, timeout=1):
+                            addr_detail_xp = xp
+                            break
 
         if is_popup_addr_detail:
             self._log(f"  📌 [Pay] '상세주소를 알려주세요' 화면 감지 (address-detail) → 상세주소 '{detail}' 입력 진행")
             if detail:
                 input_ok = False
                 if addr_detail_xp:
-                    input_ok = self._pay_input_field(addr_detail_xp, detail, "상세주소(address-detail)")
-                if not input_ok:
+                    # React/Next.js 입력 상태(onChange) 확실한 반영을 위해 포커스 확인 후 mobile: type 우선 시도
                     try:
-                        # address-detail 포커스 후 mobile: type
+                        el = self.driver.find_element(By.XPATH, addr_detail_xp)
+                        if str(el.get_attribute("focused")).lower() != "true":
+                            try:
+                                el.click()
+                            except Exception:
+                                self._click_element_center_coordinates(el)
+                            time.sleep(0.3)
+                        cur_before = (el.text or el.get_attribute("text") or "").strip()
+                        if cur_before and cur_before != "주소":
+                            try:
+                                el.clear()
+                                time.sleep(0.2)
+                            except Exception:
+                                pass
+                        self.driver.execute_script("mobile: type", {"text": detail})
+                        time.sleep(0.4)
+                        el = self.driver.find_element(By.XPATH, addr_detail_xp)
+                        cur_after = (el.text or el.get_attribute("text") or "").strip()
+                        if detail in cur_after:
+                            input_ok = True
+                            self._log(f"  ✅ [Pay] 상세주소(address-detail) 입력 완료 (mobile: type): '{detail}'")
+                    except Exception:
+                        input_ok = False
+
+                    if not input_ok:
+                        input_ok = self._pay_input_field(addr_detail_xp, detail, "상세주소(address-detail)")
+                else:
+                    try:
                         self.driver.execute_script("mobile: type", {"text": detail})
                         time.sleep(0.5)
                         input_ok = True
@@ -759,45 +994,21 @@ class PayAddressMixin:
                     except Exception as e:
                         self._log(f"  ⚠ [Pay] 상세주소 mobile: type 입력 예외: {e}")
 
-            self._pay_hide_keyboard()
-            time.sleep(0.5)
-
-            # '확인' 버튼 클릭
-            self._set_status("[Pay] 상세주소 확인 클릭")
-            confirm_clicked = False
-            for c_xp in PAY_POPUP_DETAIL_CONFIRM_XPATHS:
-                if ah.element_exists(self.driver, c_xp, timeout=2):
-                    self._log(f"  👉 [Pay] 상세주소 '확인' 버튼 발견 ({c_xp}) → 클릭")
-                    if ah.wait_and_click(self.driver, c_xp, timeout=3, log_callback=self._log):
-                        confirm_clicked = True
-                        time.sleep(2.5)
-                        break
-                    try:
-                        el = self.driver.find_element(By.XPATH, c_xp)
-                        if self._click_element_center_coordinates(el):
-                            confirm_clicked = True
-                            time.sleep(2.5)
-                            break
-                    except Exception:
-                        pass
-
-            if not confirm_clicked:
-                # 좌표 폴백: 상세주소입력창.xml 기준 bounds="[49,955][1031,1094]" -> (540, 1024)
-                try:
-                    sz = self.driver.get_window_size()
-                    cx = sz.get("width", 1080) // 2
-                    cy = int(sz.get("height", 2094) * 0.49)
-                    self._log(f"  ⚠ [Pay] '확인' 버튼 XPath 실패 → 좌표 탭 시도 ({cx}, {cy})")
-                    self._pay_adb_tap(cx, cy)
-                    time.sleep(2.5)
-                    confirm_clicked = True
-                except Exception as e_tap:
-                    self._log(f"  ⚠ [Pay] 좌표 탭 실패: {e_tap}")
+            # 주의: 상세주소입력창.xml 에서는 키보드가 열려 있어도 '확인' 버튼(y=955..1094 < 1218)이 노출되어 있으며,
+            # hide_keyboard() 호출 시 KEYCODE_BACK 으로 인해 '주소를 선택해주세요' 화면으로 되돌아가므로 절대 호출하지 않음!
+            time.sleep(0.3)
+            if not self._pay_click_detail_confirm_and_verify():
+                self._log("  ❌ [Pay] '상세주소를 알려주세요' 화면에서 '확인' 클릭 후 화면 전환 실패")
+                return False
 
         # ── 2. 구형 주소검색 팝업 ('선택완료') 감지 (폴백 호환성) ──
+        try:
+            mid_src = self.driver.page_source or ""
+        except Exception:
+            mid_src = ""
         popup_select_done = (
-            ah.element_exists(self.driver, '//*[@text="선택완료" or @content-desc="선택완료"]', timeout=1)
-            or ah.element_exists(self.driver, '//*[contains(@text, "상세주소를 입력")]', timeout=1)
+            not self._pay_is_on_form_screen(mid_src)
+            and (("선택완료" in mid_src) or ("상세주소를 입력" in mid_src))
         )
         if popup_select_done:
             self._log("  ℹ [Pay] 구형 주소검색 팝업('선택완료') 감지 → 상세주소 입력 후 선택완료 클릭")
@@ -807,21 +1018,35 @@ class PayAddressMixin:
                     time.sleep(0.5)
                 except Exception as e:
                     self._log(f"  ⚠ [Pay] 팝업 상세주소 입력 실패: {e}")
-            self._pay_hide_keyboard()
             if not self._pay_click_first(['//android.widget.Button[@text="선택완료"]', '//*[@text="선택완료"]'],
                                          "선택완료", timeout=2, wait_after=2):
                 self._click_confirm_button()
                 time.sleep(2)
 
         # ── 3. 등록/수정 폼 (수정.xml) 복귀 확인 및 detailed-address 필드 점검 ──
-        time.sleep(1.5)
+        form_returned = False
+        for _ in range(5):
+            try:
+                chk_src = self.driver.page_source or ""
+            except Exception:
+                chk_src = ""
+            if self._pay_is_on_form_screen(chk_src):
+                form_returned = True
+                break
+            if self._pay_is_on_address_select_screen(chk_src):
+                self._log("  ❌ [Pay] 상세주소 처리 후 '주소를 선택해주세요' 화면 감지 (폼 복귀 실패)")
+                return False
+            time.sleep(1.0)
+
         for xp in PAY_DETAIL_ADDR_XPATHS:
-            el = ah.wait_for_element(self.driver, xp, timeout=2)
+            el = ah.wait_for_element(self.driver, xp, timeout=2 if form_returned else 1)
             if el is None:
                 continue
             try:
                 cur = (el.text or el.get_attribute("text") or "").strip()
             except Exception:
+                cur = ""
+            if cur == "상세주소 입력":
                 cur = ""
             if detail and detail not in cur:
                 self._log(f"  ℹ [Pay] 등록/수정 화면 detailed-address 확인(현재: '{cur}') → 보충 입력")
@@ -829,13 +1054,11 @@ class PayAddressMixin:
             self._log(f"  ✅ [Pay] 등록/수정 화면 상세주소 확인: '{cur}'")
             return True
 
-        if is_popup_addr_detail or popup_select_done:
-            self._log("  ✅ [Pay] 상세주소 팝업 단계 처리 완료 (등록/수정 화면으로 복귀)")
+        if form_returned or self._pay_is_on_form_screen():
+            self._log("  ✅ [Pay] 상세주소 처리 완료 및 '배송지 등록/수정' 화면 복귀 확인")
             return True
 
-        if not detail:
-            return True
-        self._log("  ⚠ [Pay] 상세주소 입력창(address-detail / detailed-address) 미발견")
+        self._log("  ❌ [Pay] 상세주소 처리 후 '배송지 등록/수정' 화면(detailed-address) 복귀 미확인")
         return False
 
     def _register_one_address_pay(self, row) -> bool:

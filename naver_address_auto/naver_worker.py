@@ -2717,9 +2717,9 @@ class NaverWorker(PayAddressMixin):
 
             if ocr_clicked:
 
-                self._log(f"🎯 [OCR 인식 성공] 우편번호 {zipcode_clean} 클릭 완료")
+                self._log(f"🎯 [OCR 인식 성공] 우편번호 {zipcode_clean} 클릭 및 화면 전환 확인 완료")
 
-                time.sleep(3)
+                time.sleep(1.5)
 
                 return True
 
@@ -2827,9 +2827,23 @@ class NaverWorker(PayAddressMixin):
 
                             self._log(f"  우편번호 {zipcode} 매칭 → 항목 {idx} 선택")
 
-                            
+                            # 0. 신규 '주소를 선택해주세요' 화면: 항목 내 '선택' 버튼 우선 클릭 및 전환 검증
+                            sel_btns = item.find_elements(
+                                By.XPATH,
+                                './/android.widget.Button[@text="선택"] | .//*[@text="선택" or @content-desc="선택"]'
+                            )
+                            if sel_btns:
+                                try:
+                                    r = sel_btns[0].rect
+                                    bx = r['x'] + r['width'] // 2
+                                    by = r['y'] + r['height'] // 2
+                                    if self._click_select_button_and_verify(bx, by, label=f"ListView 항목{idx} 선택버튼"):
+                                        time.sleep(1.5)
+                                        return True
+                                except Exception:
+                                    pass
 
-                            # 1. 텍스트 요소 좌표 클릭 시도 (가장 안전함)
+                            # 1. 텍스트 요소 좌표 클릭 시도 (구형 라디오 리스트 대응)
 
                             if self._click_element_center_coordinates(t_el):
 
@@ -3019,8 +3033,8 @@ class NaverWorker(PayAddressMixin):
                         except Exception as dbg_err:
                             self._log(f"  [디버그] 매칭 이미지 저장 중 에러: {dbg_err}")
 
-                        # 클릭 실행
-                        if self._tap_coordinates(abs_x, abs_y):
+                        # 클릭 실행 (다중 방식 클릭 + 화면 전환 검증)
+                        if self._click_select_button_and_verify(abs_x, abs_y, label="첫 번째 항목 선택버튼"):
                             self._log("  ✅ 첫 번째 주소 항목 선택버튼 매칭 클릭 완료")
                             return True
                     else:
@@ -3030,8 +3044,36 @@ class NaverWorker(PayAddressMixin):
         except Exception as e_matching:
             self._log(f"  ⚠ [첫 번째 항목 선택버튼 매칭] 이미지 매칭 처리 중 에러: {e_matching}")
 
-        # 2. 폴백: 기존 XPath 기반 첫 번째 항목 클릭 로직
-        self._log("🔄 [첫 번째 항목 클릭 폴백] 기존 XPath/요소 기반 클릭 진행")
+        # 2. 폴백: XPath '선택' 버튼 직접 탐색 후 클릭
+        self._log("🔄 [첫 번째 항목 클릭 폴백] XPath '선택' 버튼 / 리스트 항목 클릭 진행")
+        for sel_xp in (
+            '//android.widget.Button[@text="선택"]',
+            '//*[@text="선택" and @clickable="true"]',
+            '//*[@content-desc="선택"]',
+            '//*[@text="선택"]',
+        ):
+            try:
+                els = self.driver.find_elements(By.XPATH, sel_xp)
+                valid_els = []
+                for el in els:
+                    try:
+                        r = el.rect
+                        cx = r["x"] + r["width"] // 2
+                        cy = r["y"] + r["height"] // 2
+                        if cx >= 400 and cy >= 350:
+                            valid_els.append((cy, cx))
+                    except Exception:
+                        continue
+                if valid_els:
+                    valid_els.sort(key=lambda t: t[0])
+                    first_cy, first_cx = valid_els[0]
+                    if self._click_select_button_and_verify(first_cx, first_cy, label="XPath 첫 번째 선택버튼"):
+                        self._log("  ✅ XPath 기반 첫 번째 '선택' 버튼 클릭 완료")
+                        return True
+            except Exception:
+                continue
+
+        # 3. 폴백: 기존 ListView / RadioButton 기반 첫 번째 항목 클릭 로직
         try:
 
             list_view = self.driver.find_element(By.XPATH, ADDR_LIST_XPATH)
@@ -4320,13 +4362,302 @@ class NaverWorker(PayAddressMixin):
             self._log(f"  ⚠ _find_image_matches_all 예외: {e}")
             return []
 
-    def _tap_coordinates(self, x: int, y: int) -> bool:
+    def _adb_tap(self, x: int, y: int, hold_ms: int = 0) -> bool:
+        """ADB OS 레벨 터치 주입 (xwhale WebView 에서 W3C 합성 터치가 무시될 때 확실히 동작)"""
+        import subprocess
+        try:
+            try:
+                sz = self.driver.get_window_size()
+                max_w = sz.get("width", 1080)
+                max_h = sz.get("height", 2400)
+                x = max(15, min(max_w - 20, int(x)))
+                y = max(48, min(int(max_h * 0.94), int(y)))
+            except Exception:
+                x, y = int(x), int(y)
 
-        """지정 좌표 탭 (W3C Actions 지원 및 driver.tap 폴백)"""
+            if hold_ms > 0:
+                cmd = [
+                    "adb", "-s", self.device_id, "shell", "input", "swipe",
+                    str(x), str(y), str(x), str(y), str(int(hold_ms)),
+                ]
+            else:
+                cmd = ["adb", "-s", self.device_id, "shell", "input", "tap", str(x), str(y)]
+            res = subprocess.run(cmd, capture_output=True, timeout=5)
+            return res.returncode == 0
+        except Exception as e:
+            self._log(f"  ⚠ [ADB 탭 실패] ({x}, {y}): {e}")
+            return False
 
-        return ah.tap_by_coords(self.driver, x, y, log_callback=self._log)
+    @staticmethod
+    def _group_select_button_candidates(candidates: list, y_tol: int = 60) -> list:
+        """근접한 Y좌표의 '선택' 버튼 매칭 후보들을 1D NMS 방식으로 중복 제거하여
+        물리적으로 서로 다른 '선택' 버튼 목록만 Y 오름차순(위→아래)으로 반환.
+        candidates 원소 형식: (score, cx, cy, ...)
+        """
+        if not candidates:
+            return []
+        sorted_by_score = sorted(candidates, key=lambda c: -float(c[0]))
+        distinct = []
+        for cand in sorted_by_score:
+            cy = cand[2]
+            if all(abs(cy - kept[2]) >= y_tol for kept in distinct):
+                distinct.append(cand)
+        distinct.sort(key=lambda c: c[2])
+        return distinct
 
+    def _has_transitioned_past_address_select(
+        self, pre_had_select_title: bool, btn_x: int, btn_y: int
+    ) -> bool:
+        """'선택' 버튼 클릭 후 실제로 '주소를 선택해주세요' 화면에서 다음 단계 화면으로 전환되었는지 검증"""
+        src = ""
+        try:
+            src = self.driver.page_source or ""
+        except Exception:
+            src = ""
 
+        if src:
+            # 1) 명확한 다음 단계(상세주소 입력 / 배송지 폼 / 수취인 입력) 마커 확인
+            definite_next_markers = (
+                'resource-id="address-detail"',
+                "상세주소를 알려주세요",
+                "배송지 등록/수정",
+                'resource-id="detailed-address"',
+                'resource-id="second-number1"',
+                "선택완료",
+                "상세주소를 입력",
+                "detailAddressInput",
+                'resource-id="detail_address"',
+                "이름을 입력해주세요",
+                'resource-id="receiver"',
+                'resource-id="receiver_name"',
+                'resource-id="contact-1"',
+            )
+            if any(m in src for m in definite_next_markers):
+                if (
+                    ("주소를 선택해주세요" not in src)
+                    or ('resource-id="address-detail"' in src)
+                    or ("상세주소를 알려주세요" in src)
+                    or ("배송지 등록/수정" in src)
+                ):
+                    return True
+
+            # 2) 여전히 '주소를 선택해주세요' 가 남아 있으면 클릭 미반영
+            if "주소를 선택해주세요" in src:
+                return False
+
+            # 3) 클릭 전에는 '주소를 선택해주세요' 가 있었는데 클릭 후 사라졌으면 전환 성공
+            if pre_had_select_title and len(src) > 200:
+                return True
+
+        # 4) XML 에 타이틀이 노출되지 않는 WebView 환경 폴백:
+        #    클릭했던 좌표 주변 ROI 에 '선택버튼.png' 가 여전히 그대로 남아 있는지 시각적으로 확인
+        try:
+            import os
+            import cv2
+            import numpy as np
+
+            btn_template_path = os.path.join(os.path.dirname(__file__), "선택버튼.png")
+            if os.path.exists(btn_template_path):
+                ss_bytes = self._get_screenshot()
+                img = cv2.imdecode(np.frombuffer(ss_bytes, np.uint8), cv2.IMREAD_COLOR)
+                tmpl = cv2.imdecode(np.fromfile(btn_template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is not None and tmpl is not None:
+                    img_g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    tmpl_g = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
+                    h, w = img_g.shape
+                    th, tw = tmpl_g.shape
+                    ry1, ry2 = max(0, int(btn_y) - 105), min(h, int(btn_y) + 105)
+                    rx1, rx2 = max(0, int(btn_x) - 135), min(w, int(btn_x) + 135)
+                    roi = img_g[ry1:ry2, rx1:rx2]
+                    rh, rw = roi.shape
+                    max_score = 0.0
+                    for sc in np.linspace(0.6, 2.8, 35):
+                        nw, nh = int(tw * sc), int(th * sc)
+                        if nw >= rw or nh >= rh or nw < 10 or nh < 5:
+                            continue
+                        resized = cv2.resize(tmpl_g, (nw, nh), interpolation=cv2.INTER_AREA)
+                        res = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                        s_max = float(res.max())
+                        if s_max > max_score:
+                            max_score = s_max
+                    if max_score >= 0.68:
+                        return False
+        except Exception:
+            pass
+
+        return True
+
+    def _find_select_element_near_y(self, target_y: int, y_tol: int = 95):
+        """지정한 Y좌표 근처에 있는 Native/WebView '선택' 버튼 엘리먼트와 중심 좌표를 탐색"""
+        best_el = None
+        best_center = None
+        best_dist = y_tol + 1
+        for xp in (
+            '//android.widget.Button[@text="선택"]',
+            '//*[@text="선택" and @clickable="true"]',
+            '//*[@content-desc="선택"]',
+            '//*[@text="선택"]',
+        ):
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                for el in els:
+                    try:
+                        r = el.rect
+                        cx = r["x"] + r["width"] // 2
+                        cy = r["y"] + r["height"] // 2
+                        dist = abs(cy - int(target_y))
+                        if cx >= 400 and dist <= y_tol and dist < best_dist:
+                            best_dist = dist
+                            best_el = el
+                            best_center = (cx, cy)
+                    except Exception:
+                        continue
+                if best_el is not None:
+                    break
+            except Exception:
+                continue
+        return best_el, best_center
+
+    def _click_select_button_and_verify(self, x: int, y: int, label: str = "선택버튼") -> bool:
+        """'선택' 버튼을 다중 방식(XPath click → ADB input tap → W3C tap → ADB 110ms 롱탭)으로 클릭하고,
+        실제로 '주소를 선택해주세요' 화면에서 다음 화면으로 전환되었는지 검증한다.
+        """
+        tap_x, tap_y = int(x), int(y)
+        pre_had_select_title = False
+        try:
+            pre_src = self.driver.page_source or ""
+            pre_had_select_title = ("주소를 선택해주세요" in pre_src)
+        except Exception:
+            pre_src = ""
+
+        # XPath 로 노출된 '선택' 버튼이 해당 Y 근처에 있으면 정확한 DOM 중심좌표로 보정
+        matched_el, el_center = self._find_select_element_near_y(tap_y, y_tol=95)
+        if el_center is not None:
+            tap_x, tap_y = el_center
+
+        # 1차: XPath element.click()
+        if matched_el is not None:
+            try:
+                self._log(f"  👉 [{label}] 1차 XPath element.click() 시도: ({tap_x}, {tap_y})")
+                matched_el.click()
+                time.sleep(1.3)
+                if self._has_transitioned_past_address_select(pre_had_select_title, tap_x, tap_y):
+                    self._log(f"  ✅ [{label}] XPath element.click() 완료 및 화면 전환 확인 ({tap_x}, {tap_y})")
+                    return True
+            except Exception as e_clk:
+                self._log(f"  ⚠ [{label}] element.click() 예외: {str(e_clk).splitlines()[0]}")
+
+        # 2차: ADB shell input tap (OS 레벨 터치 주입 - xwhale WebView 에서 가장 안정적)
+        self._log(f"  👉 [{label}] 2차 ADB input tap 시도: ({tap_x}, {tap_y})")
+        if self._adb_tap(tap_x, tap_y):
+            time.sleep(1.5)
+            if self._has_transitioned_past_address_select(pre_had_select_title, tap_x, tap_y):
+                self._log(f"  ✅ [{label}] ADB input tap ({tap_x}, {tap_y}) 완료 및 화면 전환 확인")
+                return True
+
+        # 3차: W3C Actions / driver.tap
+        self._log(f"  👉 [{label}] 3차 W3C 좌표 탭 시도: ({tap_x}, {tap_y})")
+        self._tap_coordinates(tap_x, tap_y)
+        time.sleep(1.5)
+        if self._has_transitioned_past_address_select(pre_had_select_title, tap_x, tap_y):
+            self._log(f"  ✅ [{label}] W3C 좌표 탭 ({tap_x}, {tap_y}) 완료 및 화면 전환 확인")
+            return True
+
+        # 4차: 좌표 재확인 후 ADB 110ms 홀드 탭 (WebView 포커스 활성화 + 버튼 터치 동시 처리)
+        _, el_center2 = self._find_select_element_near_y(tap_y, y_tol=110)
+        if el_center2 is not None:
+            tap_x, tap_y = el_center2
+        self._log(f"  👉 [{label}] 4차 ADB 롱탭(110ms) 시도: ({tap_x}, {tap_y})")
+        if self._adb_tap(tap_x, tap_y, hold_ms=110):
+            time.sleep(1.6)
+            if self._has_transitioned_past_address_select(pre_had_select_title, tap_x, tap_y):
+                self._log(f"  ✅ [{label}] ADB 롱탭(110ms) ({tap_x}, {tap_y}) 완료 및 화면 전환 확인")
+                return True
+
+        self._log(f"  ⚠ [{label}] ({tap_x}, {tap_y}) 다중 클릭 시도 후에도 '주소를 선택해주세요' 화면 전환 미확인")
+        return False
+
+    def _try_match_select_button_by_xml(self, zipcode_clean: str):
+        """page_source XML 트리를 파싱하여 대상 우편번호 행의 '선택' 버튼 좌표를 빠르게(0.15초) 추출.
+        반환: (cx, cy, label) 또는 None
+        """
+        import re
+        import xml.etree.ElementTree as ET
+
+        try:
+            src = self.driver.page_source or ""
+            if not src:
+                return None
+            root = ET.fromstring(src)
+        except Exception:
+            return None
+
+        w = int(root.attrib.get("width", 1080) or 1080)
+        h = int(root.attrib.get("height", 2340) or 2340)
+        min_y = int(h * 0.18)
+        max_y = int(h * 0.90)
+        max_zip_btn_gap = max(320, int(h * 0.15))
+
+        raw_select_btns = []
+        zip_nodes = []
+        all_found_zipcodes = set()
+        bounds_re = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+        for node in root.iter():
+            b_str = node.attrib.get("bounds", "")
+            m = bounds_re.match(b_str)
+            if not m:
+                continue
+            x1, y1, x2, y2 = map(int, m.groups())
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            if cy < min_y or cy > max_y:
+                continue
+
+            t = (node.attrib.get("text") or "").strip()
+            d = (node.attrib.get("content-desc") or "").strip()
+
+            if (t == "선택" or d == "선택") and cx >= int(w * 0.5):
+                is_btn = 1.0 if ("Button" in (node.attrib.get("class") or "") or node.attrib.get("clickable") == "true") else 0.8
+                raw_select_btns.append((is_btn, cx, cy))
+
+            combined = f"{t} {d}".strip()
+            if combined and node.attrib.get("class") != "android.widget.EditText":
+                zips = re.findall(r"(?<!\d)\d{5}(?!\d)", combined)
+                for z in zips:
+                    all_found_zipcodes.add(z)
+                    if zipcode_clean and z == zipcode_clean:
+                        zip_nodes.append((cx, cy, combined))
+
+        select_btns = self._group_select_button_candidates(raw_select_btns, y_tol=55)
+        if not select_btns:
+            return None
+
+        # 1) 우편번호 텍스트 노드와 '선택' 버튼이 모두 XML 에 노출된 경우 → 같은 카드의 '선택' 버튼 정밀 매칭
+        if zipcode_clean and zip_nodes:
+            best_pair = None
+            for _, z_cy, _ in zip_nodes:
+                for _, b_cx, b_cy in select_btns:
+                    y_diff = z_cy - b_cy  # '선택' 버튼은 우편번호보다 위쪽(y_diff > 0) 또는 거의 같은 높이
+                    if -35 <= y_diff <= max_zip_btn_gap:
+                        rank = (0 if y_diff >= -10 else 1, abs(y_diff))
+                        if best_pair is None or rank < best_pair[0]:
+                            best_pair = (rank, b_cx, b_cy)
+            if best_pair is not None:
+                return (best_pair[1], best_pair[2], f"XML 우편번호({zipcode_clean}) 매칭 선택버튼")
+
+        # 2) 화면에 '선택' 버튼이 단 1개뿐인 경우 (단, 다른 5자리 우편번호만 명시된 경우는 오클릭 방지)
+        if len(select_btns) == 1:
+            if zipcode_clean and all_found_zipcodes and (zipcode_clean not in all_found_zipcodes):
+                self._log(
+                    f"  ℹ [XML] 단일 선택버튼 감지되었으나 화면 우편번호({sorted(all_found_zipcodes)}) != 대상({zipcode_clean}) → 건너뜀"
+                )
+                return None
+            return (select_btns[0][1], select_btns[0][2], "XML 단일 선택버튼")
+
+        return None
 
     def _start_session_keepalive(self, interval: int = 60):
 
@@ -4368,7 +4699,7 @@ class NaverWorker(PayAddressMixin):
 
     def _click_zipcode_by_ocr(self, zipcode: str) -> bool:
 
-        """EasyOCR/ddddocr을 사용하여 화면에서 우편번호를 찾고 해당 우편번호 라인의 선택 버튼을 클릭"""
+        """XML/이미지매칭/EasyOCR/ddddocr을 사용하여 화면에서 우편번호를 찾고 해당 우편번호 라인의 선택 버튼을 클릭 후 전환 검증"""
 
         try:
 
@@ -4402,10 +4733,7 @@ class NaverWorker(PayAddressMixin):
 
             img = cv2.imdecode(screenshot_arr, cv2.IMREAD_COLOR)
 
-            
-
             # 디버그 캡처 저장
-
             ss_dir = os.path.join(os.path.dirname(__file__), "캡쳐")
             os.makedirs(ss_dir, exist_ok=True)
             debug_zip_path = os.path.join(ss_dir, f"debug_zipcode_screenshot_{self.device_id}.png")
@@ -4422,15 +4750,23 @@ class NaverWorker(PayAddressMixin):
 
             return False
 
+        zipcode_clean = (zipcode or "").strip()
 
+        # ── 0-A순위: XML 트리 기반 우편번호 + '선택' 버튼 초고속 정밀 매칭 ──
+        xml_matched = self._try_match_select_button_by_xml(zipcode_clean)
+        if xml_matched is not None:
+            xml_x, xml_y, xml_label = xml_matched
+            self._log(f"  🎯 [{xml_label}] 좌표: ({xml_x}, {xml_y}) → 다중 클릭 및 전환 검증")
+            if self._click_select_button_and_verify(xml_x, xml_y, label=xml_label):
+                return True
+            self._log(f"  ⚠ [{xml_label}] 클릭 후 화면 전환 미확인 → 이미지 매칭/OCR 폴백 진행")
 
         tap_x, tap_y = None, None
+        distinct_pre_buttons = []
 
-
-
-        # ── 0순위: '선택버튼.png' 이미지 매칭 선행 체크 ──────────────────────
-        # 검색 결과가 1건만 나오는 경우 등, 우편번호 OCR 없이 선택 버튼이 바로 보이는 경우
-        # ※ 임계값 0.65 이상 + 스케일 0.5x 이상 매칭만 신뢰
+        # ── 0-B순위: '선택버튼.png' 이미지 매칭 선행 체크 ──────────────────────
+        # 검색 결과가 1건만 나오는 경우 우편번호 OCR 없이 즉시 선택 버튼 클릭 및 전환 검증.
+        # ※ 결과가 2건 이상('선택' 버튼 2개 이상)이고 우편번호가 지정된 경우에는 오클릭 방지를 위해 OCR 우편번호 매칭 후 클릭!
         try:
             btn_template_path_pre = os.path.join(os.path.dirname(__file__), "선택버튼.png")
             if os.path.exists(btn_template_path_pre):
@@ -4441,549 +4777,287 @@ class NaverWorker(PayAddressMixin):
                     img_gray_pre = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                     s_h_pre, s_w_pre = img_gray_pre.shape
                     t_h_pre, t_w_pre = btn_tmpl_gray.shape
+                    min_btn_y = int(s_h_pre * 0.22)
+                    max_btn_y = int(s_h_pre * 0.90)
 
                     pre_candidates = []
-                    # 스케일 0.5x 이상만 검색 (0.5x 미만은 버튼이 너무 작아 오매칭 위험)
                     for scale_pre in np.linspace(0.5, 3.0, 55):
-                        nw = int(t_w_pre * scale_pre); nh = int(t_h_pre * scale_pre)
+                        nw = int(t_w_pre * scale_pre)
+                        nh = int(t_h_pre * scale_pre)
                         if nw >= s_w_pre or nh >= s_h_pre or nw < 10 or nh < 5:
                             continue
                         resized_pre = cv2.resize(btn_tmpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
                         res_pre = cv2.matchTemplate(img_gray_pre, resized_pre, cv2.TM_CCOEFF_NORMED)
-                        # 임계값을 0.65로 상향하여 오매칭 방지
                         loc_pre = np.where(res_pre >= 0.65)
                         for pt_pre in zip(*loc_pre[::-1]):
                             cx_pre = pt_pre[0] + nw // 2
                             cy_pre = pt_pre[1] + nh // 2
-                            # 화면 우측(>50%) + 상단 노이즈 제외(y>200)
-                            if cx_pre < s_w_pre * 0.5 or cy_pre < 200:
+                            # 화면 우측(>50%) + 상단 검색창 영역 및 하단 네비게이션 툴바 제외
+                            if cx_pre < s_w_pre * 0.5 or cy_pre < min_btn_y or cy_pre > max_btn_y:
                                 continue
-                            pre_candidates.append((res_pre[pt_pre[1], pt_pre[0]], cx_pre, cy_pre, scale_pre))
+                            pre_candidates.append((float(res_pre[pt_pre[1], pt_pre[0]]), cx_pre, cy_pre, float(scale_pre)))
 
-                    if pre_candidates:
-                        # 점수 내림차순으로 정렬 → 가장 확실한 매칭 선택
-                        pre_candidates.sort(key=lambda x: -x[0])
-                        best_pre = pre_candidates[0]
-                        best_pre_score, pre_x, pre_y, pre_scale = best_pre
-                        self._log(f"  🎯 [0순위 선택버튼 매칭 성공] 좌표: ({pre_x}, {pre_y}), 점수: {best_pre_score:.4f}, 스케일: {pre_scale:.2f}x → 바로 클릭")
-                        self._tap_coordinates(pre_x, pre_y)
-                        return True
+                    distinct_pre_buttons = self._group_select_button_candidates(pre_candidates, y_tol=60)
+                    if distinct_pre_buttons:
+                        if len(distinct_pre_buttons) == 1 or not zipcode_clean:
+                            best_pre_score, pre_x, pre_y, pre_scale = distinct_pre_buttons[0]
+                            self._log(
+                                f"  🎯 [0순위 선택버튼 매칭 성공] 단일 버튼 감지 - 좌표: ({pre_x}, {pre_y}), "
+                                f"점수: {best_pre_score:.4f}, 스케일: {pre_scale:.2f}x → 클릭 및 전환 검증"
+                            )
+                            if self._click_select_button_and_verify(pre_x, pre_y, label="0순위 선택버튼"):
+                                return True
+                            self._log("  ⚠ [0순위] 선택버튼 클릭 후 화면 전환 미확인 → OCR 정밀 탐색으로 폴백")
+                        else:
+                            coords_preview = [(b[1], b[2]) for b in distinct_pre_buttons]
+                            self._log(
+                                f"  ℹ [0순위] 화면 내 '선택' 버튼 {len(distinct_pre_buttons)}개 감지됨 {coords_preview} "
+                                f"→ 오클릭 방지를 위해 우편번호 '{zipcode_clean}' OCR 매칭 진행"
+                            )
                     else:
                         self._log("  ⚠ [0순위] 임계값(0.65) 이상 선택버튼 미발견 → OCR 탐색 진행")
         except Exception as e_pre:
             self._log(f"  ⚠ [0순위] 선택버튼 선행 매칭 에러: {e_pre}")
 
-
-
-
         # ── 1순위: EasyOCR 사용 ───────────────────────
-
         easyocr_available = False
-
         try:
-
             import easyocr
-
             easyocr_available = True
-
         except ImportError:
-
             self._log("  [EasyOCR] easyocr 라이브러리 미설치 → ddddocr 폴백 사용")
 
+        min_zip_y = int(img.shape[0] * 0.24)  # 상단 검색어 입력창(y≈484) 텍스트 오매칭 방지
 
-
-        if easyocr_available:
-
+        if easyocr_available and zipcode_clean:
             try:
-
                 if not hasattr(self, '_easyocr_reader') or self._easyocr_reader is None:
-
                     self._log("  [EasyOCR] reader 초기화 중 (최초 1회, GPU=False)...")
-
-                    # ── 초기화 전 keep-alive 시작 (초기화에 수 분 소요될 수 있음) ──
-
                     self._start_session_keepalive(interval=60)
-
                     try:
-
                         self._easyocr_reader = easyocr.Reader(['ko', 'en'], gpu=False)
-
                     finally:
-
                         self._stop_session_keepalive()
 
-                
-
-                self._log(f"  [EasyOCR] 우편번호 '{zipcode}' 탐색 시작")
-
-                
-
-                # 전처리 (업스케일 및 샤프닝)
+                self._log(f"  [EasyOCR] 우편번호 '{zipcode_clean}' 탐색 시작")
 
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
                 scale = 2.0
-
                 enlarged = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-
                 kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-
                 sharpened = cv2.filter2D(enlarged, -1, kernel)
-
-                
 
                 results = self._easyocr_reader.readtext(sharpened, detail=1, paragraph=False)
 
-                
-
-                target_clean = zipcode.strip()
-
                 found_box = None
-
                 found_text = None
-
                 best_conf = 0
 
-                
-
-                for (bbox, text, conf) in results:
-
-                    text_clean = re.sub(r'\s+', '', text)
-
-                    # 완전 일치 또는 포함
-
-                    if text_clean == target_clean and conf > best_conf:
-
+                for (bbox, text_ocr, conf) in results:
+                    ys_tmp = [pt[1] for pt in bbox]
+                    cand_y = int((min(ys_tmp) + max(ys_tmp)) / 2 / scale)
+                    if cand_y < min_zip_y:
+                        continue
+                    text_clean = re.sub(r'\s+', '', text_ocr)
+                    if text_clean == zipcode_clean and conf > best_conf:
                         found_box = bbox
-
-                        found_text = text
-
+                        found_text = text_ocr
                         best_conf = conf
-
-                    elif target_clean in text_clean and conf > best_conf:
-
+                    elif zipcode_clean in text_clean and conf > best_conf:
                         found_box = bbox
-
-                        found_text = text
-
+                        found_text = text_ocr
                         best_conf = conf
-
-                
 
                 if found_box is not None:
-
                     xs = [pt[0] for pt in found_box]
-
                     ys = [pt[1] for pt in found_box]
-
                     tap_x = int((min(xs) + max(xs)) / 2 / scale)
-
                     tap_y = int((min(ys) + max(ys)) / 2 / scale)
-
                     self._log(f"🎯 [EasyOCR] 우편번호 '{found_text}' 발견! 신뢰도: {best_conf:.2f}  좌표: ({tap_x}, {tap_y})")
 
-                    
-
-                    # 디버그 이미지 저장 (debug_ocr.png)
-
                     try:
-
                         debug_img = img.copy()
-
-                        pts = np.array([[int(pt[0]/scale), int(pt[1]/scale)] for pt in found_box], dtype=np.int32)
-
+                        pts = np.array([[int(pt[0] / scale), int(pt[1] / scale)] for pt in found_box], dtype=np.int32)
                         cv2.polylines(debug_img, [pts], True, (0, 255, 0), 3)
-
                         cv2.circle(debug_img, (tap_x, tap_y), 10, (0, 0, 255), -1)
-
-                        cv2.imwrite(f"debug_ocr_{self.device_id}.png", debug_img)
-
+                        _, enc_ocr = cv2.imencode('.png', debug_img)
+                        enc_ocr.tofile(os.path.join(os.path.dirname(__file__), f"debug_ocr_{self.device_id}.png"))
                     except Exception:
-
                         pass
-
             except Exception as e_easy:
-
                 self._log(f"  ⚠ [EasyOCR] 탐색 중 에러: {e_easy} → ddddocr 폴백 시도")
 
-
-
         # ── 2순위: ddddocr 폴백 (세로 슬라이딩 스캔 방식) ──────────
-
-        if tap_y is None:
-
+        if tap_y is None and zipcode_clean:
             try:
-
                 import ddddocr
-
                 self._log("  [ddddocr] 좌측 우편번호 열 세로 슬라이딩 탐색 시작")
 
-
-
                 ocr = ddddocr.DdddOcr(show_ad=False)
+                scan_start_y = max(300, min_zip_y)
+                scan_end_y = min(2000, img.shape[0] - 80)
 
-                h, w = img.shape[:2]
-
-                
-
-                # y=300부터 y=1800까지 15픽셀 간격으로 세로 슬라이드 (범위 확장)
-
-                # 가로 영역은 0~400 픽셀로 확장하여 주소 블록 내 우편번호도 포함
-
-                for y in range(300, min(1800, img.shape[0] - 60), 15):
-
-                    chunk = img[y:y+80, 0:400]
-
+                for y in range(scan_start_y, scan_end_y, 15):
+                    chunk = img[y:y + 80, 0:420]
                     _, chunk_png = cv2.imencode('.png', chunk)
-
                     try:
-
-                        text = ocr.classification(chunk_png.tobytes())
-
+                        text_d = ocr.classification(chunk_png.tobytes())
                     except Exception:
-
                         continue
 
-                        
-
-                    clean_text = "".join(filter(str.isdigit, text))
-
-                    
-
-                    if zipcode in clean_text:
-
-                        tap_x = 130  # 우편번호 열의 중앙 근처
-
-                        tap_y = y + 50
-
-                        self._log(f"🎯 [ddddocr] 우편번호 '{zipcode}' 발견! (인식텍스트: '{text}', Y좌표: {tap_y})")
-
+                    clean_text = "".join(filter(str.isdigit, text_d))
+                    if zipcode_clean in clean_text:
+                        tap_x = 180
+                        tap_y = y + 45
+                        self._log(f"🎯 [ddddocr] 우편번호 '{zipcode_clean}' 발견! (인식텍스트: '{text_d}', Y좌표: {tap_y})")
                         break
 
-                        
-
                 if tap_y is None:
-
-                    self._log(f"  [ddddocr] 우편번호 '{zipcode}' 세로 슬라이드 탐색 실패")
-
-
-
+                    self._log(f"  [ddddocr] 우편번호 '{zipcode_clean}' 세로 슬라이드 탐색 실패")
             except Exception as e_dddd:
-
                 self._log(f"  ⚠ [ddddocr] 탐색 중 에러: {e_dddd}")
 
-
-
-
-
-        # 우편번호 좌표를 최종적으로 찾지 못했으면 실패 리턴
-
         if tap_y is None:
-
-            self._log(f"  ❌ 화면에서 우편번호 '{zipcode}'를 찾지 못했습니다.")
-
+            self._log(f"  ❌ 화면에서 우편번호 '{zipcode_clean}'를 찾지 못했습니다.")
             return False
 
-
-
-        # ── 3. 우편번호 라인의 선택 버튼 찾기 ────────────────
-
-        # y축 범위 설정: 우편번호 Y 중심(tap_y)보다 작고(화면 위쪽), 거리가 150 이내에 있는 버튼을 찾아야 하므로,
-
-        # 넉넉하게 tap_y - 180 에서 tap_y + 40 범위로 세로 스트립을 자릅니다.
-
-        strip_y1 = max(0, tap_y - 180)
-
-        strip_y2 = min(img.shape[0], tap_y + 40)
-
-        
-
-        # 가로 스트립 이미지 추출
-
-        strip_img = img[strip_y1:strip_y2, 0:img.shape[1]]
-
-        
-
-        btn_template_path = os.path.join(os.path.dirname(__file__), "선택버튼.png")
-
-        
-
-        if os.path.exists(btn_template_path):
-
-            self._log(f"🔍 [선택버튼 이미지 매칭] 선택버튼.png 매칭 시도 (스트립 높이: {strip_y1}~{strip_y2})")
-
-            try:
-
-                # 템플릿 로드 (Unicode 경로 대응)
-
-                btn_template_bgr = cv2.imdecode(np.fromfile(btn_template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-
-                if btn_template_bgr is not None:
-
-                    btn_template_gray = cv2.cvtColor(btn_template_bgr, cv2.COLOR_BGR2GRAY)
-
-                    strip_gray = cv2.cvtColor(strip_img, cv2.COLOR_BGR2GRAY)
-
-                    
-
-                    s_h, s_w = strip_gray.shape
-
-                    t_h, t_w = btn_template_gray.shape
-
-                    
-
-                    candidates = [] # 조건을 만족하는 매칭 후보 저장: (score, abs_x, abs_y, scale, y_diff)
-
-                    
-
-                    # 스케일 범위: 0.4x ~ 3.0x (80단계)
-
-                    scales = np.linspace(0.4, 3.0, 80)
-
-                    for scale in scales:
-
-                        new_w = int(t_w * scale)
-
-                        new_h = int(t_h * scale)
-
-                        
-
-                        if new_w >= s_w or new_h >= s_h:
-
-                            continue
-
-                        if new_w < 10 or new_h < 5:
-
-                            continue
-
-                            
-
-                        resized = cv2.resize(btn_template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-                        res = cv2.matchTemplate(strip_gray, resized, cv2.TM_CCOEFF_NORMED)
-
-                        
-
-                        # 0.55 임계값 이상의 모든 매칭점을 수집
-
-                        loc = np.where(res >= 0.55)
-
-                        for pt in zip(*loc[::-1]):
-
-                            btn_cx = pt[0] + new_w // 2
-
-                            btn_cy = pt[1] + new_h // 2
-
-                            
-
-                            abs_x = btn_cx
-
-                            abs_y = strip_y1 + btn_cy
-
-                            
-
-                            # 선택 버튼은 무조건 화면 우측 영역(오른쪽 절반 이상)에 존재
-
-                            if abs_x < img.shape[1] * 0.5:
-
-                                continue
-
-                                
-
-                            y_diff = tap_y - abs_y
-
-                            # 조건 검사: 
-
-                            # 1. button_y < tap_y (y_diff > 0)
-
-                            # 2. tap_y - button_y <= 150 (y_diff <= 150)
-
-                            if 0 < y_diff <= 150:
-
-                                score = res[pt[1], pt[0]]
-
-                                candidates.append((score, abs_x, abs_y, scale, y_diff))
-
-                    
-
-                    # 후보가 있으면 필터링 및 최적 후보 선택
-
-                    # 정렬 기준: 점수(score) 내림차순, y_diff 오름차순(제일 가까운 거리)
-
-                    if candidates:
-
-                        candidates.sort(key=lambda x: (-x[0], x[4]))
-
-                        best_candidate = candidates[0]
-
-                        best_score, abs_x, abs_y, best_scale, y_diff = best_candidate
-
-                        
-
-                        self._log(f"🎯 [선택버튼 매칭 성공] 최적 후보 선택 - 절대좌표: ({abs_x}, {abs_y}), 점수: {best_score:.4f}, 거리차이: {y_diff}px, 스케일: {best_scale:.2f}x")
-
-                        
-
-                        # 디버그용 매칭 결과 이미지 저장 (Unicode 경로 대응)
-
-                        try:
-
-                            debug_img = strip_img.copy()
-
-                            btn_cx_strip = abs_x
-
-                            btn_cy_strip = abs_y - strip_y1
-
-                            t_w_resized = int(t_w * best_scale)
-
-                            t_h_resized = int(t_h * best_scale)
-
-                            
-
-                            top_left = (btn_cx_strip - t_w_resized // 2, btn_cy_strip - t_h_resized // 2)
-
-                            bottom_right = (btn_cx_strip + t_w_resized // 2, btn_cy_strip + t_h_resized // 2)
-
-                            
-
-                            cv2.rectangle(debug_img, top_left, bottom_right, (0, 255, 0), 2)
-
-                            cv2.circle(debug_img, (btn_cx_strip, btn_cy_strip), 5, (0, 0, 255), -1)
-
-                            
-
-                            # 우편번호 Y선 표시
-
-                            cv2.line(debug_img, (0, tap_y - strip_y1), (img.shape[1], tap_y - strip_y1), (255, 0, 0), 1)
-
-                            
-
-                            debug_path = os.path.join(os.path.dirname(btn_template_path), f"debug_select_match_{self.device_id}.png")
-
-                            _, enc_dbg = cv2.imencode('.png', debug_img)
-
-                            enc_dbg.tofile(debug_path)
-
-                            self._log(f"  [디버그] 선택버튼 매칭 디버그 이미지 저장 완료: {debug_path}")
-
-                        except Exception as dbg_err:
-
-                            self._log(f"  [디버그] 선택버튼 매칭 디버그 이미지 저장 중 오류: {dbg_err}")
-
-                            
-
-                        self._tap_coordinates(abs_x, abs_y)
-
-                        return True
-
-                    else:
-
-                        self._log("  ❌ [선택버튼 이미지 매칭] 조건(y < tap_y 이고 차이 <= 150)을 만족하는 매칭 후보 없음")
-
-                else:
-
-                    self._log("  ❌ [선택버튼 이미지 매칭] 템플릿 디코딩 실패")
-
-            except Exception as e_match:
-
-                self._log(f"  ⚠ [선택버튼 이미지 매칭] 에러: {e_match}")
-
-        else:
-
-            self._log(f"  ⚠ '선택버튼.png' 파일이 존재하지 않습니다: {btn_template_path}")
-
- 
-
-        # 폴백 1: OCR로 가로 스트립 영역 내에서 '선택' 글자 찾기
-
-        self._log("  🔍 [폴백 1] 스트립 영역 내에서 OCR로 '선택' 글자 탐색")
-
-        try:
-
-            _, strip_png_bytes = cv2.imencode('.png', strip_img)
-
-            import ddddocr
-
-            strip_det = ddddocr.DdddOcr(det=True, show_ad=False)
-
-            strip_bboxes = strip_det.detection(strip_png_bytes.tobytes())
-
-            if strip_bboxes:
-
-                strip_ocr = ddddocr.DdddOcr(show_ad=False)
-
-                fallback_candidates = []
-
-                for s_bbox in strip_bboxes:
-
-                    sx1, sy1, sx2, sy2 = s_bbox
-
-                    sc_y1 = max(0, sy1 - 2)
-
-                    sc_y2 = min(strip_img.shape[0], sy2 + 2)
-
-                    sc_x1 = max(0, sx1 - 5)
-
-                    sc_x2 = min(strip_img.shape[1], sx2 + 5)
-
-                    s_cropped = strip_img[sc_y1:sc_y2, sc_x1:sc_x2]
-
-                    _, s_cropped_png = cv2.imencode('.png', s_cropped)
-
-                    s_text = strip_ocr.classification(s_cropped_png.tobytes())
-
-                    if "선택" in s_text or "선" in s_text or "택" in s_text:
-
-                        s_cx = (sx1 + sx2) // 2
-
-                        s_cy = (sy1 + sy2) // 2
-
-                        abs_x = s_cx
-
-                        abs_y = strip_y1 + s_cy
-
-                        
-
-                        y_diff = tap_y - abs_y
-
-                        if 0 < y_diff <= 150:
-
-                            fallback_candidates.append((abs_x, abs_y, y_diff))
-
-                
-
-                if fallback_candidates:
-
-                    # y_diff가 가장 작은 순서로 정렬
-
-                    fallback_candidates.sort(key=lambda x: x[2])
-
-                    abs_x, abs_y, y_diff = fallback_candidates[0]
-
-                    self._log(f"  🎯 [폴백 1 성공] OCR로 '선택' 발견 → 절대좌표: ({abs_x}, {abs_y}), 거리: {y_diff}px")
-
-                    self._tap_coordinates(abs_x, abs_y)
-
+        # ── 3. 우편번호 라인(tap_y)에 대응하는 '선택' 버튼 매칭 및 클릭 ────────────────
+        # ※ 도로명 주소가 2~3줄로 줄바꿈될 경우 우편번호(tap_y)와 선택버튼(btn_y) 간 세로 거리가 190~280px 에 달함!
+        #    (예: 1080x2340 화면에서 선택버튼 y=686, 우편번호 y=882 → y_diff=196px, 다음 항목 선택버튼 y=1042)
+        max_y_diff = max(300, int(img.shape[0] * 0.14))
+
+        # 3-A. 0순위에서 이미 수집해둔 전체 '선택' 버튼 후보와 매칭 (재매칭 불필요 + 절단 위험 없음)
+        if distinct_pre_buttons:
+            matched_pre = []
+            for b_score, bx, by, b_scale in distinct_pre_buttons:
+                y_diff = tap_y - by
+                if -25 <= y_diff <= max_y_diff:
+                    matched_pre.append((0 if y_diff >= 0 else 1, abs(y_diff), -b_score, bx, by, b_score, b_scale, y_diff))
+            if matched_pre:
+                matched_pre.sort()
+                _, _, _, bx, by, b_score, b_scale, y_diff = matched_pre[0]
+                self._log(
+                    f"🎯 [우편번호 행 선택버튼 매칭] 좌표: ({bx}, {by}), 점수: {b_score:.4f}, "
+                    f"거리차이: {y_diff}px, 스케일: {b_scale:.2f}x"
+                )
+                if self._click_select_button_and_verify(bx, by, label=f"우편번호({zipcode_clean}) 선택버튼"):
                     return True
 
-        except Exception as fallback_ocr_err:
+        # 3-B. 확장된 가로 스트립(tap_y - max_y_diff - 50 ~ tap_y + 50)에서 선택버튼.png 정밀 매칭 (임계값 0.55)
+        strip_y1 = max(0, tap_y - max_y_diff - 50)
+        strip_y2 = min(img.shape[0], tap_y + 50)
+        strip_img = img[strip_y1:strip_y2, 0:img.shape[1]]
 
+        btn_template_path = os.path.join(os.path.dirname(__file__), "선택버튼.png")
+        if os.path.exists(btn_template_path):
+            self._log(f"🔍 [선택버튼 이미지 매칭] 선택버튼.png 매칭 시도 (스트립 높이: {strip_y1}~{strip_y2}, 허용거리: {max_y_diff}px)")
+            try:
+                btn_template_bgr = cv2.imdecode(np.fromfile(btn_template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if btn_template_bgr is not None:
+                    btn_template_gray = cv2.cvtColor(btn_template_bgr, cv2.COLOR_BGR2GRAY)
+                    strip_gray = cv2.cvtColor(strip_img, cv2.COLOR_BGR2GRAY)
+                    s_h, s_w = strip_gray.shape
+                    t_h, t_w = btn_template_gray.shape
+
+                    candidates = []
+                    for scale in np.linspace(0.45, 3.0, 75):
+                        new_w = int(t_w * scale)
+                        new_h = int(t_h * scale)
+                        if new_w >= s_w or new_h >= s_h or new_w < 10 or new_h < 5:
+                            continue
+                        resized = cv2.resize(btn_template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                        res = cv2.matchTemplate(strip_gray, resized, cv2.TM_CCOEFF_NORMED)
+                        loc = np.where(res >= 0.55)
+                        for pt in zip(*loc[::-1]):
+                            abs_x = pt[0] + new_w // 2
+                            abs_y = strip_y1 + pt[1] + new_h // 2
+                            if abs_x < img.shape[1] * 0.5:
+                                continue
+                            y_diff = tap_y - abs_y
+                            if -25 <= y_diff <= max_y_diff:
+                                score = float(res[pt[1], pt[0]])
+                                candidates.append((score, abs_x, abs_y, float(scale), y_diff))
+
+                    distinct_strip_btns = self._group_select_button_candidates(candidates, y_tol=55)
+                    if distinct_strip_btns:
+                        # 우편번호 바로 위(양수 y_diff 중 최소 거리) 우선 선택
+                        distinct_strip_btns.sort(key=lambda c: (0 if c[4] >= 0 else 1, abs(c[4]), -c[0]))
+                        best_score, abs_x, abs_y, best_scale, y_diff = distinct_strip_btns[0]
+                        self._log(
+                            f"🎯 [선택버튼 매칭 성공] 최적 후보 선택 - 절대좌표: ({abs_x}, {abs_y}), "
+                            f"점수: {best_score:.4f}, 거리차이: {y_diff}px, 스케일: {best_scale:.2f}x"
+                        )
+
+                        try:
+                            debug_img = strip_img.copy()
+                            btn_cx_strip = abs_x
+                            btn_cy_strip = abs_y - strip_y1
+                            t_w_resized = int(t_w * best_scale)
+                            t_h_resized = int(t_h * best_scale)
+                            top_left = (btn_cx_strip - t_w_resized // 2, btn_cy_strip - t_h_resized // 2)
+                            bottom_right = (btn_cx_strip + t_w_resized // 2, btn_cy_strip + t_h_resized // 2)
+                            cv2.rectangle(debug_img, top_left, bottom_right, (0, 255, 0), 2)
+                            cv2.circle(debug_img, (btn_cx_strip, btn_cy_strip), 5, (0, 0, 255), -1)
+                            cv2.line(debug_img, (0, tap_y - strip_y1), (img.shape[1], tap_y - strip_y1), (255, 0, 0), 1)
+                            debug_path = os.path.join(os.path.dirname(btn_template_path), f"debug_select_match_{self.device_id}.png")
+                            _, enc_dbg = cv2.imencode('.png', debug_img)
+                            enc_dbg.tofile(debug_path)
+                        except Exception as dbg_err:
+                            self._log(f"  [디버그] 선택버튼 매칭 디버그 이미지 저장 중 오류: {dbg_err}")
+
+                        if self._click_select_button_and_verify(abs_x, abs_y, label="스트립 선택버튼"):
+                            return True
+                    else:
+                        self._log(f"  ❌ [선택버튼 이미지 매칭] 조건(-25 <= y_diff <= {max_y_diff})을 만족하는 매칭 후보 없음")
+                else:
+                    self._log("  ❌ [선택버튼 이미지 매칭] 템플릿 디코딩 실패")
+            except Exception as e_match:
+                self._log(f"  ⚠ [선택버튼 이미지 매칭] 에러: {e_match}")
+        else:
+            self._log(f"  ⚠ '선택버튼.png' 파일이 존재하지 않습니다: {btn_template_path}")
+
+        # 폴백 1: OCR로 가로 스트립 영역 내에서 '선택' 글자 찾기
+        self._log("  🔍 [폴백 1] 스트립 영역 내에서 OCR로 '선택' 글자 탐색")
+        try:
+            _, strip_png_bytes = cv2.imencode('.png', strip_img)
+            import ddddocr
+            strip_det = ddddocr.DdddOcr(det=True, show_ad=False)
+            strip_bboxes = strip_det.detection(strip_png_bytes.tobytes())
+            if strip_bboxes:
+                strip_ocr = ddddocr.DdddOcr(show_ad=False)
+                fallback_candidates = []
+                for s_bbox in strip_bboxes:
+                    sx1, sy1, sx2, sy2 = s_bbox
+                    if (sx1 + sx2) // 2 < img.shape[1] * 0.5:
+                        continue
+                    sc_y1 = max(0, sy1 - 2)
+                    sc_y2 = min(strip_img.shape[0], sy2 + 2)
+                    sc_x1 = max(0, sx1 - 5)
+                    sc_x2 = min(strip_img.shape[1], sx2 + 5)
+                    s_cropped = strip_img[sc_y1:sc_y2, sc_x1:sc_x2]
+                    _, s_cropped_png = cv2.imencode('.png', s_cropped)
+                    s_text = strip_ocr.classification(s_cropped_png.tobytes())
+                    if "선택" in s_text or "선" in s_text or "택" in s_text:
+                        abs_x = (sx1 + sx2) // 2
+                        abs_y = strip_y1 + (sy1 + sy2) // 2
+                        y_diff = tap_y - abs_y
+                        if -25 <= y_diff <= max_y_diff:
+                            fallback_candidates.append((abs_x, abs_y, y_diff))
+
+                if fallback_candidates:
+                    fallback_candidates.sort(key=lambda c: (0 if c[2] >= 0 else 1, abs(c[2])))
+                    abs_x, abs_y, y_diff = fallback_candidates[0]
+                    self._log(f"  🎯 [폴백 1 성공] OCR로 '선택' 발견 → 절대좌표: ({abs_x}, {abs_y}), 거리: {y_diff}px")
+                    if self._click_select_button_and_verify(abs_x, abs_y, label="폴백1 OCR 선택버튼"):
+                        return True
+        except Exception as fallback_ocr_err:
             self._log(f"  ⚠ [폴백 1] OCR 탐색 실패: {fallback_ocr_err}")
 
- 
-
-        # 폴백 2: 우측 영역 강제 클릭
-
-        # 선택 버튼이 우편번호 y축보다 작고 차이가 150 이내에 있는 제일 가까운 곳이므로,
-
-        # 기본 탭 또한 약간 위(tap_y - 90)를 탭하도록 보정합니다.
-
-        fallback_x = int(img.shape[1] * 0.90)
-
-        fallback_y = tap_y - 90
-
-        self._log(f"  🔍 [폴백 2] 기본 오른쪽 좌표 클릭 시도: ({fallback_x}, {fallback_y}) (우편번호 대비 -90px)")
-
-        self._tap_coordinates(fallback_x, fallback_y)
-
-        return True
+        # 폴백 2: 우측 선택버튼 예상 위치 클릭 (2줄 주소 대비 -190px 우선, 실패 시 -135px 시도)
+        fallback_x = int(img.shape[1] * 0.89)
+        for offset_y in (190, 135):
+            fallback_y = max(int(img.shape[0] * 0.22), tap_y - offset_y)
+            self._log(f"  🔍 [폴백 2] 기본 오른쪽 좌표 클릭 시도: ({fallback_x}, {fallback_y}) (우편번호 대비 -{offset_y}px)")
+            if self._click_select_button_and_verify(fallback_x, fallback_y, label=f"폴백2(-{offset_y}px)"):
+                return True
+        return False
